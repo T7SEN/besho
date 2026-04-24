@@ -3,6 +3,7 @@ import { Source_Sans_3 } from "next/font/google";
 import "./globals.css";
 import { cn } from "@/lib/utils";
 import { ThemeProvider } from "@/components/theme-provider";
+import { SpeedInsights } from "@vercel/speed-insights/next";
 
 const sourceSans3 = Source_Sans_3({
   subsets: ["latin"],
@@ -38,6 +39,7 @@ export default function RootLayout({
           disableTransitionOnChange
         >
           {children}
+          <SpeedInsights />
         </ThemeProvider>
       </body>
     </html>
