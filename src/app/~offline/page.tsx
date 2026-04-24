@@ -19,7 +19,7 @@ export default function OfflinePage() {
   };
 
   return (
-    <main className="flex min-h-[100dvh] flex-col items-center justify-center bg-background p-6 text-center">
+    <main className="flex min-h-dvh flex-col items-center justify-center bg-background p-6 text-center">
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
