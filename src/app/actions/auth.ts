@@ -1,47 +1,28 @@
 "use server";
 
-import { SignJWT, jwtVerify } from "jose";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-
-const secretKey = process.env.AUTH_SECRET_KEY;
-const encodedKey = new TextEncoder().encode(secretKey);
-
-interface SessionPayload {
-  isAuthenticated: boolean;
-  expiresAt: string;
-}
-
-export async function encrypt(payload: SessionPayload) {
-  return await new SignJWT(payload as unknown as Record<string, unknown>)
-    .setProtectedHeader({ alg: "HS256" })
-    .setIssuedAt()
-    .setExpirationTime("30d")
-    .sign(encodedKey);
-}
-
-export async function decrypt(session: string | undefined = "") {
-  try {
-    const { payload } = await jwtVerify(session, encodedKey, {
-      algorithms: ["HS256"],
-    });
-    return payload as unknown as SessionPayload;
-  } catch (err) {
-    console.error("Failed to verify session", err);
-    return null;
-  }
-}
+import { encrypt } from "@/lib/auth-utils";
 
 export async function login(prevState: unknown, formData: FormData) {
   const passcode = formData.get("passcode");
 
-  if (passcode !== process.env.APP_PASSCODE) {
+  let author: "T7SEN" | "Besho" | null = null;
+
+  if (passcode === process.env.APP_PASSCODE_T7SEN) {
+    author = "T7SEN";
+  } else if (passcode === process.env.APP_PASSCODE_BESHO) {
+    author = "Besho";
+  }
+
+  if (!author) {
     return { error: "Incorrect passcode. Please try again." };
   }
 
   const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
   const session = await encrypt({
     isAuthenticated: true,
+    author,
     expiresAt: expiresAt.toISOString(),
   });
 
