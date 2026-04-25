@@ -91,7 +91,7 @@ export default function Dashboard() {
         variants={containerVariants}
         initial="hidden"
         animate="show"
-        className="relative z-10 mx-auto max-w-6xl space-y-10 pt-4"
+        className="relative z-10 mx-auto max-w-6xl space-y-10 pt-4 pb-24"
       >
         <motion.div variants={itemVariants}>
           <Header now={now} />
@@ -137,7 +137,7 @@ export default function Dashboard() {
 function SkeletonLoader() {
   return (
     <div className="min-h-screen bg-background p-6 md:p-12">
-      <div className="mx-auto max-w-6xl space-y-10 pt-4 animate-pulse">
+      <div className="mx-auto max-w-6xl space-y-10 pt-4 pb-24 animate-pulse">
         <div className="h-20 w-64 rounded-xl bg-card/50" />
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-12 lg:gap-8">
           <div className="flex flex-col gap-6 lg:col-span-8 lg:gap-8">

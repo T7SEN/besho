@@ -7,6 +7,7 @@ import { SpeedInsights } from "@vercel/speed-insights/next";
 import { Analytics } from "@vercel/analytics/next";
 import { SerwistProvider } from "./serwist";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { FloatingNavbar } from "@/components/navigation/floating-navbar";
 
 const sourceSans3 = Source_Sans_3({
   subsets: ["latin"],
@@ -87,6 +88,7 @@ export default function RootLayout({
           >
             <TooltipProvider>
               {children}
+              <FloatingNavbar />
               <SpeedInsights />
               <Analytics />
             </TooltipProvider>
