@@ -157,7 +157,7 @@ async function sendHugPush(to: string, from: string): Promise<void> {
   const payload = {
     title: "💝 Virtual Hug!",
     body: `${from} sent you a hug`,
-    url: "/dashboard",
+    url: "/",
   };
 
   // ── Presence check ──────────────────────────────────────────────────────
