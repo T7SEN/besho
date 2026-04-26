@@ -24,8 +24,5 @@ export function vibrate(pattern: number | number[] = 50): void {
   const corrected =
     typeof pattern === "number" ? Math.max(pattern, 50) : pattern;
 
-  // Remove this log once haptics are confirmed working on device
-  console.log("[haptic] firing:", corrected);
-
   win.navigator.vibrate(corrected);
 }
