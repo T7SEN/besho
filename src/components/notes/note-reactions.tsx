@@ -3,11 +3,8 @@
 import { useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { cn } from "@/lib/utils";
-import {
-  reactToNote,
-  REACTION_EMOJIS,
-  type ReactionEmoji,
-} from "@/app/actions/reactions";
+import { reactToNote } from "@/app/actions/reactions";
+import { REACTION_EMOJIS, type ReactionEmoji } from "@/lib/reaction-constants";
 import { vibrate } from "@/lib/haptic";
 
 interface NoteReactionsProps {

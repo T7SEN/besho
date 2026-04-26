@@ -3,22 +3,12 @@
 import { Redis } from "@upstash/redis";
 import { cookies } from "next/headers";
 import { decrypt } from "@/lib/auth-utils";
+import { type ReactionEmoji } from "@/lib/reaction-constants";
 
 const redis = new Redis({
   url: process.env.KV_REST_API_URL!,
   token: process.env.KV_REST_API_TOKEN!,
 });
-
-export type ReactionEmoji = "❤️" | "😂" | "😭" | "🥺" | "😮" | "🔥";
-
-export const REACTION_EMOJIS: ReactionEmoji[] = [
-  "❤️",
-  "😂",
-  "😭",
-  "🥺",
-  "😮",
-  "🔥",
-];
 
 // reactions:{noteId} → Redis HASH { author: emoji }
 const reactionsKey = (noteId: string) => `reactions:${noteId}`;
