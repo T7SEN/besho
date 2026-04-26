@@ -54,31 +54,61 @@ async function sendPushToUser(
     !process.env.VAPID_PUBLIC_KEY ||
     !process.env.VAPID_PRIVATE_KEY
   ) {
-    console.error(
-      "[push] Missing VAPID env vars — set VAPID_EMAIL, VAPID_PUBLIC_KEY, " +
-        "and VAPID_PRIVATE_KEY in Vercel project settings.",
-    );
+    console.error("[push] Missing VAPID env vars.");
     return;
   }
-  try {
-    const subscription = await redis.get(`push:subscription:${toAuthor}`);
-    if (!subscription) return;
 
-    const webpush = (await import("web-push")).default;
-    webpush.setVapidDetails(
-      process.env.VAPID_EMAIL!,
-      process.env.VAPID_PUBLIC_KEY!,
-      process.env.VAPID_PRIVATE_KEY!,
-    );
+  // ── Try FCM first (native Android app) ──────────────────────────────
+  const fcmToken = await redis.get<string>(`push:fcm:${toAuthor}`);
+  if (fcmToken) {
+    try {
+      const { initializeApp, getApps } = await import("firebase-admin/app");
+      const { getMessaging } = await import("firebase-admin/messaging");
+      const { cert } = await import("firebase-admin/app");
 
-    await webpush.sendNotification(
-      subscription as Parameters<typeof webpush.sendNotification>[0],
-      JSON.stringify(payload),
-    );
-  } catch (error) {
-    // Never let push failures break note saving
-    console.error("[push] Failed to send notification:", error);
+      if (!getApps().length) {
+        initializeApp({
+          credential: cert({
+            projectId: process.env.FIREBASE_PROJECT_ID!,
+            clientEmail: process.env.FIREBASE_CLIENT_EMAIL!,
+            privateKey: process.env.FIREBASE_PRIVATE_KEY!.replace(/\\n/g, "\n"),
+          }),
+        });
+      }
+
+      await getMessaging().send({
+        token: fcmToken,
+        notification: {
+          title: payload.title,
+          body: payload.body,
+        },
+        data: { url: payload.url },
+        android: {
+          priority: "high",
+        },
+      });
+      console.log("[push] FCM notification sent to", toAuthor);
+      return;
+    } catch (err) {
+      console.error("[push] FCM send failed, falling back to Web Push:", err);
+    }
   }
+
+  // ── Fall back to Web Push (PWA browser) ─────────────────────────────
+  const subscription = await redis.get(`push:subscription:${toAuthor}`);
+  if (!subscription) return;
+
+  const webpush = (await import("web-push")).default;
+  webpush.setVapidDetails(
+    process.env.VAPID_EMAIL!,
+    process.env.VAPID_PUBLIC_KEY!,
+    process.env.VAPID_PRIVATE_KEY!,
+  );
+
+  await webpush.sendNotification(
+    subscription as Parameters<typeof webpush.sendNotification>[0],
+    JSON.stringify(payload),
+  );
 }
 
 // ─── Legacy migration ─────────────────────────────────────────────────────────
