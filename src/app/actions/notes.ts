@@ -107,6 +107,9 @@ async function sendPushToUser(
 
       const isAppOpen = currentPage !== null;
 
+      console.log(`[push] presence for ${toAuthor}:`, currentPage);
+      console.log(`[push] isAppOpen:`, isAppOpen);
+
       await getMessaging().send({
         token: fcmToken,
         ...(isAppOpen
