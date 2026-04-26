@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState } from "react";
+import { useActionState, useEffect, useRef } from "react";
 import { motion } from "motion/react";
 import { Lock, ArrowRight, Loader2 } from "lucide-react";
 import { login } from "@/app/actions/auth";
@@ -9,6 +9,36 @@ import { cn } from "@/lib/utils";
 
 export default function LoginPage() {
   const [state, action, isPending] = useActionState(login, null);
+
+  const hasSubmitted = useRef(false);
+
+  // After successful login on native, mark biometric as enrolled.
+  // Login redirects on success so state remains null — we detect success
+  // by checking that isPending just went false with no error in state.
+  useEffect(() => {
+    if (isPending) {
+      hasSubmitted.current = true;
+      return;
+    }
+    if (!hasSubmitted.current || state?.error) return;
+
+    const cap = (
+      globalThis as unknown as {
+        Capacitor?: { isNativePlatform?: () => boolean };
+      }
+    ).Capacitor;
+
+    if (!cap?.isNativePlatform?.()) return;
+
+    void (async () => {
+      try {
+        const { Preferences } = await import("@capacitor/preferences");
+        await Preferences.set({ key: "biometric_enrolled", value: "true" });
+      } catch (err) {
+        console.error("[biometric] Failed to set enrolled flag:", err);
+      }
+    })();
+  }, [isPending, state]);
 
   return (
     <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-background p-6">

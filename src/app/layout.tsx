@@ -11,6 +11,7 @@ import { FloatingNavbar } from "@/components/navigation/floating-navbar";
 import { CapacitorInit } from "@/components/capacitor-init";
 import { PushToast } from "@/components/push-toast";
 import { FCMProvider } from "@/components/fcm-provider";
+import { BiometricGate } from "@/components/biometric-gate";
 
 const sourceSans3 = Source_Sans_3({
   subsets: ["latin"],
@@ -84,11 +85,13 @@ export default function RootLayout({
             disableTransitionOnChange
           >
             <TooltipProvider>
-              {children}
-              <CapacitorInit />
-              <PushToast />
-              <FCMProvider />
-              <FloatingNavbar />
+              <BiometricGate>
+                {children}
+                <CapacitorInit />
+                <PushToast />
+                <FCMProvider />
+                <FloatingNavbar />
+              </BiometricGate>
               <SpeedInsights />
               <Analytics />
             </TooltipProvider>
