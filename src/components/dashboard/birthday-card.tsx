@@ -4,6 +4,7 @@ import { motion } from "motion/react";
 import { Cake, CalendarHeart, Gift } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { BIRTHDAYS } from "@/lib/constants";
+import { vibrate } from "@/lib/haptic";
 import {
   Tooltip,
   TooltipContent,
@@ -26,20 +27,12 @@ const MONTH_NAMES = [
   "Dec",
 ];
 
-interface BirthdayCardProps {
-  now: Date;
-}
-
-export function BirthdayCard({ now }: BirthdayCardProps) {
+export function BirthdayCard({ now }: { now: Date }) {
   const calculateDaysLeft = (month: number, day: number) => {
     const currentYear = now.getFullYear();
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const nextBirthday = new Date(currentYear, month - 1, day);
-
-    if (nextBirthday < today) {
-      nextBirthday.setFullYear(currentYear + 1);
-    }
-
+    if (nextBirthday < today) nextBirthday.setFullYear(currentYear + 1);
     const diffTime = nextBirthday.getTime() - today.getTime();
     return Math.round(diffTime / (1000 * 60 * 60 * 24));
   };
@@ -73,7 +66,10 @@ export function BirthdayCard({ now }: BirthdayCardProps) {
         >
           {label}
         </p>
-        <div className="flex items-start gap-4">
+        <div
+          className="flex cursor-default items-start gap-4"
+          onClick={() => isToday && vibrate([10, 50, 10])}
+        >
           <motion.div
             className="mt-1"
             animate={isToday ? { y: [-2, 2, -2], rotate: [-5, 5, -5] } : {}}
@@ -113,7 +109,6 @@ export function BirthdayCard({ now }: BirthdayCardProps) {
               )}
             </div>
 
-            {/* Tooltip implementation for the hover state */}
             <TooltipProvider delayDuration={0}>
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -130,7 +125,7 @@ export function BirthdayCard({ now }: BirthdayCardProps) {
                 </TooltipTrigger>
                 <TooltipContent
                   side="bottom"
-                  className="border-white/10 bg-black/80 backdrop-blur-md px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-white shadow-xl"
+                  className="border-white/10 bg-black/80 px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-white shadow-xl backdrop-blur-md"
                 >
                   Born in {fullDate}
                 </TooltipContent>

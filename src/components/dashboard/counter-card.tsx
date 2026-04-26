@@ -5,6 +5,7 @@ import { Heart } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { cn } from "@/lib/utils";
 import { START_DATE } from "@/lib/constants";
+import { vibrate } from "@/lib/haptic";
 
 type TimeUnitKey = "years" | "months" | "days" | "hours" | "mins" | "secs";
 
@@ -13,7 +14,6 @@ export function CounterCard({ now }: { now: Date }) {
 
   const diff = now.getTime() - START_DATE.getTime();
 
-  // 1. Calculate Absolute Totals (for the massive hero text)
   const totalSeconds = Math.floor(diff / 1000);
   const totalMinutes = Math.floor(diff / (1000 * 60));
   const totalHours = Math.floor(diff / (1000 * 60 * 60));
@@ -39,7 +39,6 @@ export function CounterCard({ now }: { now: Date }) {
     totalYears++;
   }
 
-  // 2. Calculate Modular Breakdown (for the bottom grid)
   const seconds = Math.floor((diff / 1000) % 60);
   const minutes = Math.floor((diff / (1000 * 60)) % 60);
   const hours = Math.floor((diff / (1000 * 60 * 60)) % 24);
@@ -67,7 +66,6 @@ export function CounterCard({ now }: { now: Date }) {
   const remainingDiff = now.getTime() - tempDateBreakdown.getTime();
   const breakdownDays = Math.floor(remainingDiff / (1000 * 60 * 60 * 24));
 
-  // 3. Map State to Values
   const activeValueMap: Record<TimeUnitKey, number> = {
     years: totalYears,
     months: totalMonths,
@@ -89,6 +87,11 @@ export function CounterCard({ now }: { now: Date }) {
   const formattedHeroValue = new Intl.NumberFormat("en-US").format(
     activeValueMap[activeUnit],
   );
+
+  const handleUnitChange = (unit: TimeUnitKey) => {
+    vibrate(6);
+    setActiveUnit(unit);
+  };
 
   return (
     <div
@@ -115,6 +118,7 @@ export function CounterCard({ now }: { now: Date }) {
             Total Time Together
           </h2>
         </div>
+
         <div className="flex h-24 items-baseline gap-4 md:h-32">
           <AnimatePresence mode="popLayout">
             <motion.span
@@ -122,17 +126,11 @@ export function CounterCard({ now }: { now: Date }) {
               initial={{ y: 20, opacity: 0, filter: "blur(4px)" }}
               animate={{ y: 0, opacity: 1, filter: "blur(0px)" }}
               exit={{ y: -20, opacity: 0, filter: "blur(4px)" }}
-              transition={{
-                type: "spring",
-                bounce: 0,
-                duration: 0.4,
-              }}
+              transition={{ type: "spring", bounce: 0, duration: 0.4 }}
               className={cn(
-                "inline-block text-7xl font-black",
-                "tracking-tighter md:text-8xl",
-                activeUnit === "secs" || activeUnit === "mins"
-                  ? "text-5xl md:text-7xl"
-                  : "",
+                "inline-block text-7xl font-black tracking-tighter md:text-8xl",
+                (activeUnit === "secs" || activeUnit === "mins") &&
+                  "text-5xl md:text-7xl",
               )}
             >
               {formattedHeroValue}
@@ -144,20 +142,22 @@ export function CounterCard({ now }: { now: Date }) {
               initial={{ opacity: 0, x: -10 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: 10 }}
-              transition={{
-                type: "spring",
-                bounce: 0,
-                duration: 0.4,
-              }}
-              className={cn(
-                "inline-block text-xl font-medium",
-                "text-muted-foreground md:text-2xl",
-              )}
+              transition={{ type: "spring", bounce: 0, duration: 0.4 }}
+              className="inline-block text-xl font-medium text-muted-foreground md:text-2xl"
             >
               {activeLabelMap[activeUnit]}
             </motion.span>
           </AnimatePresence>
         </div>
+
+        <p className="mt-2 text-xs font-medium text-muted-foreground/30">
+          Since{" "}
+          {new Intl.DateTimeFormat("en-US", {
+            month: "long",
+            day: "numeric",
+            year: "numeric",
+          }).format(START_DATE)}
+        </p>
       </div>
 
       <div
@@ -170,38 +170,38 @@ export function CounterCard({ now }: { now: Date }) {
           label="Years"
           value={breakdownYears}
           isActive={activeUnit === "years"}
-          onClick={() => setActiveUnit("years")}
+          onClick={() => handleUnitChange("years")}
         />
         <TimeUnit
           label="Months"
           value={breakdownMonths}
           isActive={activeUnit === "months"}
-          onClick={() => setActiveUnit("months")}
+          onClick={() => handleUnitChange("months")}
         />
         <TimeUnit
           label="Days"
           value={breakdownDays}
           isActive={activeUnit === "days"}
-          onClick={() => setActiveUnit("days")}
+          onClick={() => handleUnitChange("days")}
         />
         <TimeUnit
           label="Hours"
           value={hours}
           isActive={activeUnit === "hours"}
-          onClick={() => setActiveUnit("hours")}
+          onClick={() => handleUnitChange("hours")}
         />
         <TimeUnit
           label="Mins"
           value={minutes}
           isActive={activeUnit === "mins"}
-          onClick={() => setActiveUnit("mins")}
+          onClick={() => handleUnitChange("mins")}
         />
         <TimeUnit
           label="Secs"
           value={seconds}
           color="text-primary"
           isActive={activeUnit === "secs"}
-          onClick={() => setActiveUnit("secs")}
+          onClick={() => handleUnitChange("secs")}
         />
       </div>
     </div>
@@ -245,8 +245,7 @@ function TimeUnit({
       </span>
       <span
         className={cn(
-          "relative z-10 mt-1 text-[10px] font-bold uppercase",
-          "tracking-[0.2em] transition-colors",
+          "relative z-10 mt-1 text-[10px] font-bold uppercase tracking-[0.2em] transition-colors",
           isActive ? "text-foreground" : "text-muted-foreground",
         )}
       >

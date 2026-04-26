@@ -5,10 +5,6 @@ import { defaultCache } from "@serwist/turbopack/worker";
 import type { PrecacheEntry, SerwistGlobalConfig } from "serwist";
 import { Serwist } from "serwist";
 
-// This declares the value of `injectionPoint` to TypeScript.
-// `injectionPoint` is the string that will be replaced by the
-// actual precache manifest. By default, this string is set to
-// `"self.__SW_MANIFEST"`.
 declare global {
   interface WorkerGlobalScope extends SerwistGlobalConfig {
     __SW_MANIFEST: (PrecacheEntry | string)[] | undefined;
@@ -36,3 +32,42 @@ const serwist = new Serwist({
 });
 
 serwist.addEventListeners();
+
+// ── Push notifications ────────────────────────────────────────────────────────
+
+self.addEventListener("push", (event) => {
+  const data = (event as PushEvent).data?.json() ?? {};
+
+  const promise = self.registration.showNotification(
+    data.title ?? "Our Space",
+    {
+      body: data.body ?? "You have a new note",
+      icon: "/icon-192x192.png",
+      badge: "/icon-192x192.png",
+      data: { url: data.url ?? "/notes" },
+    },
+  );
+
+  (event as ExtendableEvent).waitUntil(promise);
+});
+
+self.addEventListener("notificationclick", (event) => {
+  const notifEvent = event as NotificationEvent;
+  notifEvent.notification.close();
+
+  const url: string = notifEvent.notification.data?.url ?? "/notes";
+
+  notifEvent.waitUntil(
+    self.clients
+      .matchAll({ type: "window", includeUncontrolled: true })
+      .then((clientList) => {
+        // Focus existing window if available
+        for (const client of clientList) {
+          if (client.url.includes(url) && "focus" in client) {
+            return (client as WindowClient).focus();
+          }
+        }
+        return self.clients.openWindow(url);
+      }),
+  );
+});

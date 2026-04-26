@@ -20,11 +20,13 @@ const APP_TITLE_TEMPLATE = "%s | Our Space";
 const APP_DESCRIPTION = "A private digital space for us.";
 
 export const viewport: Viewport = {
-  themeColor: "#09090b", // zinc-950
+  themeColor: "#09090b",
   width: "device-width",
   initialScale: 1,
   maximumScale: 1,
   userScalable: false,
+  // Allows the app to extend behind the status bar (required for safe-area-inset-top)
+  viewportFit: "cover",
 };
 
 export const metadata: Metadata = {
@@ -46,27 +48,19 @@ export const metadata: Metadata = {
   openGraph: {
     type: "website",
     siteName: APP_NAME,
-    title: {
-      default: APP_DEFAULT_TITLE,
-      template: APP_TITLE_TEMPLATE,
-    },
+    title: { default: APP_DEFAULT_TITLE, template: APP_TITLE_TEMPLATE },
     description: APP_DESCRIPTION,
   },
   twitter: {
     card: "summary",
-    title: {
-      default: APP_DEFAULT_TITLE,
-      template: APP_TITLE_TEMPLATE,
-    },
+    title: { default: APP_DEFAULT_TITLE, template: APP_TITLE_TEMPLATE },
     description: APP_DESCRIPTION,
   },
 };
 
 export default function RootLayout({
   children,
-}: Readonly<{
-  children: React.ReactNode;
-}>) {
+}: Readonly<{ children: React.ReactNode }>) {
   return (
     <html
       lang="en"

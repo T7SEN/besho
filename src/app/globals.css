@@ -121,10 +121,16 @@
   * {
     @apply border-border outline-ring/50;
   }
-  body {
-    @apply bg-background text-foreground;
-  }
+
   html {
     @apply font-sans;
+    /* Push content below the status bar on installed PWA with black-translucent */
+    padding-top: env(safe-area-inset-top);
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    /* Ensure content clears the home indicator on iOS */
+    padding-bottom: env(safe-area-inset-bottom);
   }
 }

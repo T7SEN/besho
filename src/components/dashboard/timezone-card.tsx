@@ -1,45 +1,43 @@
 "use client";
 
-import { Clock, Sun, Moon } from "lucide-react";
+import { Clock, Sun, Moon, BedDouble } from "lucide-react";
 import { motion } from "motion/react";
 import { cn } from "@/lib/utils";
-import { MY_TZ, PARTNER_TZ } from "@/lib/constants";
+import { MY_TZ, PARTNER_TZ, MY_CITY, PARTNER_CITY } from "@/lib/constants";
 
 export function TimezoneCard({ now }: { now: Date }) {
   const hourFormatter = new Intl.DateTimeFormat("en-US", {
     hour: "numeric",
     hour12: false,
   });
-
   const minuteFormatter = new Intl.DateTimeFormat("en-US", {
     minute: "2-digit",
   });
-
   const amPmFormatter = new Intl.DateTimeFormat("en-US", {
     hour: "numeric",
     hour12: true,
   });
 
-  // --- Cairo Calculations ---
+  // ── My location ──
   const myDate = new Date(now.toLocaleString("en-US", { timeZone: MY_TZ }));
   const myHour24 = parseInt(hourFormatter.format(myDate));
   const myMinute = parseInt(minuteFormatter.format(myDate));
   const myAmPm = amPmFormatter.format(myDate).split(" ")[1];
-
   const myHour12 = myHour24 % 12 || 12;
   const myIsDay = myHour24 >= 6 && myHour24 < 18;
+  const myIsAsleep = myHour24 >= 23 || myHour24 < 7;
   const myProgress = ((myHour24 * 60 + myMinute) / 1440) * 100;
 
-  // --- Riyadh Calculations ---
+  // ── Partner location ──
   const partnerDate = new Date(
     now.toLocaleString("en-US", { timeZone: PARTNER_TZ }),
   );
   const partnerHour24 = parseInt(hourFormatter.format(partnerDate));
   const partnerMinute = parseInt(minuteFormatter.format(partnerDate));
   const partnerAmPm = amPmFormatter.format(partnerDate).split(" ")[1];
-
   const partnerHour12 = partnerHour24 % 12 || 12;
   const partnerIsDay = partnerHour24 >= 6 && partnerHour24 < 18;
+  const partnerIsAsleep = partnerHour24 >= 23 || partnerHour24 < 7;
   const partnerProgress = ((partnerHour24 * 60 + partnerMinute) / 1440) * 100;
 
   return (
@@ -63,25 +61,15 @@ export function TimezoneCard({ now }: { now: Date }) {
       </div>
 
       <div className="space-y-8">
-        {/* Cairo Section */}
-        <div className="space-y-4">
+        {/* My location */}
+        <div className="space-y-3">
           <div className="flex items-end justify-between">
             <div>
-              <p
-                className={cn(
-                  "mb-1 text-xs font-bold uppercase",
-                  "tracking-wider text-muted-foreground",
-                )}
-              >
-                Al Shorouk, Egypt
+              <p className="mb-1 text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                {MY_CITY}
               </p>
               <div className="flex items-baseline gap-1">
-                <span
-                  className={cn(
-                    "text-3xl font-bold tracking-tight",
-                    "text-foreground",
-                  )}
-                >
+                <span className="text-3xl font-bold tracking-tight text-foreground">
                   {myHour12}
                   <span className="inline-block -translate-y-0.5">:</span>
                   {myMinute.toString().padStart(2, "0")}
@@ -90,6 +78,12 @@ export function TimezoneCard({ now }: { now: Date }) {
                   {myAmPm}
                 </span>
               </div>
+              {myIsAsleep && (
+                <p className="mt-1 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-blue-400/60">
+                  <BedDouble className="h-3 w-3" />
+                  Probably sleeping
+                </p>
+              )}
             </div>
             <div className="rounded-full bg-background/50 p-2.5 shadow-inner">
               {myIsDay ? (
@@ -99,7 +93,6 @@ export function TimezoneCard({ now }: { now: Date }) {
               )}
             </div>
           </div>
-          {/* Daylight Progress Track */}
           <div className="h-1.5 w-full overflow-hidden rounded-full bg-black/20">
             <motion.div
               initial={{ width: 0 }}
@@ -115,25 +108,15 @@ export function TimezoneCard({ now }: { now: Date }) {
 
         <div className="h-px w-full bg-border/40" />
 
-        {/* Riyadh Section */}
-        <div className="space-y-4">
+        {/* Partner location */}
+        <div className="space-y-3">
           <div className="flex items-end justify-between">
             <div>
-              <p
-                className={cn(
-                  "mb-1 text-xs font-bold uppercase tracking-wider",
-                  "text-primary/80",
-                )}
-              >
-                Tabuk, KSA
+              <p className="mb-1 text-xs font-bold uppercase tracking-wider text-primary/80">
+                {PARTNER_CITY}
               </p>
               <div className="flex items-baseline gap-1">
-                <span
-                  className={cn(
-                    "text-3xl font-bold tracking-tight",
-                    "text-primary",
-                  )}
-                >
+                <span className="text-3xl font-bold tracking-tight text-primary">
                   {partnerHour12}
                   <span className="inline-block -translate-y-0.5">:</span>
                   {partnerMinute.toString().padStart(2, "0")}
@@ -142,6 +125,12 @@ export function TimezoneCard({ now }: { now: Date }) {
                   {partnerAmPm}
                 </span>
               </div>
+              {partnerIsAsleep && (
+                <p className="mt-1 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-blue-400/60">
+                  <BedDouble className="h-3 w-3" />
+                  Probably sleeping
+                </p>
+              )}
             </div>
             <div className="rounded-full bg-primary/10 p-2.5 shadow-inner">
               {partnerIsDay ? (
@@ -151,16 +140,14 @@ export function TimezoneCard({ now }: { now: Date }) {
               )}
             </div>
           </div>
-          {/* Daylight Progress Track */}
           <div className="h-1.5 w-full overflow-hidden rounded-full bg-black/20">
             <motion.div
               initial={{ width: 0 }}
               animate={{ width: `${partnerProgress}%` }}
               transition={{ duration: 1.2, ease: "easeOut" }}
               className={cn(
-                "h-full rounded-full shadow-[0_0_10px_rgba(0,0,0,0.5)]",
+                "h-full rounded-full",
                 partnerIsDay ? "bg-yellow-500/80" : "bg-blue-500/80",
-                "shadow-current",
               )}
             />
           </div>

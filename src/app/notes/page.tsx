@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
 import {
@@ -25,6 +24,10 @@ import {
   Copy,
   CheckCheck,
   Sparkles,
+  Heart,
+  Pin,
+  PinOff,
+  Search,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -34,6 +37,9 @@ import {
   getCurrentAuthor,
   getLatestNoteTimestamp,
   getNoteCount,
+  getNoteCountByAuthor,
+  reactToNote,
+  togglePinNote,
   type Note,
 } from "@/app/actions/notes";
 import { MAX_CONTENT_LENGTH, PAGE_SIZE } from "@/lib/notes-constants";
@@ -44,9 +50,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-
-declare let window: any;
-declare let document: any;
+import { vibrate } from "@/lib/haptic";
 
 type Filter = "all" | "T7SEN" | "Besho";
 
@@ -57,12 +61,10 @@ function formatRelativeDate(timestamp: number): string {
   const minutes = Math.floor(diff / 60_000);
   const hours = Math.floor(diff / 3_600_000);
   const days = Math.floor(diff / 86_400_000);
-
   if (minutes < 1) return "Just now";
   if (minutes < 60) return `${minutes}m ago`;
   if (hours < 24) return `${hours}h ago`;
   if (days < 7) return `${days}d ago`;
-
   return new Intl.DateTimeFormat("en-US", {
     month: "short",
     day: "numeric",
@@ -80,14 +82,10 @@ function formatAbsoluteDate(timestamp: number): string {
   }).format(new Date(timestamp));
 }
 
-function resizeTextarea(el: HTMLTextAreaElement | null, minHeight = 120) {
-  if (!el) return;
-
-  // Cast to 'any' to bypass the conflicting React 19 / Next.js 16 strict DOM types.
-  // This guarantees the compiler won't complain, while flawless runtime functionality is preserved.
-  const target = el as any;
-  target.style.height = "auto";
-  target.style.height = `${Math.max(target.scrollHeight, minHeight)}px`;
+function resizeTextarea(el: HTMLTextAreaElement, minHeight = 120) {
+  const elem = el as HTMLElement;
+  elem.style.height = "auto";
+  elem.style.height = `${Math.max(el.scrollHeight, minHeight)}px`;
 }
 
 // ─── Page ────────────────────────────────────────────────────────────────────
@@ -102,21 +100,21 @@ export default function NotesPage() {
   const [page, setPage] = useState(0);
   const [currentAuthor, setCurrentAuthor] = useState<string | null>(null);
   const [noteCount, setNoteCount] = useState<number | null>(null);
+  const [authorCounts, setAuthorCounts] = useState<{
+    T7SEN: number;
+    Besho: number;
+  } | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
   const [composeContent, setComposeContent] = useState("");
   const [newerNotesAvailable, setNewerNotesAvailable] = useState(false);
   const [justConfirmedId, setJustConfirmedId] = useState<string | null>(null);
   const [showScrollTop, setShowScrollTop] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
 
-  // Derived — no separate state needed
   const charCount = composeContent.length;
-
   const [state, action, isPending] = useActionState(saveNote, null);
   const formRef = useRef<HTMLFormElement>(null);
   const composeRef = useRef<HTMLTextAreaElement>(null);
-  const loadMoreRef = useRef<HTMLButtonElement>(null);
-
-  // Ref so the polling interval can read latest notes without re-subscribing
   const notesRef = useRef<Note[]>([]);
 
   useEffect(() => {
@@ -125,25 +123,29 @@ export default function NotesPage() {
 
   // ── Initial load ──
   useEffect(() => {
-    Promise.all([getNotes(0), getCurrentAuthor(), getNoteCount()]).then(
-      ([{ notes: initial, hasMore: more }, author, count]) => {
-        setNotes(initial);
-        setHasMore(more);
-        setCurrentAuthor(author);
-        setNoteCount(count);
-        setIsLoading(false);
-      },
-    );
+    Promise.all([
+      getNotes(0),
+      getCurrentAuthor(),
+      getNoteCount(),
+      getNoteCountByAuthor(),
+    ]).then(([{ notes: initial, hasMore: more }, author, count, counts]) => {
+      setNotes(initial);
+      setHasMore(more);
+      setCurrentAuthor(author);
+      setNoteCount(count);
+      setAuthorCounts(counts);
+      setIsLoading(false);
+    });
   }, []);
 
-  // ── Scroll-to-top visibility ──
+  // ── Scroll to top visibility ──
   useEffect(() => {
     const onScroll = () => setShowScrollTop(window.scrollY > 500);
     window.addEventListener("scroll", onScroll, { passive: true });
     return () => window.removeEventListener("scroll", onScroll);
   }, []);
 
-  // ── 30s polling for new notes ──
+  // ── 30s polling ──
   useEffect(() => {
     const poll = async () => {
       if (document.visibilityState === "hidden") return;
@@ -153,43 +155,59 @@ export default function NotesPage() {
         setNewerNotesAvailable(true);
       }
     };
-
     const id = setInterval(poll, 30_000);
     return () => clearInterval(id);
+  }, []);
+
+  // ── Share target prefill ──
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const parts = [
+      params.get("title"),
+      params.get("text"),
+      params.get("url"),
+    ].filter(Boolean);
+    if (parts.length === 0) return;
+    const prefill = parts.join("\n");
+    window.history.replaceState(null, "", "/notes");
+    setTimeout(() => {
+      setComposeContent(prefill);
+      if (composeRef.current) {
+        composeRef.current.focus();
+        resizeTextarea(composeRef.current);
+      }
+    }, 0);
   }, []);
 
   // ── Post-save ──
   useEffect(() => {
     if (!state?.success) return;
-
-    // Cast to 'any' to bypass the broken HTMLFormElement type definition
-    (formRef.current as any)?.reset();
-
-    // Also update the composeRef line here just in case it throws the same error later!
-    if (composeRef.current) (composeRef.current as any).style.height = "auto";
+    formRef.current?.reset();
+    if (composeRef.current) composeRef.current.style.height = "auto";
     window.scrollTo({ top: 0, behavior: "smooth" });
 
-    getNotes(0).then(({ notes: refreshed, hasMore: more }) => {
-      setNotes(refreshed);
-      setHasMore(more);
-      setPage(0);
-      setOptimisticNotes([]);
-      setComposeContent("");
-      setNewerNotesAvailable(false);
-      // Pulse the confirmed note briefly
-      const confirmedId = refreshed[0]?.id ?? null;
-      setJustConfirmedId(confirmedId);
-      setTimeout(() => setJustConfirmedId(null), 2000);
-    });
-
-    getNoteCount().then(setNoteCount);
+    Promise.all([getNotes(0), getNoteCount(), getNoteCountByAuthor()]).then(
+      ([{ notes: refreshed, hasMore: more }, count, counts]) => {
+        setNotes(refreshed);
+        setHasMore(more);
+        setPage(0);
+        setOptimisticNotes([]);
+        setComposeContent("");
+        setNewerNotesAvailable(false);
+        setNoteCount(count);
+        setAuthorCounts(counts);
+        const confirmedId = refreshed[0]?.id ?? null;
+        setJustConfirmedId(confirmedId);
+        setTimeout(() => setJustConfirmedId(null), 2000);
+      },
+    );
   }, [state]);
 
   // ── Optimistic submit ──
   const handleFormSubmit = useCallback(() => {
     const content = composeContent.trim();
     if (!content || !currentAuthor) return;
-
+    vibrate(8);
     setOptimisticNotes((prev) => [
       {
         id: `optimistic-${Date.now()}`,
@@ -204,14 +222,13 @@ export default function NotesPage() {
   // ── Refresh ──
   const handleRefresh = async () => {
     setIsRefreshing(true);
-    const [{ notes: refreshed, hasMore: more }, count] = await Promise.all([
-      getNotes(0),
-      getNoteCount(),
-    ]);
+    const [{ notes: refreshed, hasMore: more }, count, counts] =
+      await Promise.all([getNotes(0), getNoteCount(), getNoteCountByAuthor()]);
     setNotes(refreshed);
     setHasMore(more);
     setPage(0);
     setNoteCount(count);
+    setAuthorCounts(counts);
     setNewerNotesAvailable(false);
     setIsRefreshing(false);
   };
@@ -219,13 +236,12 @@ export default function NotesPage() {
   // ── Filter change ──
   const handleFilterChange = async (newFilter: Filter) => {
     setFilter(newFilter);
-
+    setSearchQuery("");
     if (newFilter !== "all" && hasMore) {
       setIsLoadingMore(true);
       let currentPage = page;
       let stillHasMore: boolean = hasMore;
       const allNotes = [...notes];
-
       while (stillHasMore) {
         currentPage++;
         const { notes: more, hasMore: moreExists } =
@@ -233,7 +249,6 @@ export default function NotesPage() {
         allNotes.push(...more);
         stillHasMore = moreExists;
       }
-
       setNotes(allNotes);
       setHasMore(false);
       setPage(currentPage);
@@ -242,20 +257,15 @@ export default function NotesPage() {
   };
 
   // ── Load more ──
-  // Records scroll position before the update and restores it after so the
-  // viewport doesn't jump when new items append below the fold.
   const handleLoadMore = async () => {
     const scrollY = window.scrollY;
     const prevHeight = document.body.scrollHeight;
-
     setIsLoadingMore(true);
     const { notes: more, hasMore: stillMore } = await getNotes(page + 1);
-
     setNotes((prev) => [...prev, ...more]);
     setHasMore(stillMore);
     setPage((p) => p + 1);
     setIsLoadingMore(false);
-
     requestAnimationFrame(() => {
       const delta = document.body.scrollHeight - prevHeight;
       window.scrollTo({ top: scrollY + delta, behavior: "instant" });
@@ -282,23 +292,53 @@ export default function NotesPage() {
     return result;
   };
 
+  // ── React ──
+  const handleReact = async (id: string) => {
+    vibrate(10);
+    const result = await reactToNote(id);
+    if (result.reactions !== undefined) {
+      setNotes((prev) =>
+        prev.map((n) =>
+          n.id === id ? { ...n, reactions: result.reactions } : n,
+        ),
+      );
+    }
+  };
+
+  // ── Pin ──
+  const handlePin = async (id: string) => {
+    vibrate(6);
+    const result = await togglePinNote(id);
+    if (result.pinned !== undefined) {
+      setNotes((prev) =>
+        prev.map((n) => (n.id === id ? { ...n, pinned: result.pinned } : n)),
+      );
+    }
+  };
+
+  // ── Derived display ──
   const allDisplayNotes = [...optimisticNotes, ...notes];
   const filteredNotes =
     filter === "all"
       ? allDisplayNotes
       : allDisplayNotes.filter((n) => n.author === filter);
 
+  const searchedNotes = searchQuery
+    ? filteredNotes.filter((n) =>
+        n.content.toLowerCase().includes(searchQuery.toLowerCase()),
+      )
+    : filteredNotes;
+
   const isOverLimit = charCount > MAX_CONTENT_LENGTH;
 
   return (
     <div className="relative min-h-screen bg-background p-6 md:p-12">
-      {/* Ambient glows */}
       <div className="pointer-events-none fixed inset-0 overflow-hidden">
         <div className="absolute left-[-10%] top-[-10%] h-125 w-125 rounded-full bg-primary/5 blur-[150px]" />
         <div className="absolute bottom-[-10%] right-[-10%] h-125 w-125 rounded-full bg-blue-500/5 blur-[150px]" />
       </div>
 
-      {/* ── Scroll-to-top FAB ── */}
+      {/* Scroll-to-top FAB */}
       <AnimatePresence>
         {showScrollTop && (
           <motion.button
@@ -309,8 +349,7 @@ export default function NotesPage() {
             onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
             aria-label="Scroll to top"
             className={cn(
-              "fixed bottom-8 right-6 z-50",
-              "flex h-11 w-11 items-center justify-center",
+              "fixed bottom-8 right-6 z-50 flex h-11 w-11 items-center justify-center",
               "rounded-full border border-white/10 bg-card/80 backdrop-blur-md",
               "text-muted-foreground shadow-xl shadow-black/30",
               "transition-colors hover:border-primary/30 hover:text-primary",
@@ -321,7 +360,7 @@ export default function NotesPage() {
         )}
       </AnimatePresence>
 
-      {/* ── New notes banner ── */}
+      {/* New notes banner */}
       <AnimatePresence>
         {newerNotesAvailable && (
           <motion.div
@@ -348,7 +387,7 @@ export default function NotesPage() {
       </AnimatePresence>
 
       <div className="relative z-10 mx-auto max-w-3xl space-y-10 pt-4">
-        {/* ── Header ── */}
+        {/* Header */}
         <div className="flex items-center justify-between">
           <Link
             href="/"
@@ -381,7 +420,20 @@ export default function NotesPage() {
           </button>
         </div>
 
-        {/* ── Compose Form ── */}
+        {/* Author counts */}
+        {authorCounts && (
+          <div className="flex items-center gap-3">
+            <span className="text-[10px] font-bold uppercase tracking-widest text-foreground/40">
+              T7SEN: {authorCounts.T7SEN}
+            </span>
+            <span className="text-[10px] text-muted-foreground/20">·</span>
+            <span className="text-[10px] font-bold uppercase tracking-widest text-primary/50">
+              Besho: {authorCounts.Besho}
+            </span>
+          </div>
+        )}
+
+        {/* Compose form */}
         <form
           ref={formRef}
           action={action}
@@ -397,15 +449,13 @@ export default function NotesPage() {
             value={composeContent}
             rows={4}
             onChange={(e) => {
-              const target = e.target as any;
-              setComposeContent(target.value);
-              resizeTextarea(target);
+              setComposeContent(e.target.value);
+              resizeTextarea(e.target);
             }}
             onKeyDown={(e) => {
               if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
                 e.preventDefault();
-                // Bypass broken HTMLFormElement types
-                (formRef.current as any)?.requestSubmit();
+                formRef.current?.requestSubmit();
               }
             }}
             className={cn(
@@ -487,41 +537,80 @@ export default function NotesPage() {
           </p>
         </form>
 
-        {/* ── Filter Tabs ── */}
+        {/* Filter + Search */}
         {!isLoading && (
-          <div className="flex items-center gap-2">
-            {(["all", "T7SEN", "Besho"] as Filter[]).map((f) => (
-              <button
-                key={f}
-                onClick={() => handleFilterChange(f)}
-                disabled={isLoadingMore || undefined}
-                className={cn(
-                  "relative rounded-full px-4 py-1.5 text-xs font-bold uppercase tracking-wider",
-                  "transition-all disabled:opacity-50",
-                  filter === f
-                    ? "text-primary-foreground"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {filter === f && (
-                  <motion.div
-                    layoutId="filter-pill"
-                    className="absolute inset-0 rounded-full bg-primary/80"
-                    transition={{ type: "spring", bounce: 0.2, duration: 0.4 }}
-                  />
-                )}
-                <span className="relative z-10 flex items-center gap-1.5">
-                  {f === "all" ? "All" : f}
-                  {isLoadingMore && f === filter && (
-                    <Loader2 className="h-2.5 w-2.5 animate-spin" />
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              {(["all", "T7SEN", "Besho"] as Filter[]).map((f) => (
+                <button
+                  key={f}
+                  onClick={() => handleFilterChange(f)}
+                  disabled={isLoadingMore || undefined}
+                  className={cn(
+                    "relative rounded-full px-4 py-1.5 text-xs font-bold uppercase tracking-wider",
+                    "transition-all disabled:opacity-50",
+                    filter === f
+                      ? "text-primary-foreground"
+                      : "text-muted-foreground hover:text-foreground",
                   )}
-                </span>
-              </button>
-            ))}
+                >
+                  {filter === f && (
+                    <motion.div
+                      layoutId="filter-pill"
+                      className="absolute inset-0 rounded-full bg-primary/80"
+                      transition={{
+                        type: "spring",
+                        bounce: 0.2,
+                        duration: 0.4,
+                      }}
+                    />
+                  )}
+                  <span className="relative z-10 flex items-center gap-1.5">
+                    {f === "all" ? "All" : f}
+                    {isLoadingMore && f === filter && (
+                      <Loader2 className="h-2.5 w-2.5 animate-spin" />
+                    )}
+                  </span>
+                </button>
+              ))}
+            </div>
+
+            {/* Search input */}
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/40" />
+              <input
+                type="text"
+                placeholder="Search notes…"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className={cn(
+                  "w-full rounded-full border border-white/5 bg-card/40 py-2 pl-9 pr-4",
+                  "text-xs placeholder:text-muted-foreground/30 outline-none backdrop-blur-sm",
+                  "transition-colors focus:border-primary/30",
+                )}
+              />
+              {searchQuery && (
+                <button
+                  onClick={() => setSearchQuery("")}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground/40 hover:text-muted-foreground"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              )}
+            </div>
+
+            {/* Search result count */}
+            {searchQuery && (
+              <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/40">
+                {searchedNotes.length} result
+                {searchedNotes.length !== 1 ? "s" : ""}
+                {hasMore && " (in loaded notes)"}
+              </p>
+            )}
           </div>
         )}
 
-        {/* ── Timeline ── */}
+        {/* Timeline */}
         <div className="space-y-5 pb-24">
           {isLoading ? (
             <div className="space-y-5">
@@ -529,28 +618,28 @@ export default function NotesPage() {
                 <NoteSkeleton key={i} />
               ))}
             </div>
-          ) : filteredNotes.length === 0 ? (
-            <EmptyState filter={filter} />
+          ) : searchedNotes.length === 0 ? (
+            <EmptyState filter={filter} searchQuery={searchQuery} />
           ) : (
             <>
-              {filteredNotes.map((note, index) => (
+              {searchedNotes.map((note, index) => (
                 <NoteItem
                   key={note.id}
                   note={note}
                   index={index}
-                  isLast={index === filteredNotes.length - 1}
+                  isLast={index === searchedNotes.length - 1}
                   currentAuthor={currentAuthor}
                   isOptimistic={note.id.startsWith("optimistic-")}
                   isJustConfirmed={note.id === justConfirmedId}
                   onEdit={handleNoteEdit}
+                  onReact={handleReact}
+                  onPin={handlePin}
                 />
               ))}
 
-              {/* Load more */}
-              {filter === "all" && hasMore && (
+              {filter === "all" && !searchQuery && hasMore && (
                 <div className="flex justify-center pt-2">
                   <button
-                    ref={loadMoreRef}
                     onClick={handleLoadMore}
                     disabled={isLoadingMore || undefined}
                     className={cn(
@@ -570,8 +659,7 @@ export default function NotesPage() {
                 </div>
               )}
 
-              {/* End-of-timeline marker */}
-              {!hasMore && filteredNotes.length > 0 && (
+              {!hasMore && searchedNotes.length > 0 && !searchQuery && (
                 <motion.div
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
@@ -600,7 +688,35 @@ export default function NotesPage() {
 
 // ─── Empty State ──────────────────────────────────────────────────────────────
 
-function EmptyState({ filter }: { filter: Filter }) {
+function EmptyState({
+  filter,
+  searchQuery,
+}: {
+  filter: Filter;
+  searchQuery: string;
+}) {
+  if (searchQuery) {
+    return (
+      <motion.div
+        initial={{ opacity: 0, y: 16 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="flex flex-col items-center gap-6 py-24 text-center"
+      >
+        <div className="flex h-20 w-20 items-center justify-center rounded-full bg-primary/5 ring-1 ring-primary/10">
+          <Search className="h-8 w-8 text-primary/30" />
+        </div>
+        <div className="space-y-2">
+          <h3 className="text-base font-semibold text-foreground/50">
+            No results for &quot;{searchQuery}&quot;
+          </h3>
+          <p className="text-sm text-muted-foreground/50">
+            Try a different search term.
+          </p>
+        </div>
+      </motion.div>
+    );
+  }
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 16 }}
@@ -658,6 +774,8 @@ function NoteItem({
   isOptimistic,
   isJustConfirmed,
   onEdit,
+  onReact,
+  onPin,
 }: {
   note: Note;
   index: number;
@@ -669,6 +787,8 @@ function NoteItem({
     id: string,
     content: string,
   ) => Promise<{ success?: boolean; error?: string }>;
+  onReact: (id: string) => void;
+  onPin: (id: string) => void;
 }) {
   const [isEditing, setIsEditing] = useState(false);
   const [editContent, setEditContent] = useState(note.content);
@@ -690,12 +810,10 @@ function NoteItem({
     setShowOriginal(false);
     setTimeout(() => {
       if (textareaRef.current) {
-        // Bypass broken HTMLTextAreaElement types
-        const target = textareaRef.current as any;
-        target.focus();
-        const len = target.value.length;
-        target.setSelectionRange(len, len);
-        resizeTextarea(target, 112);
+        textareaRef.current.focus();
+        const len = textareaRef.current.value.length;
+        textareaRef.current.setSelectionRange(len, len);
+        resizeTextarea(textareaRef.current, 112);
       }
     }, 50);
   };
@@ -723,8 +841,7 @@ function NoteItem({
   }, [editContent, note.content, note.id, onEdit]);
 
   const handleCopy = () => {
-    // Bypass the strict WorkerNavigator type constraint
-    (navigator as any).clipboard.writeText(note.content);
+    navigator.clipboard.writeText(note.content);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -736,7 +853,6 @@ function NoteItem({
       transition={{ delay: Math.min(index * 0.06, 0.4), duration: 0.4 }}
       className={cn(
         "relative pl-8",
-        // Connector line: only render when not the last item
         !isLast &&
           "before:absolute before:left-2.75 before:top-6 before:h-[calc(100%+1.25rem)] before:w-0.5 before:bg-border/40",
       )}
@@ -746,6 +862,7 @@ function NoteItem({
         className={cn(
           "absolute left-0 top-1.5 h-6 w-6 rounded-full border-4 border-background shadow-sm",
           isOptimistic && "animate-pulse",
+          note.pinned && "ring-1 ring-primary/40",
           isPartner ? "bg-primary" : "bg-foreground/50",
         )}
       />
@@ -767,13 +884,14 @@ function NoteItem({
         className={cn(
           "group flex flex-col gap-3 rounded-2xl border bg-card/20 p-5 backdrop-blur-sm",
           "transition-colors hover:border-white/10",
-          isJustConfirmed ? "border-primary/30" : "border-white/5",
+          note.pinned ? "border-primary/20 bg-primary/5" : "border-white/5",
+          isJustConfirmed && "border-primary/30",
         )}
       >
-        {/* Header row */}
+        {/* Header */}
         <div className="flex items-start justify-between gap-2">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            {/* Author */}
+            {note.pinned && <Pin className="h-2.5 w-2.5 text-primary/60" />}
             <span
               className={cn(
                 "text-[10px] font-bold uppercase tracking-widest",
@@ -785,7 +903,6 @@ function NoteItem({
 
             <span className="text-[10px] text-muted-foreground/30">·</span>
 
-            {/* Relative timestamp */}
             <Tooltip>
               <TooltipTrigger asChild>
                 <span className="cursor-default text-[10px] font-semibold text-muted-foreground/60 transition-colors hover:text-muted-foreground">
@@ -794,13 +911,12 @@ function NoteItem({
               </TooltipTrigger>
               <TooltipContent
                 side="bottom"
-                className="text-white border-white/10 bg-black/80 text-[10px] backdrop-blur-md"
+                className="border-white/10 bg-black/80 text-[10px] backdrop-blur-md"
               >
                 {formatAbsoluteDate(note.createdAt)}
               </TooltipContent>
             </Tooltip>
 
-            {/* Edited badge — tap/click to expand inline, works on mobile */}
             {isEdited && (
               <button
                 onClick={() => setShowOriginal((v) => !v)}
@@ -819,7 +935,6 @@ function NoteItem({
             )}
           </div>
 
-          {/* Action buttons */}
           {!isEditing && !isOptimistic && (
             <div className="flex items-center gap-1 opacity-100 transition-opacity md:opacity-0 md:group-hover:opacity-100">
               <button
@@ -833,6 +948,25 @@ function NoteItem({
                   <Copy className="h-3.5 w-3.5" />
                 )}
               </button>
+
+              {isOwnNote && (
+                <button
+                  onClick={() => onPin(note.id)}
+                  aria-label={note.pinned ? "Unpin note" : "Pin note"}
+                  className={cn(
+                    "rounded-full p-1.5 transition-all",
+                    note.pinned
+                      ? "text-primary hover:bg-primary/10"
+                      : "text-muted-foreground/40 hover:bg-primary/10 hover:text-primary",
+                  )}
+                >
+                  {note.pinned ? (
+                    <PinOff className="h-3.5 w-3.5" />
+                  ) : (
+                    <Pin className="h-3.5 w-3.5" />
+                  )}
+                </button>
+              )}
 
               {isOwnNote && (
                 <button
@@ -857,7 +991,7 @@ function NoteItem({
               transition={{ duration: 0.2 }}
               className="overflow-hidden"
             >
-              <div className="rounded-xl border border-border/30 bg-black/20 p-4 space-y-2">
+              <div className="space-y-2 rounded-xl border border-border/30 bg-black/20 p-4">
                 <div className="flex items-center justify-between">
                   <p className="text-[9px] font-bold uppercase tracking-widest text-muted-foreground/50">
                     Original
@@ -876,7 +1010,7 @@ function NoteItem({
           )}
         </AnimatePresence>
 
-        {/* Note body */}
+        {/* Body */}
         <AnimatePresence mode="wait">
           {isEditing ? (
             <motion.div
@@ -891,9 +1025,8 @@ function NoteItem({
                 ref={textareaRef}
                 value={editContent}
                 onChange={(e) => {
-                  const target = e.target as any;
-                  setEditContent(target.value);
-                  resizeTextarea(target, 112);
+                  setEditContent(e.target.value);
+                  resizeTextarea(e.target, 112);
                 }}
                 onKeyDown={(e) => {
                   if (e.key === "Escape") {
@@ -912,7 +1045,6 @@ function NoteItem({
                   "transition-colors focus:border-primary/50",
                 )}
               />
-
               <div className="flex items-center justify-between">
                 <span
                   className={cn(
@@ -926,7 +1058,6 @@ function NoteItem({
                 >
                   {editCharCount}/{MAX_CONTENT_LENGTH}
                 </span>
-
                 <div className="flex items-center gap-2">
                   {editError && (
                     <p className="text-xs font-medium text-destructive">
@@ -936,11 +1067,7 @@ function NoteItem({
                   <button
                     onClick={handleCancel}
                     disabled={isSaving || undefined}
-                    className={cn(
-                      "flex items-center gap-1 rounded-full border border-border/40",
-                      "px-3 py-1.5 text-xs font-semibold text-muted-foreground",
-                      "transition-all hover:border-border hover:text-foreground disabled:opacity-50",
-                    )}
+                    className="flex items-center gap-1 rounded-full border border-border/40 px-3 py-1.5 text-xs font-semibold text-muted-foreground transition-all hover:border-border hover:text-foreground disabled:opacity-50"
                   >
                     <X className="h-3 w-3" />
                     Cancel
@@ -953,11 +1080,7 @@ function NoteItem({
                       isOverLimit ||
                       undefined
                     }
-                    className={cn(
-                      "flex items-center gap-1 rounded-full bg-primary",
-                      "px-3 py-1.5 text-xs font-semibold text-primary-foreground",
-                      "transition-all hover:scale-105 disabled:opacity-50",
-                    )}
+                    className="flex items-center gap-1 rounded-full bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground transition-all hover:scale-105 disabled:opacity-50"
                   >
                     {isSaving ? (
                       <Loader2 className="h-3 w-3 animate-spin" />
@@ -968,7 +1091,6 @@ function NoteItem({
                   </button>
                 </div>
               </div>
-
               <p className="text-[10px] font-medium uppercase tracking-widest text-muted-foreground/25">
                 Esc to cancel · ⌘ + Enter to save
               </p>
@@ -986,6 +1108,27 @@ function NoteItem({
             </motion.p>
           )}
         </AnimatePresence>
+
+        {/* Reactions footer */}
+        {!isEditing && !isOptimistic && (
+          <div className="flex items-center justify-between pt-1 border-t border-border/20">
+            <button
+              onClick={() => onReact(note.id)}
+              className={cn(
+                "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider",
+                "transition-all hover:scale-105",
+                note.reactions
+                  ? "text-rose-400/80 hover:text-rose-400"
+                  : "text-muted-foreground/30 hover:text-rose-400/60",
+              )}
+            >
+              <Heart
+                className={cn("h-3 w-3", note.reactions && "fill-current")}
+              />
+              {note.reactions ? note.reactions : ""}
+            </button>
+          </div>
+        )}
       </motion.div>
     </motion.div>
   );

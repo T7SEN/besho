@@ -1,5 +1,6 @@
 import { MY_TZ } from "@/lib/constants";
 import { LogoutButton } from "@/components/dashboard/logout-button";
+import { NotificationButton } from "@/components/dashboard/notification-button";
 
 interface HeaderProps {
   now: Date;
@@ -31,7 +32,10 @@ export function Header({ now, author }: HeaderProps) {
           Welcome back to your private space.
         </p>
       </div>
-      <LogoutButton />
+      <div className="flex items-center gap-1 pt-1">
+        <NotificationButton />
+        <LogoutButton />
+      </div>
     </header>
   );
 }
