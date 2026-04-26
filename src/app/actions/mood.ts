@@ -160,23 +160,6 @@ async function sendHugPush(to: string, from: string): Promise<void> {
     url: "/",
   };
 
-  // ── Presence check ──────────────────────────────────────────────────────
-  // "/dashboard" matches what usePresence() registers for the dashboard page
-  try {
-    const currentPage = await redis.get<string>(`presence:${to}`);
-    if (currentPage === "/dashboard") {
-      console.log(`[push] Skipping hug push — ${to} is on dashboard.`);
-      // Still write to history even if skipped
-      await pushNotificationToHistory(to, {
-        ...payload,
-        timestamp: Date.now(),
-      });
-      return;
-    }
-  } catch (err) {
-    console.warn("[push] Presence check failed:", err);
-  }
-
   // ── Write to notification history ───────────────────────────────────────
   try {
     await pushNotificationToHistory(to, {
