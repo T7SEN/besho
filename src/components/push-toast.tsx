@@ -48,7 +48,10 @@ export function PushToast() {
   }, [dismiss]);
 
   return (
-    <div className="fixed left-1/2 top-4 z-100 flex -translate-x-1/2 flex-col gap-2">
+    <div
+      className="fixed left-1/2 z-100 flex -translate-x-1/2 flex-col gap-2"
+      style={{ top: "calc(env(safe-area-inset-top) + 1rem)" }}
+    >
       <AnimatePresence mode="sync">
         {toasts.map((toast) => (
           <motion.div
