@@ -15,6 +15,7 @@ import { Header } from "@/components/dashboard/header";
 import { ErrorBoundary } from "@/components/ui/error-boundary";
 import { getCurrentAuthor } from "@/app/actions/auth";
 import { useFCMRegistration } from "@/hooks/use-fcm-registration";
+import { usePresence } from "@/hooks/use-presence";
 
 function DashboardSkeleton() {
   return (
@@ -38,6 +39,9 @@ export default function DashboardPage() {
 
   // Handle FCM registration with the current authenticated author
   useFCMRegistration(currentAuthor);
+
+  // Handle presence tracking
+  usePresence("/dashboard", !!currentAuthor);
 
   useEffect(() => {
     getCurrentAuthor().then(setCurrentAuthor);

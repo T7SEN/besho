@@ -157,6 +157,12 @@ async function sendHugPush(to: string, from: string): Promise<void> {
     const subscription = await redis.get(`push:subscription:${to}`);
     if (!subscription) return;
 
+    const currentPage = await redis.get<string>(`presence:${to}`);
+    if (currentPage === "/") {
+      console.log(`[push] Skipping hug push — ${to} is on dashboard.`);
+      return;
+    }
+
     const webpush = (await import("web-push")).default;
     webpush.setVapidDetails(
       process.env.VAPID_EMAIL!,

@@ -22,6 +22,7 @@ import {
 import { getCurrentAuthor } from "@/app/actions/auth";
 import { Button } from "@/components/ui/button";
 import { START_DATE } from "@/lib/constants";
+import { usePresence } from "@/hooks/use-presence";
 
 const EMOJI_OPTIONS = [
   "✨",
@@ -81,6 +82,8 @@ export default function TimelinePage() {
 
   const [state, action, isPending] = useActionState(addMilestone, null);
   const formRef = useRef<HTMLFormElement>(null);
+
+  usePresence("/timeline", !!currentAuthor);
 
   useEffect(() => {
     Promise.all([getMilestones(), getCurrentAuthor()]).then(

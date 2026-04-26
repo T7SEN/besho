@@ -43,7 +43,20 @@ export async function getCurrentAuthor(): Promise<"T7SEN" | "Besho" | null> {
   return getSessionAuthor();
 }
 
-// ─── Push notification helper ─────────────────────────────────────────────────
+// ─── Presence-aware push helper ───────────────────────────────────────────────
+//
+// Drop-in replacement for sendPushToUser in src/app/actions/notes.ts
+// Also apply the same pattern to sendHugPush in src/app/actions/mood.ts
+//
+// Behavior:
+//   recipient on /notes       → skip entirely (SSE delivers the note in real-time)
+//   recipient on another page → send FCM (server-side); in-app toast shown by
+//                               useFCMRegistration's pushNotificationReceived
+//   recipient has app closed  → send FCM (OS-level notification shown by Android)
+//
+// The in-app toast vs OS notification distinction is handled automatically:
+//   - App foregrounded: Capacitor intercepts via pushNotificationReceived
+//   - App backgrounded/closed: OS shows the notification natively
 
 async function sendPushToUser(
   toAuthor: "T7SEN" | "Besho",
@@ -58,13 +71,29 @@ async function sendPushToUser(
     return;
   }
 
-  // ── Try FCM first (native Android app) ──────────────────────────────
+  // ── Presence check ────────────────────────────────────────────────────────
+  // If the recipient is already on the destination page, skip the push.
+  // SSE will deliver the update in real-time within 3 seconds.
+  try {
+    const currentPage = await redis.get<string>(`presence:${toAuthor}`);
+    if (currentPage === payload.url) {
+      console.log(
+        `[push] Skipping — ${toAuthor} is already on ${payload.url}.`,
+      );
+      return;
+    }
+  } catch (err) {
+    // If presence check fails, proceed with sending — better to over-notify
+    console.warn("[push] Presence check failed, proceeding with push:", err);
+  }
+
+  // ── FCM (native Android app) ──────────────────────────────────────────────
   const fcmToken = await redis.get<string>(`push:fcm:${toAuthor}`);
   if (fcmToken) {
     try {
-      const { initializeApp, getApps } = await import("firebase-admin/app");
+      const { getApps, initializeApp, cert } =
+        await import("firebase-admin/app");
       const { getMessaging } = await import("firebase-admin/messaging");
-      const { cert } = await import("firebase-admin/app");
 
       if (!getApps().length) {
         initializeApp({
@@ -87,16 +116,20 @@ async function sendPushToUser(
           priority: "high",
         },
       });
-      console.log("[push] FCM notification sent to", toAuthor);
+
+      console.log(`[push] FCM notification sent to ${toAuthor}.`);
       return;
     } catch (err) {
       console.error("[push] FCM send failed, falling back to Web Push:", err);
     }
   }
 
-  // ── Fall back to Web Push (PWA browser) ─────────────────────────────
+  // ── Web Push fallback (PWA browser) ──────────────────────────────────────
   const subscription = await redis.get(`push:subscription:${toAuthor}`);
-  if (!subscription) return;
+  if (!subscription) {
+    console.log(`[push] No subscription found for ${toAuthor}.`);
+    return;
+  }
 
   const webpush = (await import("web-push")).default;
   webpush.setVapidDetails(
@@ -109,6 +142,8 @@ async function sendPushToUser(
     subscription as Parameters<typeof webpush.sendNotification>[0],
     JSON.stringify(payload),
   );
+
+  console.log(`[push] Web Push notification sent to ${toAuthor}.`);
 }
 
 // ─── Legacy migration ─────────────────────────────────────────────────────────

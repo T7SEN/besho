@@ -58,6 +58,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { vibrate } from "@/lib/haptic";
+import { usePresence } from "@/hooks/use-presence";
 
 declare let window: any;
 declare let document: any;
@@ -131,6 +132,8 @@ export default function NotesPage() {
   const composeRef = useRef<HTMLTextAreaElement>(null);
   const notesRef = useRef<Note[]>([]);
   const initialTimestampRef = useRef<number | null>(null);
+
+  usePresence("/notes", !!currentAuthor);
 
   const silentRefresh = useCallback(async () => {
     try {
