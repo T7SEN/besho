@@ -15,6 +15,7 @@ import { Header } from "@/components/dashboard/header";
 import { ErrorBoundary } from "@/components/ui/error-boundary";
 import { getCurrentAuthor } from "@/app/actions/auth";
 import { usePresence } from "@/hooks/use-presence";
+import { SafeWordCard } from "@/components/dashboard/safeword-card";
 
 function DashboardSkeleton() {
   return (
@@ -105,7 +106,11 @@ export default function DashboardPage() {
 
             {/* Mood check-in — full width on mobile, 6 cols on desktop */}
             <div className="md:col-span-6">
-              <MoodCard />
+              <MoodCard currentAuthor={currentAuthor} />
+            </div>
+            {/* Safe Word - full width on mobile, 6 cols on desktop  */}
+            <div className="md:col-span-6">
+              <SafeWordCard currentAuthor={currentAuthor} />
             </div>
           </div>
         )}

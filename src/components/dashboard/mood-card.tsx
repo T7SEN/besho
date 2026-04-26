@@ -2,28 +2,22 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { Heart, Loader2, SmilePlus } from "lucide-react";
+import { Heart, Loader2, SmilePlus, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   getTodayMoods,
   submitMood,
+  submitState,
   sendHug,
   type MoodData,
 } from "@/app/actions/mood";
+import {
+  DAILY_MOOD_OPTIONS,
+  SUB_STATE_OPTIONS,
+  DOM_STATE_OPTIONS,
+  type MoodOption,
+} from "@/lib/mood-constants";
 import { vibrate } from "@/lib/haptic";
-
-const MOOD_EMOJIS = [
-  "😴",
-  "😊",
-  "😍",
-  "🥺",
-  "😤",
-  "🥰",
-  "😂",
-  "🌟",
-  "😌",
-  "🤗",
-] as const;
 
 const UNLOCKED_QUOTES = [
   "Distance means so little when someone means so much.",
@@ -48,12 +42,22 @@ type CardState =
   | "both-submitted"
   | "hug-sent";
 
-export function MoodCard() {
+interface MoodCardProps {
+  currentAuthor: string | null;
+}
+
+export function MoodCard({ currentAuthor }: MoodCardProps) {
   const [moodData, setMoodData] = useState<MoodData | null>(null);
   const [cardState, setCardState] = useState<CardState>("loading");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isSubmittingState, setIsSubmittingState] = useState(false);
   const [isSendingHug, setIsSendingHug] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const isPartner = currentAuthor === "Besho";
+  const stateOptions: MoodOption[] = isPartner
+    ? SUB_STATE_OPTIONS
+    : DOM_STATE_OPTIONS;
 
   const deriveCardState = useCallback((data: MoodData): CardState => {
     if (data.myMood && data.partnerMood) {
@@ -63,7 +67,6 @@ export function MoodCard() {
     return "idle";
   }, []);
 
-  // ── Initial load ──
   useEffect(() => {
     getTodayMoods().then((data) => {
       setMoodData(data);
@@ -71,13 +74,9 @@ export function MoodCard() {
     });
   }, [deriveCardState]);
 
-  // ── Real-time polling — checks every 15s for partner mood updates ──
-  // Stops polling once both moods are in (hug-sent is the terminal state).
   useEffect(() => {
     const poll = () => {
-      // Don't poll if we already have both moods — nothing more to wait for
       if (cardState === "hug-sent") return;
-
       getTodayMoods()
         .then((data) => {
           setMoodData(data);
@@ -85,28 +84,37 @@ export function MoodCard() {
         })
         .catch(console.error);
     };
-
     const id = setInterval(poll, 15_000);
     return () => clearInterval(id);
   }, [cardState, deriveCardState]);
 
-  const handleSelectEmoji = async (emoji: string) => {
+  const handleSelectMood = async (emoji: string) => {
     if (isSubmitting || cardState !== "idle") return;
     void vibrate(50, "medium");
     setIsSubmitting(true);
     setError(null);
-
     const result = await submitMood(emoji);
     if (result.error) {
       setError(result.error);
       setIsSubmitting(false);
       return;
     }
-
     const updated = await getTodayMoods();
     setMoodData(updated);
     setCardState(deriveCardState(updated));
     setIsSubmitting(false);
+  };
+
+  const handleSelectState = async (emoji: string) => {
+    if (isSubmittingState) return;
+    void vibrate(50, "light");
+    setIsSubmittingState(true);
+    const result = await submitState(emoji);
+    if (!result.error) {
+      const updated = await getTodayMoods();
+      setMoodData(updated);
+    }
+    setIsSubmittingState(false);
   };
 
   const handleSendHug = async () => {
@@ -114,26 +122,29 @@ export function MoodCard() {
     void vibrate([50, 60, 50, 60, 100]);
     setIsSendingHug(true);
     setError(null);
-
     const result = await sendHug();
     if (result.error) {
       setError(result.error);
       setIsSendingHug(false);
       return;
     }
-
     const updated = await getTodayMoods();
     setMoodData(updated);
     setCardState("hug-sent");
     setIsSendingHug(false);
   };
 
+  const myStateEmoji = moodData?.myState;
+  const partnerStateEmoji = moodData?.partnerState;
+  const myStateLabel = stateOptions.find(
+    (s) => s.emoji === myStateEmoji,
+  )?.label;
+
   return (
     <div
       className={cn(
-        "relative flex flex-col justify-between overflow-hidden",
-        "rounded-3xl border border-white/5 bg-card/40 p-8",
-        "backdrop-blur-xl shadow-xl shadow-black/20 transition-colors",
+        "relative flex flex-col overflow-hidden rounded-3xl border border-white/5",
+        "bg-card/40 p-8 backdrop-blur-xl shadow-xl shadow-black/20 transition-colors",
         cardState === "both-submitted" || cardState === "hug-sent"
           ? "border-primary/20"
           : "hover:border-primary/20",
@@ -149,8 +160,7 @@ export function MoodCard() {
         </div>
       </div>
 
-      {/* Body */}
-      <div className="mt-6">
+      <div className="mt-6 space-y-6">
         <AnimatePresence mode="wait">
           {/* ── Loading ── */}
           {cardState === "loading" && (
@@ -165,7 +175,7 @@ export function MoodCard() {
             </motion.div>
           )}
 
-          {/* ── Idle — pick emoji ── */}
+          {/* ── Idle — pick daily mood ── */}
           {cardState === "idle" && (
             <motion.div
               key="idle"
@@ -174,43 +184,39 @@ export function MoodCard() {
               exit={{ opacity: 0, y: -8 }}
               transition={{ duration: 0.25 }}
             >
-              <p className="mb-4 text-sm font-medium text-muted-foreground/60">
+              <p className="mb-3 text-sm font-medium text-muted-foreground/60">
                 How are you feeling today?
               </p>
               <div className="grid grid-cols-5 gap-2">
-                {MOOD_EMOJIS.map((emoji) => (
+                {DAILY_MOOD_OPTIONS.map((option) => (
                   <motion.button
-                    key={emoji}
+                    key={option.emoji}
                     whileHover={{ scale: 1.15 }}
                     whileTap={{ scale: 0.9 }}
-                    onClick={() => handleSelectEmoji(emoji)}
+                    onClick={() => handleSelectMood(option.emoji)}
                     disabled={isSubmitting || undefined}
+                    title={option.label}
                     className={cn(
                       "flex h-11 w-full items-center justify-center rounded-xl",
                       "bg-black/20 text-2xl transition-all hover:bg-primary/10",
                       "disabled:opacity-50",
                     )}
                   >
-                    {isSubmitting ? (
-                      <Loader2 className="h-3 w-3 animate-spin text-muted-foreground/30" />
-                    ) : (
-                      emoji
-                    )}
+                    {option.emoji}
                   </motion.button>
                 ))}
               </div>
             </motion.div>
           )}
 
-          {/* ── Mine submitted, waiting for partner ── */}
+          {/* ── Mine submitted ── */}
           {cardState === "mine-submitted" && (
             <motion.div
               key="mine-submitted"
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
-              transition={{ duration: 0.3 }}
-              className="flex flex-col items-center gap-4 py-4 text-center"
+              className="flex flex-col items-center gap-4 py-2 text-center"
             >
               <motion.div
                 animate={{ scale: [1, 1.1, 1] }}
@@ -283,7 +289,7 @@ export function MoodCard() {
                 &ldquo;{getDailyQuote()}&rdquo;
               </p>
 
-              {/* Hug button */}
+              {/* Hug */}
               <AnimatePresence mode="wait">
                 {cardState === "hug-sent" ? (
                   <motion.div
@@ -306,8 +312,7 @@ export function MoodCard() {
                     className={cn(
                       "flex w-full items-center justify-center gap-2 rounded-full",
                       "bg-primary/80 py-2.5 text-xs font-bold uppercase tracking-wider",
-                      "text-primary-foreground transition-all hover:bg-primary",
-                      "disabled:opacity-60",
+                      "text-primary-foreground transition-all hover:bg-primary disabled:opacity-60",
                     )}
                   >
                     {isSendingHug ? (
@@ -322,7 +327,6 @@ export function MoodCard() {
                 )}
               </AnimatePresence>
 
-              {/* Hug received indicator */}
               {moodData?.hugReceivedFrom && (
                 <motion.p
                   initial={{ opacity: 0, y: 4 }}
@@ -337,11 +341,79 @@ export function MoodCard() {
         </AnimatePresence>
 
         {error && (
-          <p className="mt-3 text-center text-xs font-medium text-destructive">
+          <p className="text-center text-xs font-medium text-destructive">
             {error}
           </p>
         )}
       </div>
+
+      {/* ── State picker — always visible once logged in ── */}
+      {cardState !== "loading" && cardState !== "idle" && (
+        <motion.div
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.2 }}
+          className="mt-6 space-y-3 border-t border-border/20 pt-5"
+        >
+          <div className="flex items-center justify-between">
+            <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/40">
+              {isPartner ? "Your vibe right now" : "Your dom state"}
+            </p>
+            {myStateEmoji && (
+              <span className="flex items-center gap-1.5 rounded-full bg-primary/10 px-2.5 py-1 text-[10px] font-bold text-primary/80">
+                <Sparkles className="h-2.5 w-2.5" />
+                {myStateEmoji} {myStateLabel}
+              </span>
+            )}
+          </div>
+
+          <div className="flex flex-wrap gap-1.5">
+            {stateOptions.map((option) => (
+              <motion.button
+                key={option.emoji}
+                whileTap={{ scale: 0.9 }}
+                onClick={() => handleSelectState(option.emoji)}
+                disabled={isSubmittingState || undefined}
+                className={cn(
+                  "flex items-center gap-1.5 rounded-full border px-2.5 py-1",
+                  "text-[10px] font-semibold transition-all disabled:opacity-50",
+                  myStateEmoji === option.emoji
+                    ? "border-primary/40 bg-primary/10 text-primary"
+                    : "border-border/30 bg-black/20 text-muted-foreground/60 hover:border-primary/20 hover:text-muted-foreground",
+                )}
+              >
+                <span className="text-sm">{option.emoji}</span>
+                <span>{option.label}</span>
+              </motion.button>
+            ))}
+          </div>
+
+          {/* Partner's current state */}
+          {partnerStateEmoji && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              className="flex items-center gap-2 rounded-xl bg-primary/5 px-3 py-2"
+            >
+              <span className="text-lg">{partnerStateEmoji}</span>
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-wider text-primary/60">
+                  {isPartner ? "Sir is" : "Besho is"}
+                </p>
+                <p className="text-xs font-semibold text-foreground/60">
+                  {isPartner
+                    ? (DOM_STATE_OPTIONS.find(
+                        (s) => s.emoji === partnerStateEmoji,
+                      )?.label ?? partnerStateEmoji)
+                    : (SUB_STATE_OPTIONS.find(
+                        (s) => s.emoji === partnerStateEmoji,
+                      )?.label ?? partnerStateEmoji)}
+                </p>
+              </div>
+            </motion.div>
+          )}
+        </motion.div>
+      )}
     </div>
   );
 }

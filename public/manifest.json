@@ -40,7 +40,8 @@
           "type": "image/png"
         }
       ]
-    }
+    },
+    { "name": "Tasks", "url": "/tasks" }
   ],
   "share_target": {
     "action": "/notes",

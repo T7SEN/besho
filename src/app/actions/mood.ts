@@ -9,6 +9,8 @@ import { pushNotificationToHistory } from "@/app/actions/notifications";
 export interface MoodData {
   myMood: string | null;
   partnerMood: string | null;
+  myState: string | null;
+  partnerState: string | null;
   myHugSent: boolean;
   hugReceivedFrom: string | null;
 }
@@ -18,10 +20,7 @@ const redis = new Redis({
   token: process.env.KV_REST_API_TOKEN!,
 });
 
-// ── Key helpers ───────────────────────────────────────────────────────────────
-
 function todayInCairo(): string {
-  // Returns YYYY-MM-DD in Cairo local time
   return new Intl.DateTimeFormat("en-CA", {
     timeZone: MY_TZ,
     year: "numeric",
@@ -43,9 +42,8 @@ function secondsUntilMidnight(): number {
 }
 
 const moodKey = (date: string, author: string) => `mood:${date}:${author}`;
+const stateKey = (date: string, author: string) => `state:${date}:${author}`;
 const hugKey = (date: string, from: string) => `mood:hug:${date}:${from}`;
-
-// ── Session helper ────────────────────────────────────────────────────────────
 
 async function getSession() {
   const cookieStore = await cookies();
@@ -54,14 +52,14 @@ async function getSession() {
   return decrypt(value);
 }
 
-// ── Actions ───────────────────────────────────────────────────────────────────
-
 export async function getTodayMoods(): Promise<MoodData> {
   const session = await getSession();
   if (!session?.author) {
     return {
       myMood: null,
       partnerMood: null,
+      myState: null,
+      partnerState: null,
       myHugSent: false,
       hugReceivedFrom: null,
     };
@@ -71,9 +69,18 @@ export async function getTodayMoods(): Promise<MoodData> {
   const partner = author === "T7SEN" ? "Besho" : "T7SEN";
   const today = todayInCairo();
 
-  const [myMood, partnerMood, myHugSent, partnerHugSent] = await Promise.all([
+  const [
+    myMood,
+    partnerMood,
+    myState,
+    partnerState,
+    myHugSent,
+    partnerHugSent,
+  ] = await Promise.all([
     redis.get<string>(moodKey(today, author)),
     redis.get<string>(moodKey(today, partner)),
+    redis.get<string>(stateKey(today, author)),
+    redis.get<string>(stateKey(today, partner)),
     redis.get<string>(hugKey(today, author)),
     redis.get<string>(hugKey(today, partner)),
   ]);
@@ -81,6 +88,8 @@ export async function getTodayMoods(): Promise<MoodData> {
   return {
     myMood: myMood ?? null,
     partnerMood: partnerMood ?? null,
+    myState: myState ?? null,
+    partnerState: partnerState ?? null,
     myHugSent: myHugSent === "1",
     hugReceivedFrom: partnerHugSent === "1" ? partner : null,
   };
@@ -118,6 +127,24 @@ export async function submitMood(
   }
 }
 
+export async function submitState(
+  emoji: string,
+): Promise<{ success?: boolean; error?: string }> {
+  const session = await getSession();
+  if (!session?.author) return { error: "Not authenticated." };
+
+  const today = todayInCairo();
+  const ttl = secondsUntilMidnight();
+
+  try {
+    await redis.set(stateKey(today, session.author), emoji, { ex: ttl });
+    return { success: true };
+  } catch (error) {
+    console.error("[mood] Failed to submit state:", error);
+    return { error: "Failed to save state." };
+  }
+}
+
 export async function sendHug(): Promise<{
   success?: boolean;
   error?: string;
@@ -131,7 +158,6 @@ export async function sendHug(): Promise<{
   const ttl = secondsUntilMidnight();
 
   try {
-    // Check both moods exist before allowing hug
     const [myMood, partnerMood] = await Promise.all([
       redis.get<string>(moodKey(today, author)),
       redis.get<string>(moodKey(today, partner)),
@@ -142,8 +168,6 @@ export async function sendHug(): Promise<{
     }
 
     await redis.set(hugKey(today, author), "1", { ex: ttl });
-
-    // Await push — fire-and-forget gets killed on Vercel before completing
     await sendHugPush(partner, author);
 
     return { success: true };
@@ -157,10 +181,16 @@ async function sendHugPush(to: string, from: string): Promise<void> {
   const payload = {
     title: "💝 Virtual Hug!",
     body: `${from} sent you a hug`,
-    url: "/",
+    url: "/dashboard",
   };
 
-  // ── Write to notification history ───────────────────────────────────────
+  let currentPage: string | null = null;
+  try {
+    currentPage = await redis.get<string>(`presence:${to}`);
+  } catch {
+    /* proceed */
+  }
+
   try {
     await pushNotificationToHistory(to, {
       ...payload,
@@ -170,16 +200,8 @@ async function sendHugPush(to: string, from: string): Promise<void> {
     console.error("[push] Failed to write hug notification history:", err);
   }
 
-  // ── Determine if app is open ────────────────────────────────────────────
-  let currentPage: string | null = null;
-  try {
-    currentPage = await redis.get<string>(`presence:${to}`);
-  } catch {
-    /* proceed */
-  }
   const isAppOpen = currentPage !== null;
 
-  // ── FCM (native Android) ────────────────────────────────────────────────
   const fcmToken = await redis.get<string>(`push:fcm:${to}`);
   if (fcmToken) {
     try {
@@ -220,16 +242,12 @@ async function sendHugPush(to: string, from: string): Promise<void> {
       console.log(`[push] Hug FCM sent to ${to}.`);
       return;
     } catch (err) {
-      console.error("[push] Hug FCM failed, falling back to Web Push:", err);
+      console.error("[push] Hug FCM failed:", err);
     }
   }
 
-  // ── Web Push fallback (PWA) ─────────────────────────────────────────────
   const subscription = await redis.get(`push:subscription:${to}`);
-  if (!subscription) {
-    console.log(`[push] No subscription for ${to}.`);
-    return;
-  }
+  if (!subscription) return;
 
   try {
     const webpush = (await import("web-push")).default;
@@ -243,8 +261,6 @@ async function sendHugPush(to: string, from: string): Promise<void> {
       subscription as Parameters<typeof webpush.sendNotification>[0],
       JSON.stringify(payload),
     );
-
-    console.log(`[push] Hug Web Push sent to ${to}.`);
   } catch (error) {
     console.error("[mood] Web Push failed:", error);
   }
