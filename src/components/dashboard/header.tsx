@@ -1,6 +1,4 @@
 import { MY_TZ } from "@/lib/constants";
-import { LogoutButton } from "@/components/dashboard/logout-button";
-import { NotificationDrawer } from "@/components/dashboard/notification-drawer";
 
 interface HeaderProps {
   now: Date;
@@ -23,7 +21,7 @@ export function Header({ now, author }: HeaderProps) {
   const personalGreeting = author ? `${greeting}, ${author}` : greeting;
 
   return (
-    <header className="flex items-start justify-between pb-2">
+    <header className="flex items-start justify-between pb-2 pr-20">
       <div className="flex flex-col gap-2">
         <h1 className="text-4xl font-extrabold tracking-tight text-foreground">
           {personalGreeting}.
@@ -32,10 +30,7 @@ export function Header({ now, author }: HeaderProps) {
           Welcome back to your private space.
         </p>
       </div>
-      <div className="flex items-center gap-1 pt-1">
-        <NotificationDrawer />
-        <LogoutButton />
-      </div>
+      <div className="flex items-center gap-1 pt-1"></div>
     </header>
   );
 }

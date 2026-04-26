@@ -6,6 +6,7 @@ import { revalidatePath } from "next/cache";
 import { decrypt } from "@/lib/auth-utils";
 import { MAX_CONTENT_LENGTH, PAGE_SIZE } from "@/lib/notes-constants";
 import { pushNotificationToHistory } from "@/app/actions/notifications";
+import { getReactionsForNotes } from "@/app/actions/reactions";
 
 export interface Note {
   id: string;
@@ -239,7 +240,14 @@ export async function getNotes(
     const rawNotes = await redis.mget<(Note | null)[]>(...pageIds.map(noteKey));
     const notes = rawNotes.filter((n): n is Note => n !== null);
 
-    return { notes, hasMore };
+    // Merge reactions from separate Redis hashes into each note
+    const reactionsMap = await getReactionsForNotes(notes.map((n) => n.id));
+    const notesWithReactions = notes.map((n) => ({
+      ...n,
+      reactions: reactionsMap[n.id] ?? {},
+    }));
+
+    return { notes: notesWithReactions, hasMore };
   } catch (error) {
     console.error("[notes] Failed to fetch notes:", error);
     return { notes: [], hasMore: false };
