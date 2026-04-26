@@ -68,7 +68,7 @@ export function BirthdayCard({ now }: { now: Date }) {
         </p>
         <div
           className="flex cursor-default items-start gap-4"
-          onClick={() => isToday && vibrate([10, 50, 10])}
+          onClick={() => isToday && void vibrate([10, 50, 10])}
         >
           <motion.div
             className="mt-1"

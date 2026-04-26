@@ -48,3 +48,6 @@ certificates
 public/sw*
 .vercel
 .env*.local
+
+# Capacitor
+android/

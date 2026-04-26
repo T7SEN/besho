@@ -281,7 +281,7 @@ export default function NotesPage() {
   const handleFormSubmit = useCallback(() => {
     const content = composeContent.trim();
     if (!content || !currentAuthor) return;
-    vibrate(8);
+    void vibrate();
     setOptimisticNotes((prev) => [
       {
         id: `optimistic-${Date.now()}`,
@@ -297,7 +297,7 @@ export default function NotesPage() {
   const handleOfflineSubmit = useCallback(async () => {
     const content = composeContent.trim();
     if (!content || !currentAuthor) return;
-    vibrate(8);
+    void vibrate();
     const id = await storePendingNote(content);
     const pending: PendingNote = { id, content, createdAt: Date.now() };
     setOfflineNotes((prev) => [pending, ...prev]);
@@ -410,7 +410,7 @@ export default function NotesPage() {
 
   // ── React ──
   const handleReact = async (id: string) => {
-    vibrate(10);
+    void vibrate(50, "heavy");
     const result = await reactToNote(id);
     if (result.reactions !== undefined) {
       setNotes((prev) =>
@@ -423,7 +423,7 @@ export default function NotesPage() {
 
   // ── Pin ──
   const handlePin = async (id: string) => {
-    vibrate(6);
+    void vibrate(50, "light");
     const result = await togglePinNote(id);
     if (result.pinned !== undefined) {
       setNotes((prev) =>

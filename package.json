@@ -9,6 +9,12 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@capacitor/android": "^8.3.1",
+    "@capacitor/core": "^8.3.1",
+    "@capacitor/haptics": "^8.0.2",
+    "@capacitor/push-notifications": "^8.0.3",
+    "@capacitor/splash-screen": "^8.0.1",
+    "@capacitor/status-bar": "^8.0.2",
     "@serwist/precaching": "^9.5.7",
     "@serwist/sw": "^9.5.7",
     "@upstash/redis": "^1.37.0",
@@ -30,6 +36,7 @@
     "web-push": "^3.6.7"
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.3.1",
     "@serwist/turbopack": "^9.5.7",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",

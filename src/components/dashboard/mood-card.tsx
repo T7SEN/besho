@@ -92,7 +92,7 @@ export function MoodCard() {
 
   const handleSelectEmoji = async (emoji: string) => {
     if (isSubmitting || cardState !== "idle") return;
-    vibrate(50);
+    void vibrate(50, "medium");
     setIsSubmitting(true);
     setError(null);
 
@@ -111,7 +111,7 @@ export function MoodCard() {
 
   const handleSendHug = async () => {
     if (isSendingHug || cardState !== "both-submitted") return;
-    vibrate([50, 60, 50, 60, 100]);
+    void vibrate([50, 60, 50, 60, 100]);
     setIsSendingHug(true);
     setError(null);
 

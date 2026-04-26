@@ -89,7 +89,7 @@ export function CounterCard({ now }: { now: Date }) {
   );
 
   const handleUnitChange = (unit: TimeUnitKey) => {
-    vibrate(6);
+    void vibrate(50, "medium");
     setActiveUnit(unit);
   };
 

@@ -1,28 +1,53 @@
 /**
- * Triggers a haptic pulse on devices that support the Vibration API.
+ * Unified haptic feedback utility.
  *
- * ✅ Android Chrome — fully supported
- * ❌ Desktop browsers — intentionally unsupported by the spec (no-op)
- * ❌ iOS Safari — not supported; Apple gates haptics at the native layer
+ * On native Android (Capacitor): uses @capacitor/haptics which talks
+ * directly to the Android vibration API — works regardless of DND.
  *
- * The Vibration API unit is milliseconds. The sensory threshold for a
- * felt vibration is ~50ms — this function enforces that as a minimum
- * for scalar values. Array patterns (rhythms) are left untouched.
- *
- * NOTE: The system vibration setting is respected. If the Android device
- * has vibration disabled in Settings → Sound, this will silently no-op.
+ * On PWA (browser): falls back to navigator.vibrate with a 50ms minimum.
+ * Silently ignored on iOS and desktop.
  */
-export function vibrate(pattern: number | number[] = 50): void {
-  const win = globalThis as unknown as {
-    navigator?: {
-      vibrate?: (pattern: number | number[]) => boolean;
-    };
-  };
 
+type HapticStyle = "light" | "medium" | "heavy";
+
+function isNative(): boolean {
+  const cap = (
+    globalThis as unknown as {
+      Capacitor?: { isNativePlatform?: () => boolean };
+    }
+  ).Capacitor;
+  return typeof cap !== "undefined" && !!cap.isNativePlatform?.();
+}
+
+export async function vibrate(
+  pattern: number | number[] = 50,
+  style: HapticStyle = "medium",
+): Promise<void> {
+  if (isNative()) {
+    try {
+      const { Haptics, ImpactStyle } = await import("@capacitor/haptics");
+      const styleMap: Record<
+        HapticStyle,
+        (typeof ImpactStyle)[keyof typeof ImpactStyle]
+      > = {
+        light: ImpactStyle.Light,
+        medium: ImpactStyle.Medium,
+        heavy: ImpactStyle.Heavy,
+      };
+      await Haptics.impact({ style: styleMap[style] });
+    } catch (err) {
+      console.error("[haptic] Capacitor haptics failed:", err);
+    }
+    return;
+  }
+
+  // PWA fallback
+  const win = globalThis as unknown as {
+    navigator?: { vibrate?: (pattern: number | number[]) => boolean };
+  };
   if (!win.navigator?.vibrate) return;
 
   const corrected =
     typeof pattern === "number" ? Math.max(pattern, 50) : pattern;
-
   win.navigator.vibrate(corrected);
 }

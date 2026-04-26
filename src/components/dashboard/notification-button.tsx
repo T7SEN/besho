@@ -4,22 +4,6 @@ import { useState, useEffect } from "react";
 import { Bell, BellOff, BellRing } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-// PushManager.subscribe() requires applicationServerKey as a Uint8Array.
-// Passing the raw base64 string from NEXT_PUBLIC_VAPID_PUBLIC_KEY causes
-// Chrome to throw DOMException silently. This conversion is the fix.
-// new ArrayBuffer() is explicit so TS infers Uint8Array<ArrayBuffer>
-// rather than Uint8Array<ArrayBufferLike>, satisfying the PushSubscriptionOptionsInit type.
-function urlBase64ToUint8Array(base64String: string): Uint8Array<ArrayBuffer> {
-  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
-  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
-  const rawData = atob(base64);
-  const outputArray = new Uint8Array(new ArrayBuffer(rawData.length));
-  for (let i = 0; i < rawData.length; i++) {
-    outputArray[i] = rawData.charCodeAt(i);
-  }
-  return outputArray;
-}
-
 export function NotificationButton() {
   const [permission, setPermission] =
     useState<NotificationPermission>("default");
@@ -57,13 +41,16 @@ export function NotificationButton() {
       .catch((err) => console.error("Failed to get subscription:", err));
   }, []);
 
-  // Don't render on unsupported platforms
+  // Don't render on native Capacitor (no Web Push in WebView)
+  // or on unsupported platforms
   const win = globalThis as unknown as {
     Notification?: unknown;
     navigator?: { serviceWorker?: unknown };
     PushManager?: unknown;
+    Capacitor?: { isNativePlatform?: () => boolean };
   };
 
+  if (win.Capacitor?.isNativePlatform?.()) return null;
   if (!win.Notification || !win.navigator?.serviceWorker || !win.PushManager) {
     return null;
   }
@@ -101,9 +88,7 @@ export function NotificationButton() {
       const reg = await navigator.serviceWorker.ready;
       const sub = await reg.pushManager.subscribe({
         userVisibleOnly: true,
-        applicationServerKey: urlBase64ToUint8Array(
-          process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY!,
-        ),
+        applicationServerKey: process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY!,
       });
 
       await fetch("/api/push/subscribe", {
