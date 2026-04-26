@@ -170,7 +170,7 @@ export function NotificationDrawer() {
                   transition={{ type: "spring", bounce: 0.2, duration: 0.4 }}
                   onClick={(e) => e.stopPropagation()}
                   className={cn(
-                    "fixed z-50 w-96 overflow-hidden",
+                    "fixed z-50 w-96 max-w-[calc(100vw-2rem)] overflow-hidden",
                     "rounded-2xl border border-white/10 bg-card/95 shadow-2xl shadow-black/40",
                     "backdrop-blur-xl",
                   )}
