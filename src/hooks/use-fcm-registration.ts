@@ -98,11 +98,16 @@ export function useFCMRegistration(author: string | null) {
           "pushNotificationReceived",
           (notification) => {
             if (cancelled) return;
-            dispatchPushToast({
-              title: notification.title ?? "Our Space",
-              body: notification.body ?? "",
-              url: notification.data?.url as string | undefined,
-            });
+            const title =
+              notification.title ??
+              (notification.data?.title as string | undefined) ??
+              "Our Space";
+            const body =
+              notification.body ??
+              (notification.data?.body as string | undefined) ??
+              "";
+            const url = notification.data?.url as string | undefined;
+            dispatchPushToast({ title, body, url });
           },
         );
 

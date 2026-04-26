@@ -74,8 +74,9 @@ async function sendPushToUser(
   // ── Presence check ────────────────────────────────────────────────────────
   // If the recipient is already on the destination page, skip the push.
   // SSE will deliver the update in real-time within 3 seconds.
+  let currentPage: string | null = null;
   try {
-    const currentPage = await redis.get<string>(`presence:${toAuthor}`);
+    currentPage = await redis.get<string>(`presence:${toAuthor}`);
     if (currentPage === payload.url) {
       console.log(
         `[push] Skipping — ${toAuthor} is already on ${payload.url}.`,
@@ -83,7 +84,6 @@ async function sendPushToUser(
       return;
     }
   } catch (err) {
-    // If presence check fails, proceed with sending — better to over-notify
     console.warn("[push] Presence check failed, proceeding with push:", err);
   }
 
@@ -105,16 +105,28 @@ async function sendPushToUser(
         });
       }
 
+      const isAppOpen = currentPage !== null;
+
       await getMessaging().send({
         token: fcmToken,
-        notification: {
-          title: payload.title,
-          body: payload.body,
-        },
-        data: { url: payload.url },
-        android: {
-          priority: "high",
-        },
+        ...(isAppOpen
+          ? {
+              data: {
+                url: payload.url,
+                title: payload.title,
+                body: payload.body,
+              },
+            }
+          : {
+              notification: {
+                title: payload.title,
+                body: payload.body,
+              },
+              data: { url: payload.url },
+              android: {
+                priority: "high",
+              },
+            }),
       });
 
       console.log(`[push] FCM notification sent to ${toAuthor}.`);
