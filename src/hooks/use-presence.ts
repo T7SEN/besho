@@ -2,7 +2,7 @@
 
 import { useEffect } from "react";
 
-const HEARTBEAT_INTERVAL_MS = 10_000;
+const HEARTBEAT_INTERVAL_MS = 8_000;
 
 async function setPresence(page: string): Promise<void> {
   try {
@@ -39,7 +39,7 @@ function isNative(): boolean {
 }
 
 /**
- * Tracks the user's current page in Redis with a 30s TTL.
+ * Tracks the user's current page in Redis with a 10s TTL.
  * On native Android: uses Capacitor App state for reliable background detection.
  * On PWA: uses visibilitychange + pagehide browser events.
  */

@@ -8,7 +8,7 @@ const redis = new Redis({
   token: process.env.KV_REST_API_TOKEN!,
 });
 
-const PRESENCE_TTL = 15; // seconds — must be longer than the heartbeat interval in usePresence
+const PRESENCE_TTL = 10; // seconds — must be longer than the heartbeat interval in usePresence
 const presenceKey = (author: string) => `presence:${author}`;
 
 export async function POST(req: NextRequest) {
