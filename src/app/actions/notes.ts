@@ -49,6 +49,11 @@ async function sendPushToUser(
   toAuthor: "T7SEN" | "Besho",
   payload: { title: string; body: string; url: string },
 ): Promise<void> {
+  console.log("[push] VAPID check:", {
+    email: process.env.VAPID_EMAIL,
+    publicKeyLength: process.env.VAPID_PUBLIC_KEY?.length,
+    privateKeyLength: process.env.VAPID_PRIVATE_KEY?.length,
+  });
   if (
     !process.env.VAPID_EMAIL ||
     !process.env.VAPID_PUBLIC_KEY ||
@@ -255,11 +260,6 @@ export async function saveNote(prevState: unknown, formData: FormData) {
         title: `${author} wrote a note`,
         body: newNote.content.slice(0, 100),
         url: "/notes",
-      });
-      console.log("[push] VAPID check:", {
-        email: process.env.VAPID_EMAIL,
-        publicKeyLength: process.env.VAPID_PUBLIC_KEY?.length,
-        privateKeyLength: process.env.VAPID_PRIVATE_KEY?.length,
       });
     } catch (pushError) {
       console.error("[push] Failed to notify partner:", pushError);
