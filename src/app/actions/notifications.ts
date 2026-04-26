@@ -93,3 +93,14 @@ export async function pushNotificationToHistory(
     console.error("[notifications] Failed to push to history:", error);
   }
 }
+
+export async function clearAllNotifications(): Promise<void> {
+  const author = await getSessionAuthor();
+  if (!author) return;
+
+  try {
+    await redis.del(historyKey(author));
+  } catch (error) {
+    console.error("[notifications] Failed to clear history:", error);
+  }
+}

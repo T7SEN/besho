@@ -87,11 +87,11 @@ export default function RootLayout({
           >
             <TooltipProvider>
               <BiometricGate>
+                <TopNavbar />
                 {children}
                 <CapacitorInit />
                 <PushToast />
                 <FCMProvider />
-                <TopNavbar />
                 <FloatingNavbar />
               </BiometricGate>
               <SpeedInsights />
