@@ -7,8 +7,6 @@ import { TimezoneCard } from "@/components/dashboard/timezone-card";
 import { QuoteCard } from "@/components/dashboard/quote-card";
 import { BirthdayCard } from "@/components/dashboard/birthday-card";
 import { DistanceCard } from "@/components/dashboard/distance-card";
-import { NotebookCard } from "@/components/dashboard/notebook-card";
-import { NextVisitCard } from "@/components/dashboard/next-visit-card";
 import { MoonPhaseCard } from "@/components/dashboard/moon-phase-card";
 import { MoodCard } from "@/components/dashboard/mood-card";
 import { Header } from "@/components/dashboard/header";
@@ -20,15 +18,15 @@ import { SafeWordCard } from "@/components/dashboard/safeword-card";
 function DashboardSkeleton() {
   return (
     <div className="grid animate-pulse grid-cols-1 gap-6 md:grid-cols-12">
-      <div className="h-72 rounded-3xl bg-muted/20 md:col-span-12" />
+      <div className="h-40 rounded-3xl bg-muted/20 md:col-span-12" />
+      <div className="h-64 rounded-3xl bg-muted/20 md:col-span-8" />
+      <div className="h-64 rounded-3xl bg-muted/20 md:col-span-4" />
+      <div className="h-48 rounded-3xl bg-muted/20 md:col-span-4" />
+      <div className="h-48 rounded-3xl bg-muted/20 md:col-span-4" />
+      <div className="h-48 rounded-3xl bg-muted/20 md:col-span-4" />
       <div className="h-48 rounded-3xl bg-muted/20 md:col-span-6" />
       <div className="h-48 rounded-3xl bg-muted/20 md:col-span-6" />
-      <div className="h-48 rounded-3xl bg-muted/20 md:col-span-4" />
-      <div className="h-48 rounded-3xl bg-muted/20 md:col-span-4" />
-      <div className="h-48 rounded-3xl bg-muted/20 md:col-span-4" />
-      <div className="h-64 rounded-3xl bg-muted/20 md:col-span-4" />
-      <div className="h-64 rounded-3xl bg-muted/20 md:col-span-4" />
-      <div className="h-64 rounded-3xl bg-muted/20 md:col-span-4" />
+      <div className="h-32 rounded-3xl bg-muted/20 md:col-span-12" />
     </div>
   );
 }
@@ -37,7 +35,6 @@ export default function DashboardPage() {
   const [now, setNow] = useState<Date | null>(null);
   const [currentAuthor, setCurrentAuthor] = useState<string | null>(null);
 
-  // Handle presence tracking
   usePresence("/dashboard", !!currentAuthor);
 
   useEffect(() => {
@@ -64,17 +61,36 @@ export default function DashboardPage() {
         {!now ? (
           <DashboardSkeleton />
         ) : (
-          <div className="grid grid-cols-1 gap-6 md:grid-cols-12">
-            {/* Counter — full width */}
+          <div className="grid grid-cols-1 gap-6 md:grid-cols-12 md:items-stretch">
+            {/* ── Row 1: Counter — full width, hero ── */}
             <div className="md:col-span-12">
               <CounterCard now={now} />
             </div>
 
-            {/* Weather | Quote */}
-            <div className="md:col-span-6">
+            {/* ── Row 2: Mood (8 cols) + Weather (4 cols) ── */}
+            <div className="md:col-span-8 md:h-full">
+              <MoodCard currentAuthor={currentAuthor} />
+            </div>
+            <div className="md:col-span-4 md:h-full">
               <ErrorBoundary label="WeatherCard">
                 <WeatherCard />
               </ErrorBoundary>
+            </div>
+
+            {/* ── Row 3: Timezone | Birthday | Moon ── */}
+            <div className="md:col-span-4 md:h-full">
+              <TimezoneCard now={now} />
+            </div>
+            <div className="md:col-span-4 md:h-full">
+              <BirthdayCard now={now} />
+            </div>
+            <div className="md:col-span-4 md:h-full">
+              <MoonPhaseCard now={now} />
+            </div>
+
+            {/* ── Row 4: Distance | Quote ── */}
+            <div className="md:col-span-6">
+              <DistanceCard />
             </div>
             <div className="md:col-span-6">
               <ErrorBoundary label="QuoteCard">
@@ -82,34 +98,8 @@ export default function DashboardPage() {
               </ErrorBoundary>
             </div>
 
-            {/* Notebook | Distance | Next Visit */}
-            <div className="md:col-span-4">
-              <NotebookCard />
-            </div>
-            <div className="md:col-span-4">
-              <DistanceCard />
-            </div>
-            <div className="md:col-span-4">
-              <NextVisitCard now={now} />
-            </div>
-
-            {/* Timezone | Birthday | Moon */}
-            <div className="md:col-span-4">
-              <TimezoneCard now={now} />
-            </div>
-            <div className="md:col-span-4">
-              <BirthdayCard now={now} />
-            </div>
-            <div className="md:col-span-4">
-              <MoonPhaseCard now={now} />
-            </div>
-
-            {/* Mood check-in — full width on mobile, 6 cols on desktop */}
-            <div className="md:col-span-6">
-              <MoodCard currentAuthor={currentAuthor} />
-            </div>
-            {/* Safe Word - full width on mobile, 6 cols on desktop  */}
-            <div className="md:col-span-6">
+            {/* ── Row 5: Safe Word — bottom, rarely used ── */}
+            <div className="md:col-span-12">
               <SafeWordCard currentAuthor={currentAuthor} />
             </div>
           </div>

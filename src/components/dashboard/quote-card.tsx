@@ -27,7 +27,7 @@ export function QuoteCard() {
   return (
     <div
       className={cn(
-        "relative flex flex-col justify-between overflow-hidden",
+        "relative flex h-full flex-col justify-between overflow-hidden",
         "rounded-3xl border border-white/5 bg-card/40 p-8",
         "backdrop-blur-xl shadow-xl shadow-black/20 transition-colors",
         "hover:border-primary/20",

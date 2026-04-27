@@ -43,7 +43,7 @@ export function TimezoneCard({ now }: { now: Date }) {
   return (
     <div
       className={cn(
-        "flex flex-col gap-8 rounded-3xl border border-white/5",
+        "flex h-full flex-col gap-8 rounded-3xl border border-white/5",
         "bg-card/40 p-8 backdrop-blur-xl shadow-xl shadow-black/20",
         "transition-colors hover:border-primary/20",
       )}
