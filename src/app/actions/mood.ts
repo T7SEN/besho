@@ -186,7 +186,20 @@ async function sendHugPush(to: string, from: string): Promise<void> {
 
   let currentPage: string | null = null;
   try {
-    currentPage = await redis.get<string>(`presence:${to}`);
+    const presenceRaw = await redis.get<string>(`presence:${to}`);
+    if (presenceRaw) {
+      try {
+        const { page, ts } = JSON.parse(presenceRaw) as {
+          page: string;
+          ts: number;
+        };
+        if (Date.now() - ts < 12_000) {
+          currentPage = page;
+        }
+      } catch {
+        currentPage = presenceRaw;
+      }
+    }
   } catch {
     /* proceed */
   }

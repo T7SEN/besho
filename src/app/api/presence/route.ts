@@ -24,7 +24,11 @@ export async function POST(req: NextRequest) {
   }
 
   // Store current page with TTL — if heartbeat stops, presence expires
-  await redis.set(presenceKey(session.author), page, { ex: PRESENCE_TTL });
+  await redis.set(
+    presenceKey(session.author),
+    JSON.stringify({ page, ts: Date.now() }),
+    { ex: PRESENCE_TTL },
+  );
 
   return NextResponse.json({ success: true });
 }

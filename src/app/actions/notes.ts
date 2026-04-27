@@ -66,7 +66,22 @@ async function sendPushToUser(
   // ── Presence check ────────────────────────────────────────────────────────
   let currentPage: string | null = null;
   try {
-    currentPage = await redis.get<string>(`presence:${toAuthor}`);
+    const presenceRaw = await redis.get<string>(`presence:${toAuthor}`);
+    if (presenceRaw) {
+      try {
+        const { page, ts } = JSON.parse(presenceRaw) as {
+          page: string;
+          ts: number;
+        };
+        const ageMs = Date.now() - ts;
+        // Only consider active if heartbeat was within 12s (heartbeat is every 8s)
+        if (ageMs < 12_000) {
+          currentPage = page;
+        }
+      } catch {
+        currentPage = presenceRaw; // backward compat with old string format
+      }
+    }
     if (currentPage === payload.url) {
       console.log(`[push] Skipping — ${toAuthor} is on ${payload.url}.`);
       return;
