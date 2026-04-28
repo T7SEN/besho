@@ -1,57 +1,40 @@
 "use client";
 
-import { useActionState, useEffect, useRef } from "react";
+import { useActionState } from "react";
 import { motion } from "motion/react";
 import { Lock, ArrowRight, Loader2 } from "lucide-react";
 import { login } from "@/app/actions/auth";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
+// Must match the constant in biometric-gate.tsx
 const SKIP_BIOMETRIC_KEY = "ourspace_skip_biometric";
+
+type SessionStorageLike = {
+  setItem: (k: string, v: string) => void;
+};
+
+/**
+ * Sets the biometric skip flag synchronously in the form's onSubmit
+ * handler — NOT in a useEffect. The login server action calls redirect()
+ * which navigates the page away before any useEffect can fire, so the
+ * flag would never be written that way. onSubmit fires before the action
+ * starts, guaranteeing the flag is present when BiometricGate mounts on
+ * the subsequent "/" route.
+ */
+function writeSkipFlag() {
+  try {
+    const ss = (
+      globalThis as unknown as { sessionStorage?: SessionStorageLike }
+    ).sessionStorage;
+    ss?.setItem(SKIP_BIOMETRIC_KEY, "1");
+  } catch {
+    /* sessionStorage unavailable — gate will prompt once more, acceptable */
+  }
+}
 
 export default function LoginPage() {
   const [state, action, isPending] = useActionState(login, null);
-
-  const hasSubmitted = useRef(false);
-
-  useEffect(() => {
-    if (isPending) {
-      hasSubmitted.current = true;
-      return;
-    }
-    if (!hasSubmitted.current || state?.error) return;
-
-    // Successful login — write a one-time session flag so BiometricGate
-    // skips the auto-trigger and goes straight to unlocked. Without this,
-    // the gate re-prompts biometric immediately after every password login.
-    try {
-      const ss = (
-        globalThis as unknown as {
-          sessionStorage?: { setItem: (k: string, v: string) => void };
-        }
-      ).sessionStorage;
-      ss?.setItem(SKIP_BIOMETRIC_KEY, "1");
-    } catch {
-      /* sessionStorage unavailable — gate will still function, just prompts once more */
-    }
-
-    const cap = (
-      globalThis as unknown as {
-        Capacitor?: { isNativePlatform?: () => boolean };
-      }
-    ).Capacitor;
-
-    if (!cap?.isNativePlatform?.()) return;
-
-    void (async () => {
-      try {
-        const { Preferences } = await import("@capacitor/preferences");
-        await Preferences.set({ key: "biometric_enrolled", value: "true" });
-      } catch (err) {
-        console.error("[biometric] Failed to set enrolled flag:", err);
-      }
-    })();
-  }, [isPending, state]);
 
   return (
     <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-background p-6">
@@ -88,7 +71,11 @@ export default function LoginPage() {
             </p>
           </div>
 
-          <form action={action} className="w-full space-y-4">
+          <form
+            action={action}
+            onSubmit={writeSkipFlag}
+            className="w-full space-y-4"
+          >
             <div className="space-y-2">
               <input
                 type="password"
