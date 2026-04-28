@@ -3,48 +3,48 @@
 
 import {
   useActionState,
+  useCallback,
   useEffect,
   useRef,
   useState,
-  useCallback,
 } from "react";
 import Link from "next/link";
 import { motion, AnimatePresence } from "motion/react";
 import {
   ArrowLeft,
   ArrowUp,
-  Loader2,
-  Send,
-  Pencil,
   Check,
-  X,
-  History,
-  ChevronDown,
-  RefreshCw,
-  PenLine,
-  Copy,
   CheckCheck,
+  ChevronDown,
+  Clock,
+  Copy,
+  History,
+  Loader2,
+  PenLine,
+  Pencil,
   Pin,
   PinOff,
+  RefreshCw,
   Search,
+  Send,
   WifiOff,
-  Clock,
+  X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
-  getNotes,
-  saveNote,
   editNote,
   getCurrentAuthor,
   getNoteCount,
   getNoteCountByAuthor,
+  getNotes,
+  saveNote,
   togglePinNote,
   type Note,
 } from "@/app/actions/notes";
 import {
-  storePendingNote,
   getPendingNotes,
   removePendingNote,
+  storePendingNote,
   type PendingNote,
 } from "@/lib/offline-notes";
 import { MAX_CONTENT_LENGTH, PAGE_SIZE } from "@/lib/notes-constants";
@@ -57,8 +57,11 @@ import {
 } from "@/components/ui/tooltip";
 import { vibrate } from "@/lib/haptic";
 import { usePresence } from "@/hooks/use-presence";
-import { NoteReactions } from "@/components/notes/note-reactions";
 import { useRefreshListener } from "@/hooks/use-refresh-listener";
+import { useNetwork } from "@/hooks/use-network";
+import { useKeyboardHeight } from "@/hooks/use-keyboard";
+import { writeToClipboard } from "@/lib/clipboard";
+import { NoteReactions } from "@/components/notes/note-reactions";
 
 declare let window: any;
 declare let document: any;
@@ -98,10 +101,10 @@ function resizeTextarea(el: HTMLTextAreaElement, minHeight = 120) {
     style: { height: string };
     scrollHeight: number;
   };
-
   target.style.height = "auto";
   target.style.height = `${Math.max(target.scrollHeight, minHeight)}px`;
 }
+
 // ─── Page ────────────────────────────────────────────────────────────────────
 
 export default function NotesPage() {
@@ -124,7 +127,6 @@ export default function NotesPage() {
   const [showScrollTop, setShowScrollTop] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [offlineNotes, setOfflineNotes] = useState<PendingNote[]>([]);
-  const [isOffline, setIsOffline] = useState(false);
 
   const charCount = composeContent.length;
   const [state, action, isPending] = useActionState(saveNote, null);
@@ -135,6 +137,14 @@ export default function NotesPage() {
 
   usePresence("/notes", !!currentAuthor);
 
+  // ── Real network status via @capacitor/network ───────────────────────────
+  const { connected } = useNetwork();
+  const isOffline = !connected;
+
+  // ── Keyboard height via @capacitor/keyboard ──────────────────────────────
+  const keyboardHeight = useKeyboardHeight();
+
+  // ── Pull-to-refresh / global refresh event ───────────────────────────────
   const silentRefresh = useCallback(async () => {
     try {
       const [{ notes: refreshed, hasMore: more }, count, counts] =
@@ -155,13 +165,14 @@ export default function NotesPage() {
       console.error("[notes] Silent refresh failed:", err);
     }
   }, []);
+
   useRefreshListener(silentRefresh);
 
   useEffect(() => {
     notesRef.current = notes;
   }, [notes]);
 
-  // ── Initial load ──
+  // ── Initial load ──────────────────────────────────────────────────────────
   useEffect(() => {
     Promise.all([
       getNotes(0),
@@ -182,29 +193,45 @@ export default function NotesPage() {
     );
   }, []);
 
-  // ── Scroll to top visibility ──
+  // ── Scroll to top visibility ──────────────────────────────────────────────
   useEffect(() => {
-    const onScroll = () => setShowScrollTop(window.scrollY > 500);
+    const onScroll = () => {
+      setTimeout(() => setShowScrollTop(window.scrollY > 500), 0);
+    };
     window.addEventListener("scroll", onScroll, { passive: true });
     return () => window.removeEventListener("scroll", onScroll);
   }, []);
 
-  // ── Network status ──
+  // ── Sync offline notes when connectivity restored ─────────────────────────
   useEffect(() => {
-    const onOnline = () => setIsOffline(false);
-    const onOffline = () => setIsOffline(true);
-    window.addEventListener("online", onOnline);
-    window.addEventListener("offline", onOffline);
-    setTimeout(() => {
-      setIsOffline(!navigator.onLine);
-    }, 0);
-    return () => {
-      window.removeEventListener("online", onOnline);
-      window.removeEventListener("offline", onOffline);
-    };
-  }, []);
+    if (!connected || offlineNotes.length === 0) return;
 
-  // ── SSE real-time stream (replaces 30s polling) ──
+    void (async () => {
+      const pending = await getPendingNotes();
+      for (const note of pending) {
+        try {
+          const res = await fetch("/api/notes/sync", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(note),
+            credentials: "same-origin",
+          });
+          if (res.ok) {
+            await removePendingNote(note.id);
+            setTimeout(
+              () =>
+                setOfflineNotes((prev) => prev.filter((n) => n.id !== note.id)),
+              0,
+            );
+          }
+        } catch {
+          /* will retry on next reconnect */
+        }
+      }
+    })();
+  }, [connected, offlineNotes.length]);
+
+  // ── SSE real-time stream ──────────────────────────────────────────────────
   useEffect(() => {
     let eventSource: EventSource | null = null;
 
@@ -233,7 +260,7 @@ export default function NotesPage() {
     return () => eventSource?.close();
   }, [silentRefresh]);
 
-  // ── Share target prefill ──
+  // ── Share target prefill ──────────────────────────────────────────────────
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const parts = [
@@ -253,15 +280,11 @@ export default function NotesPage() {
     }, 0);
   }, []);
 
-  // ── Post-save ──
-  // ── Post-save ──
+  // ── Post-save ─────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!state?.success) return;
 
-    // Cast to 'any' to bypass the broken HTMLFormElement type definition
     (formRef.current as any)?.reset();
-
-    // Also update the composeRef line here just in case it throws the same error later!
     if (composeRef.current) (composeRef.current as any).style.height = "auto";
     window.scrollTo({ top: 0, behavior: "smooth" });
 
@@ -281,7 +304,7 @@ export default function NotesPage() {
     );
   }, [state]);
 
-  // ── Optimistic submit ──
+  // ── Optimistic submit ─────────────────────────────────────────────────────
   const handleFormSubmit = useCallback(() => {
     const content = composeContent.trim();
     if (!content || !currentAuthor) return;
@@ -297,7 +320,7 @@ export default function NotesPage() {
     ]);
   }, [composeContent, currentAuthor]);
 
-  // ── Offline submit ──
+  // ── Offline submit ────────────────────────────────────────────────────────
   const handleOfflineSubmit = useCallback(async () => {
     const content = composeContent.trim();
     if (!content || !currentAuthor) return;
@@ -308,31 +331,11 @@ export default function NotesPage() {
     setComposeContent("");
     if (composeRef.current) (composeRef.current as any).style.height = "auto";
 
-    // Register background sync; fall back to online-event listener on Safari
     if ("serviceWorker" in navigator) {
       try {
         const reg = await navigator.serviceWorker.ready;
         if ("sync" in reg) {
           await (reg as any).sync.register("sync-notes");
-        } else {
-          const onOnline = async () => {
-            window.removeEventListener("online", onOnline);
-            const pending2 = await getPendingNotes();
-            for (const note of pending2) {
-              try {
-                const res = await fetch("/api/notes/sync", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify(note),
-                  credentials: "same-origin",
-                });
-                if (res.ok) await removePendingNote(note.id);
-              } catch {
-                /* will retry on next online event */
-              }
-            }
-          };
-          window.addEventListener("online", onOnline);
         }
       } catch (err) {
         console.warn("[notes] Sync registration failed:", err);
@@ -340,7 +343,7 @@ export default function NotesPage() {
     }
   }, [composeContent, currentAuthor]);
 
-  // ── Refresh ──
+  // ── Manual refresh (header button) ───────────────────────────────────────
   const handleRefresh = async () => {
     setIsRefreshing(true);
     const [{ notes: refreshed, hasMore: more }, count, counts] =
@@ -353,7 +356,7 @@ export default function NotesPage() {
     setIsRefreshing(false);
   };
 
-  // ── Filter change ──
+  // ── Filter change ─────────────────────────────────────────────────────────
   const handleFilterChange = async (newFilter: Filter) => {
     setFilter(newFilter);
     setSearchQuery("");
@@ -376,7 +379,7 @@ export default function NotesPage() {
     }
   };
 
-  // ── Load more ──
+  // ── Load more ─────────────────────────────────────────────────────────────
   const handleLoadMore = async () => {
     const scrollY = window.scrollY;
     const prevHeight = document.body.scrollHeight;
@@ -392,7 +395,7 @@ export default function NotesPage() {
     });
   };
 
-  // ── Edit ──
+  // ── Edit ──────────────────────────────────────────────────────────────────
   const handleNoteEdit = async (id: string, newContent: string) => {
     const result = await editNote(id, newContent);
     if (result.success) {
@@ -412,7 +415,7 @@ export default function NotesPage() {
     return result;
   };
 
-  // ── Reactions change ──
+  // ── Reactions change ──────────────────────────────────────────────────────
   const handleReactionsChange = (
     id: string,
     reactions: Record<string, string>,
@@ -422,7 +425,7 @@ export default function NotesPage() {
     );
   };
 
-  // ── Pin ──
+  // ── Pin ───────────────────────────────────────────────────────────────────
   const handlePin = async (id: string) => {
     void vibrate(50, "light");
     const result = await togglePinNote(id);
@@ -433,7 +436,7 @@ export default function NotesPage() {
     }
   };
 
-  // ── Derived display ──
+  // ── Derived display ───────────────────────────────────────────────────────
   const allDisplayNotes = [...optimisticNotes, ...notes];
   const filteredNotes =
     filter === "all"
@@ -494,7 +497,12 @@ export default function NotesPage() {
         )}
       </AnimatePresence>
 
-      <div className="relative z-10 mx-auto max-w-3xl space-y-10 pt-4">
+      <div
+        className="relative z-10 mx-auto max-w-3xl space-y-10 pt-4"
+        style={{
+          paddingBottom: keyboardHeight > 0 ? keyboardHeight + 96 : undefined,
+        }}
+      >
         {/* Header */}
         <div className="flex items-center justify-between">
           <Link
@@ -546,9 +554,9 @@ export default function NotesPage() {
           ref={formRef}
           action={action}
           onSubmit={(e) => {
-            if (!navigator.onLine) {
+            if (isOffline) {
               e.preventDefault();
-              handleOfflineSubmit();
+              void handleOfflineSubmit();
               return;
             }
             handleFormSubmit();
@@ -729,7 +737,6 @@ export default function NotesPage() {
               ))}
             </div>
 
-            {/* Search input */}
             <div className="relative">
               <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/40" />
               <input
@@ -753,7 +760,6 @@ export default function NotesPage() {
               )}
             </div>
 
-            {/* Search result count */}
             {searchQuery && (
               <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/40">
                 {searchedNotes.length} result
@@ -964,7 +970,6 @@ function NoteItem({
     setShowOriginal(false);
     setTimeout(() => {
       if (textareaRef.current) {
-        // Bypass broken HTMLTextAreaElement types
         const target = textareaRef.current as any;
         target.focus();
         const len = target.value.length;
@@ -996,8 +1001,9 @@ function NoteItem({
     }
   }, [editContent, note.content, note.id, onEdit]);
 
-  const handleCopy = () => {
-    (navigator as any).clipboard.writeText(note.content);
+  // Uses @capacitor/clipboard on native, navigator.clipboard on web
+  const handleCopy = async () => {
+    await writeToClipboard(note.content);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -1183,7 +1189,6 @@ function NoteItem({
                 ref={textareaRef}
                 value={editContent}
                 onChange={(e) => {
-                  // Bypass broken EventTarget types
                   const target = e.target as any;
                   setEditContent(target.value);
                   resizeTextarea(target, 112);
@@ -1195,7 +1200,7 @@ function NoteItem({
                   }
                   if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
                     e.preventDefault();
-                    handleSave();
+                    void handleSave();
                   }
                 }}
                 disabled={isSaving || undefined}
@@ -1233,7 +1238,7 @@ function NoteItem({
                     Cancel
                   </button>
                   <button
-                    onClick={handleSave}
+                    onClick={() => void handleSave()}
                     disabled={
                       isSaving ||
                       editContent.trim() === "" ||

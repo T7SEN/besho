@@ -14,8 +14,13 @@ import { SafeWordHistory } from "@/components/dashboard/safeword-history";
 import { Header } from "@/components/dashboard/header";
 import { ErrorBoundary } from "@/components/ui/error-boundary";
 import { getCurrentAuthor } from "@/app/actions/auth";
+import { getTodayMoods } from "@/app/actions/mood";
 import { usePresence } from "@/hooks/use-presence";
 import { useRefreshListener } from "@/hooks/use-refresh-listener";
+import {
+  useLocalNotifications,
+  NOTIF_ID,
+} from "@/hooks/use-local-notifications";
 import { SafeWordCard } from "@/components/dashboard/safeword-card";
 
 function DashboardSkeleton() {
@@ -38,10 +43,9 @@ function DashboardSkeleton() {
 export default function DashboardPage() {
   const [now, setNow] = useState<Date | null>(null);
   const [currentAuthor, setCurrentAuthor] = useState<string | null>(null);
-  // Incrementing this forces MoodCard, MoodHistoryGrid and SafeWordHistory
-  // to remount and re-fetch their own data on pull-to-refresh.
-  // Time-based cards (CounterCard, TimezoneCard, etc.) are unaffected.
   const [refreshKey, setRefreshKey] = useState(0);
+
+  const { cancel, scheduleMoodNudge } = useLocalNotifications();
 
   usePresence("/dashboard", !!currentAuthor);
 
@@ -50,6 +54,30 @@ export default function DashboardPage() {
   }, []);
 
   useRefreshListener(handleRefresh);
+
+  // On mount and on every refresh: check if today's mood is already
+  // logged. If it is, cancel the nudge notification for today — there's
+  // no point reminding someone who already checked in. If it isn't,
+  // ensure the nudge is scheduled (re-scheduling is idempotent).
+  useEffect(() => {
+    void (async () => {
+      try {
+        const moods = await getTodayMoods();
+        if (moods.myMood !== null) {
+          // Mood already logged — cancel today's nudge and reschedule
+          // for tomorrow so the next-day nudge is always queued.
+          await cancel([NOTIF_ID.MOOD_NUDGE]);
+          await scheduleMoodNudge();
+        } else {
+          // Not yet logged — make sure the nudge is scheduled.
+          await scheduleMoodNudge();
+        }
+      } catch (err) {
+        console.error("[dashboard] Mood nudge sync failed:", err);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshKey]);
 
   useEffect(() => {
     getCurrentAuthor().then(setCurrentAuthor);

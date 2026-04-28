@@ -10,31 +10,37 @@ import {
 import Link from "next/link";
 import { motion, AnimatePresence } from "motion/react";
 import {
+  AlarmClock,
   ArrowLeft,
-  Plus,
-  ChevronUp,
-  Loader2,
   CheckCircle2,
   Circle,
-  Trash2,
-  Flag,
+  ChevronUp,
   Clock,
+  Flag,
+  Loader2,
+  Plus,
+  Trash2,
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
-  getTasks,
-  createTask,
   completeTask,
+  createTask,
   deleteTask,
+  getTasks,
   type Task,
   type TaskPriority,
 } from "@/app/actions/tasks";
 import { getCurrentAuthor } from "@/app/actions/auth";
 import { usePresence } from "@/hooks/use-presence";
+import { useRefreshListener } from "@/hooks/use-refresh-listener";
+import {
+  idToNumeric,
+  NOTIF_ID,
+  useLocalNotifications,
+} from "@/hooks/use-local-notifications";
 import { vibrate } from "@/lib/haptic";
 import { Button } from "@/components/ui/button";
-import { useRefreshListener } from "@/hooks/use-refresh-listener";
 
 const PRIORITY_CONFIG: Record<
   TaskPriority,
@@ -92,11 +98,13 @@ export default function TasksPage() {
   const [state, action, isPending] = useActionState(createTask, null);
   const formRef = useRef<HTMLFormElement & { reset: () => void }>(null);
 
+  const { schedule, cancel } = useLocalNotifications();
+
   usePresence("/tasks", !!currentAuthor);
 
   const handleRefresh = useCallback(async () => {
-    const [taskList] = await Promise.all([getTasks()]);
-    setTimeout(() => setTasks(taskList), 0);
+    const list = await getTasks();
+    setTimeout(() => setTasks(list), 0);
   }, []);
 
   useRefreshListener(handleRefresh);
@@ -109,15 +117,31 @@ export default function TasksPage() {
     });
   }, []);
 
+  // Schedule a local notification for the new task's deadline
   useEffect(() => {
     if (!state?.success) return;
+
     setTimeout(() => {
       formRef.current?.reset();
       setShowForm(false);
       void vibrate(50, "medium");
-      getTasks().then(setTasks);
     }, 0);
-  }, [state]);
+
+    getTasks().then((fresh) => {
+      setTasks(fresh);
+      // Schedule notification for the most recently created task with a deadline
+      const newest = fresh[0];
+      if (newest?.deadline && !newest.completed) {
+        const notifTime = newest.deadline - 60 * 60 * 1_000; // 1 hour before
+        void schedule({
+          id: NOTIF_ID.taskDeadline(idToNumeric(newest.id)),
+          title: "📋 Task due soon",
+          body: newest.title,
+          atMs: notifTime,
+        });
+      }
+    });
+  }, [state, schedule]);
 
   const isT7SEN = currentAuthor === "T7SEN";
   const isBesho = currentAuthor === "Besho";
@@ -135,6 +159,8 @@ export default function TasksPage() {
           t.id === id ? { ...t, completed: true, completedAt: Date.now() } : t,
         ),
       );
+      // Cancel any pending deadline notification for this task
+      void cancel([NOTIF_ID.taskDeadline(idToNumeric(id))]);
     }
     setCompletingId(null);
   };
@@ -145,6 +171,7 @@ export default function TasksPage() {
     const result = await deleteTask(id);
     if (result.success) {
       setTasks((prev) => prev.filter((t) => t.id !== id));
+      void cancel([NOTIF_ID.taskDeadline(idToNumeric(id))]);
     }
     setDeletingId(null);
   };
@@ -220,7 +247,6 @@ export default function TasksPage() {
                   New Task for Besho
                 </h2>
 
-                {/* Title */}
                 <div>
                   <label
                     htmlFor="task-title"
@@ -243,7 +269,6 @@ export default function TasksPage() {
                   />
                 </div>
 
-                {/* Description */}
                 <div>
                   <label
                     htmlFor="task-desc"
@@ -265,7 +290,6 @@ export default function TasksPage() {
                   />
                 </div>
 
-                {/* Priority + Deadline */}
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label
@@ -374,7 +398,6 @@ export default function TasksPage() {
             </motion.div>
           ) : (
             <>
-              {/* Pending tasks */}
               {pendingTasks.length > 0 && (
                 <div className="space-y-3">
                   <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/40">
@@ -397,7 +420,6 @@ export default function TasksPage() {
                 </div>
               )}
 
-              {/* Completed tasks */}
               {completedTasks.length > 0 && (
                 <div className="space-y-3">
                   <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/30">
@@ -450,7 +472,7 @@ function TaskItem({
 }) {
   const [showDelete, setShowDelete] = useState(false);
   const priority = PRIORITY_CONFIG[task.priority];
-  const isOverdue = task.deadline && !task.completed && task.deadline < now;
+  const isOverdue = !!task.deadline && !task.completed && task.deadline < now;
 
   return (
     <motion.div
@@ -466,7 +488,7 @@ function TaskItem({
             : "border-white/5 bg-card/20 hover:border-white/10",
       )}
     >
-      {/* Overdue pulse ring */}
+      {/* Overdue pulse ring — draws attention without being obnoxious */}
       {isOverdue && !task.completed && (
         <span className="pointer-events-none absolute inset-0 rounded-2xl">
           <span className="absolute inset-0 animate-ping rounded-2xl border border-destructive/30" />
@@ -474,7 +496,7 @@ function TaskItem({
       )}
 
       {/* Complete button — Besho only, pending tasks */}
-      <div className="mt-0.5 shrink-0">
+      <div className="relative z-10 mt-0.5 shrink-0">
         {task.completed ? (
           <CheckCircle2 className="h-5 w-5 text-primary/50" />
         ) : isBesho ? (
@@ -496,7 +518,7 @@ function TaskItem({
       </div>
 
       {/* Content */}
-      <div className="flex-1 min-w-0">
+      <div className="relative z-10 min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-2">
           <p
             className={cn(
@@ -518,6 +540,12 @@ function TaskItem({
             <Flag className="mr-1 inline h-2 w-2" />
             {priority.label}
           </span>
+          {isOverdue && !task.completed && (
+            <span className="flex items-center gap-1 rounded-full bg-destructive/10 px-2 py-0.5 text-[9px] font-black uppercase tracking-wider text-destructive">
+              <AlarmClock className="h-2 w-2" />
+              Overdue
+            </span>
+          )}
         </div>
 
         {task.description && (
@@ -560,14 +588,14 @@ function TaskItem({
         <button
           onClick={() => setShowDelete(true)}
           aria-label="Delete task"
-          className="shrink-0 rounded-full p-1.5 text-muted-foreground/20 opacity-0 transition-all group-hover:opacity-100 hover:bg-destructive/10 hover:text-destructive"
+          className="relative z-10 shrink-0 rounded-full p-1.5 text-muted-foreground/20 opacity-0 transition-all group-hover:opacity-100 hover:bg-destructive/10 hover:text-destructive"
         >
           <Trash2 className="h-3.5 w-3.5" />
         </button>
       )}
 
       {isT7SEN && showDelete && (
-        <div className="flex shrink-0 items-center gap-1.5">
+        <div className="relative z-10 flex shrink-0 items-center gap-1.5">
           <button
             onClick={() => setShowDelete(false)}
             className="text-[10px] font-semibold text-muted-foreground hover:text-foreground"

@@ -10,37 +10,42 @@ import {
 import Link from "next/link";
 import { motion, AnimatePresence } from "motion/react";
 import {
+  AlarmClock,
   ArrowLeft,
-  Plus,
-  ChevronUp,
-  Loader2,
-  ScrollText,
   Check,
   CheckCircle2,
+  ChevronUp,
   Circle,
-  RotateCcw,
-  Trash2,
   Clock,
-  AlarmClock,
+  Loader2,
+  Plus,
+  RotateCcw,
+  ScrollText,
+  Trash2,
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
-  getRules,
-  createRule,
   acknowledgeRule,
   completeRule,
-  reopenRule,
+  createRule,
   deleteRule,
+  getRules,
+  reopenRule,
   type Rule,
   type RuleStatus,
 } from "@/app/actions/rules";
 import { getCurrentAuthor } from "@/app/actions/auth";
 import { TITLE_BY_AUTHOR } from "@/lib/constants";
 import { usePresence } from "@/hooks/use-presence";
+import { useRefreshListener } from "@/hooks/use-refresh-listener";
+import {
+  idToNumeric,
+  NOTIF_ID,
+  useLocalNotifications,
+} from "@/hooks/use-local-notifications";
 import { vibrate } from "@/lib/haptic";
 import { Button } from "@/components/ui/button";
-import { useRefreshListener } from "@/hooks/use-refresh-listener";
 
 const STATUS_CONFIG: Record<
   RuleStatus,
@@ -66,7 +71,7 @@ const STATUS_CONFIG: Record<
   },
 };
 
-// ─── Acknowledgement deadline urgency helpers ─────────────────────────────────
+// ─── Acknowledgement deadline urgency ─────────────────────────────────────────
 
 type UrgencyLevel = "none" | "low" | "medium" | "high" | "overdue";
 
@@ -103,7 +108,6 @@ function getAckUrgency(
 ): UrgencyLevel {
   if (rule.status !== "pending") return "none";
   if (!rule.acknowledgeDeadline) return "none";
-
   const ms = rule.acknowledgeDeadline - now;
   if (ms <= 0) return "overdue";
   if (ms <= 60 * 60 * 1_000) return "high";
@@ -119,8 +123,6 @@ function formatTimeRemaining(ms: number): string {
   if (h > 0) return `${h}h ${m}m left`;
   return `${m}m left`;
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
 
 function formatDate(timestamp: number): string {
   return new Intl.DateTimeFormat("en-US", {
@@ -141,6 +143,8 @@ export default function RulesPage() {
   const [state, action, isPending] = useActionState(createRule, null);
   const formRef = useRef<HTMLFormElement & { reset: () => void }>(null);
 
+  const { schedule, cancel } = useLocalNotifications();
+
   usePresence("/rules", !!currentAuthor);
 
   const handleRefresh = useCallback(async () => {
@@ -158,15 +162,31 @@ export default function RulesPage() {
     });
   }, []);
 
+  // Schedule notification for ack deadline on new rule creation
   useEffect(() => {
     if (!state?.success) return;
+
     setTimeout(() => {
       formRef.current?.reset();
       setShowForm(false);
       void vibrate(50, "medium");
-      getRules().then(setRules);
     }, 0);
-  }, [state]);
+
+    getRules().then((fresh) => {
+      setRules(fresh);
+      const newest = fresh[0] as
+        | (Rule & { acknowledgeDeadline?: number })
+        | undefined;
+      if (newest?.acknowledgeDeadline && newest.status === "pending") {
+        void schedule({
+          id: NOTIF_ID.ruleAckDeadline(idToNumeric(newest.id)),
+          title: "📜 Rule acknowledgement due",
+          body: `"${newest.title}" needs your acknowledgement`,
+          atMs: newest.acknowledgeDeadline - 30 * 60 * 1_000, // 30 min before
+        });
+      }
+    });
+  }, [state, schedule]);
 
   const isT7SEN = currentAuthor === "T7SEN";
   const isBesho = currentAuthor === "Besho";
@@ -187,6 +207,8 @@ export default function RulesPage() {
             : r,
         ),
       );
+      // Cancel ack deadline notification once acknowledged
+      void cancel([NOTIF_ID.ruleAckDeadline(idToNumeric(id))]);
     }
     setBusyId(null);
   };
@@ -233,6 +255,7 @@ export default function RulesPage() {
     const result = await deleteRule(id);
     if (result.success) {
       setRules((prev) => prev.filter((r) => r.id !== id));
+      void cancel([NOTIF_ID.ruleAckDeadline(idToNumeric(id))]);
     }
     setBusyId(null);
   };
@@ -718,12 +741,6 @@ function RuleItem({
             <RotateCcw className="h-3 w-3" />
             Reopen
           </button>
-        )}
-
-        {!isT7SEN && !isBesho && (
-          <span className="text-[10px] font-semibold text-muted-foreground/30">
-            Read-only
-          </span>
         )}
 
         {isBesho && rule.status === "active" && (

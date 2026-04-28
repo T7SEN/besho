@@ -12,17 +12,17 @@ import { motion, AnimatePresence } from "motion/react";
 import {
   ArrowLeft,
   CalendarClock,
-  Plus,
-  X,
-  Loader2,
-  Trash2,
   ChevronUp,
+  Loader2,
+  Plus,
+  Trash2,
+  X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
-  getMilestones,
   addMilestone,
   deleteMilestone,
+  getMilestones,
   type Milestone,
 } from "@/app/actions/timeline";
 import { getCurrentAuthor } from "@/app/actions/auth";
@@ -30,6 +30,7 @@ import { Button } from "@/components/ui/button";
 import { START_DATE } from "@/lib/constants";
 import { usePresence } from "@/hooks/use-presence";
 import { useRefreshListener } from "@/hooks/use-refresh-listener";
+import { useKeyboardHeight } from "@/hooks/use-keyboard";
 
 const EMOJI_OPTIONS = [
   "✨",
@@ -90,6 +91,9 @@ export default function TimelinePage() {
   const [state, action, isPending] = useActionState(addMilestone, null);
   const formRef = useRef<HTMLFormElement>(null);
 
+  // Pushes the milestone form above the software keyboard on Android
+  const keyboardHeight = useKeyboardHeight();
+
   usePresence("/timeline", !!currentAuthor);
 
   const handleRefresh = useCallback(async () => {
@@ -138,7 +142,12 @@ export default function TimelinePage() {
         <div className="absolute bottom-[-10%] right-[-10%] h-125 w-125 rounded-full bg-blue-500/5 blur-[150px]" />
       </div>
 
-      <div className="relative z-10 mx-auto max-w-2xl space-y-10 pt-4">
+      <div
+        className="relative z-10 mx-auto max-w-2xl space-y-10 pt-4"
+        style={{
+          paddingBottom: keyboardHeight > 0 ? keyboardHeight + 96 : undefined,
+        }}
+      >
         {/* Header */}
         <div className="flex items-center justify-between">
           <Link

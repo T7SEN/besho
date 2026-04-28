@@ -10,34 +10,34 @@ import {
 import Link from "next/link";
 import { motion, AnimatePresence } from "motion/react";
 import {
+  AlertTriangle,
   ArrowLeft,
-  Plus,
+  Award,
   ChevronUp,
   Loader2,
-  Award,
+  Plus,
   Sparkles,
-  AlertTriangle,
   Trash2,
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
-  getLedgerEntries,
   createLedgerEntry,
   deleteLedgerEntry,
+  getLedgerEntries,
   type LedgerEntry,
 } from "@/app/actions/ledger";
 import {
-  REWARD_CATEGORIES,
   PUNISHMENT_CATEGORIES,
+  REWARD_CATEGORIES,
   type LedgerEntryType,
 } from "@/lib/ledger-constants";
 import { getCurrentAuthor } from "@/app/actions/auth";
 import { TITLE_BY_AUTHOR } from "@/lib/constants";
 import { usePresence } from "@/hooks/use-presence";
+import { useRefreshListener } from "@/hooks/use-refresh-listener";
 import { vibrate } from "@/lib/haptic";
 import { Button } from "@/components/ui/button";
-import { useRefreshListener } from "@/hooks/use-refresh-listener";
 
 type Filter = "all" | "reward" | "punishment";
 
@@ -72,8 +72,8 @@ export default function LedgerPage() {
   usePresence("/ledger", !!currentAuthor);
 
   const handleRefresh = useCallback(async () => {
-    const entries = await getLedgerEntries();
-    setTimeout(() => setEntries(entries), 0);
+    const list = await getLedgerEntries();
+    setTimeout(() => setEntries(list), 0);
   }, []);
 
   useRefreshListener(handleRefresh);
@@ -123,7 +123,7 @@ export default function LedgerPage() {
     <div className="relative min-h-screen bg-background p-6 md:p-12">
       <div className="pointer-events-none fixed inset-0 overflow-hidden">
         <div className="absolute left-[-10%] top-[-10%] h-125 w-125 rounded-full bg-primary/5 blur-[150px]" />
-        <div className="absolute bottom-[-10%] right-[-10%] h-125 w-125 rounded-full bg-destructive/5 blur-[150px]" />
+        <div className="absolute bottom-[-10%] right-[-10%] h-125 w-125 rounded-full bg-destructive/3 blur-[150px]" />
       </div>
 
       <div className="relative z-10 mx-auto max-w-2xl space-y-8 pt-4">
@@ -142,7 +142,7 @@ export default function LedgerPage() {
               Ledger
             </h1>
             <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/40">
-              {rewardCount} rewards · {punishmentCount} punishments
+              {rewardCount}✨ · {punishmentCount}⚠️
             </span>
           </div>
 
@@ -171,7 +171,7 @@ export default function LedgerPage() {
           )}
         </div>
 
-        {/* Form — Sir only */}
+        {/* Create entry form — Sir only */}
         <AnimatePresence>
           {showForm && isT7SEN && (
             <motion.div
@@ -187,57 +187,77 @@ export default function LedgerPage() {
                 className="space-y-4 rounded-3xl border border-white/5 bg-card/40 p-6 backdrop-blur-xl shadow-2xl shadow-black/40"
               >
                 <h2 className="text-sm font-bold uppercase tracking-widest text-muted-foreground">
-                  New Entry
+                  Log Entry for {TITLE_BY_AUTHOR.Besho}
                 </h2>
 
                 {/* Type toggle */}
+                <div className="flex gap-2">
+                  {(["reward", "punishment"] as LedgerEntryType[]).map((t) => (
+                    <button
+                      key={t}
+                      type="button"
+                      onClick={() => setType(t)}
+                      className={cn(
+                        "flex flex-1 items-center justify-center gap-2 rounded-xl border py-2.5 text-xs font-bold uppercase tracking-wider transition-all",
+                        type === t
+                          ? t === "reward"
+                            ? "border-primary/40 bg-primary/10 text-primary"
+                            : "border-destructive/40 bg-destructive/10 text-destructive"
+                          : "border-white/10 bg-black/20 text-muted-foreground hover:border-white/20",
+                      )}
+                    >
+                      {t === "reward" ? (
+                        <Sparkles className="h-3 w-3" />
+                      ) : (
+                        <AlertTriangle className="h-3 w-3" />
+                      )}
+                      {t}
+                    </button>
+                  ))}
+                </div>
                 <input type="hidden" name="type" value={type} />
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setType("reward")}
+
+                {/* Category */}
+                <div>
+                  <label
+                    htmlFor="ledger-category"
+                    className="mb-1.5 block text-[10px] font-bold uppercase tracking-widest text-muted-foreground/50"
+                  >
+                    Category *
+                  </label>
+                  <select
+                    id="ledger-category"
+                    name="category"
+                    required
+                    disabled={isPending || undefined}
                     className={cn(
-                      "flex items-center justify-center gap-2 rounded-xl border px-4 py-2.5 text-xs font-bold uppercase tracking-wider transition-all",
-                      type === "reward"
-                        ? "border-primary/40 bg-primary/15 text-primary"
-                        : "border-white/10 bg-black/20 text-muted-foreground hover:text-foreground",
+                      "w-full rounded-xl border border-white/10 bg-black/20 px-4 py-2.5 text-sm",
+                      "outline-none focus:border-primary/40 transition-colors",
+                      "scheme-dark",
                     )}
                   >
-                    <Sparkles className="h-3.5 w-3.5" />
-                    Reward
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setType("punishment")}
-                    className={cn(
-                      "flex items-center justify-center gap-2 rounded-xl border px-4 py-2.5 text-xs font-bold uppercase tracking-wider transition-all",
-                      type === "punishment"
-                        ? "border-destructive/40 bg-destructive/15 text-destructive"
-                        : "border-white/10 bg-black/20 text-muted-foreground hover:text-foreground",
-                    )}
-                  >
-                    <AlertTriangle className="h-3.5 w-3.5" />
-                    Punishment
-                  </button>
+                    <option value="">Select a category…</option>
+                    {categories.map((cat) => (
+                      <option key={cat} value={cat}>
+                        {cat}
+                      </option>
+                    ))}
+                  </select>
                 </div>
 
                 {/* Title */}
                 <div>
                   <label
-                    htmlFor="entry-title"
+                    htmlFor="ledger-title"
                     className="mb-1.5 block text-[10px] font-bold uppercase tracking-widest text-muted-foreground/50"
                   >
-                    What happened *
+                    Title *
                   </label>
                   <input
-                    id="entry-title"
+                    id="ledger-title"
                     name="title"
                     type="text"
-                    placeholder={
-                      type === "reward"
-                        ? "e.g. Followed every rule today"
-                        : "e.g. Talked back during call"
-                    }
+                    placeholder="Brief description…"
                     required
                     disabled={isPending || undefined}
                     className={cn(
@@ -248,72 +268,46 @@ export default function LedgerPage() {
                   />
                 </div>
 
-                {/* Category + Date */}
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label
-                      htmlFor="entry-category"
-                      className="mb-1.5 block text-[10px] font-bold uppercase tracking-widest text-muted-foreground/50"
-                    >
-                      Category
-                    </label>
-                    <select
-                      id="entry-category"
-                      name="category"
-                      defaultValue={categories[0]}
-                      key={type}
-                      disabled={isPending || undefined}
-                      className={cn(
-                        "w-full rounded-xl border border-white/10 bg-black/20 px-4 py-2.5 text-sm",
-                        "outline-none focus:border-primary/40 transition-colors scheme-dark",
-                      )}
-                    >
-                      {categories.map((c) => (
-                        <option key={c} value={c}>
-                          {c}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label
-                      htmlFor="entry-timestamp"
-                      className="mb-1.5 block text-[10px] font-bold uppercase tracking-widest text-muted-foreground/50"
-                    >
-                      When
-                    </label>
-                    <input
-                      id="entry-timestamp"
-                      name="timestamp"
-                      type="datetime-local"
-                      defaultValue={dateInputDefault()}
-                      disabled={isPending || undefined}
-                      className={cn(
-                        "w-full rounded-xl border border-white/10 bg-black/20 px-4 py-2.5 text-sm",
-                        "outline-none focus:border-primary/40 transition-colors scheme-dark",
-                      )}
-                    />
-                  </div>
-                </div>
-
                 {/* Description */}
                 <div>
                   <label
-                    htmlFor="entry-desc"
+                    htmlFor="ledger-desc"
                     className="mb-1.5 block text-[10px] font-bold uppercase tracking-widest text-muted-foreground/50"
                   >
-                    Notes
+                    Details
                   </label>
                   <textarea
-                    id="entry-desc"
+                    id="ledger-desc"
                     name="description"
-                    placeholder="Context, reasoning, what's owed…"
-                    rows={3}
+                    placeholder="Additional context…"
+                    rows={2}
                     disabled={isPending || undefined}
                     className={cn(
                       "w-full resize-none rounded-xl border border-white/10 bg-black/20 px-4 py-2.5 text-sm",
                       "placeholder:text-muted-foreground/40 outline-none",
                       "focus:border-primary/40 transition-colors",
+                    )}
+                  />
+                </div>
+
+                {/* Timestamp */}
+                <div>
+                  <label
+                    htmlFor="ledger-timestamp"
+                    className="mb-1.5 block text-[10px] font-bold uppercase tracking-widest text-muted-foreground/50"
+                  >
+                    Date & Time
+                  </label>
+                  <input
+                    id="ledger-timestamp"
+                    name="timestamp"
+                    type="datetime-local"
+                    defaultValue={dateInputDefault()}
+                    disabled={isPending || undefined}
+                    className={cn(
+                      "w-full rounded-xl border border-white/10 bg-black/20 px-4 py-2.5 text-sm",
+                      "outline-none focus:border-primary/40 transition-colors",
+                      "scheme-dark",
                     )}
                   />
                 </div>
@@ -350,16 +344,13 @@ export default function LedgerPage() {
           )}
         </AnimatePresence>
 
-        {/* Filter pills */}
+        {/* Filter tabs */}
         {!isLoading && entries.length > 0 && (
           <div className="flex items-center gap-2">
             {(["all", "reward", "punishment"] as Filter[]).map((f) => (
               <button
                 key={f}
-                onClick={() => {
-                  void vibrate(30, "light");
-                  setFilter(f);
-                }}
+                onClick={() => setFilter(f)}
                 className={cn(
                   "relative rounded-full px-4 py-1.5 text-xs font-bold uppercase tracking-wider transition-all",
                   filter === f
@@ -371,7 +362,11 @@ export default function LedgerPage() {
                   <motion.div
                     layoutId="ledger-filter-pill"
                     className="absolute inset-0 rounded-full bg-primary/80"
-                    transition={{ type: "spring", bounce: 0.2, duration: 0.4 }}
+                    transition={{
+                      type: "spring",
+                      bounce: 0.2,
+                      duration: 0.4,
+                    }}
                   />
                 )}
                 <span className="relative z-10">
@@ -389,11 +384,11 @@ export default function LedgerPage() {
         {/* Entry list */}
         <div className="space-y-4 pb-24">
           {isLoading ? (
-            <>
+            <div className="space-y-4">
               {[...Array(3)].map((_, i) => (
                 <EntrySkeleton key={i} />
               ))}
-            </>
+            </div>
           ) : filtered.length === 0 ? (
             <motion.div
               initial={{ opacity: 0, y: 16 }}
@@ -486,33 +481,23 @@ function EntryItem({
                   : "bg-destructive/15 text-destructive",
               )}
             >
-              {isReward ? "Reward" : "Punishment"}
-            </span>
-            <span className="rounded-full bg-muted/30 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-muted-foreground">
               {entry.category}
             </span>
           </div>
 
-          <p className="mt-2 text-sm font-bold text-foreground">
+          <p className="mt-1.5 text-sm font-bold text-foreground">
             {entry.title}
           </p>
 
           {entry.description && (
-            <p className="mt-1 text-xs leading-relaxed text-muted-foreground/70">
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground/60">
               {entry.description}
             </p>
           )}
 
-          <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] font-semibold text-muted-foreground/40">
-            <span>{formatDateTime(entry.timestamp)}</span>
-            <span className="text-muted-foreground/20">·</span>
-            <span>
-              by{" "}
-              {entry.author === "T7SEN" || entry.author === "Besho"
-                ? TITLE_BY_AUTHOR[entry.author]
-                : entry.author}
-            </span>
-          </div>
+          <p className="mt-2 text-[10px] font-semibold text-muted-foreground/40">
+            {formatDateTime(entry.timestamp)}
+          </p>
         </div>
 
         {canDelete && !showDelete && (
@@ -560,14 +545,12 @@ function EntryItem({
 
 function EntrySkeleton() {
   return (
-    <div className="rounded-2xl border border-white/5 bg-card/20 p-5">
-      <div className="flex items-start gap-4">
-        <div className="h-9 w-9 animate-pulse rounded-full bg-muted/30" />
-        <div className="flex-1 space-y-2">
-          <div className="h-3 w-24 animate-pulse rounded bg-muted/30" />
-          <div className="h-4 w-3/5 animate-pulse rounded bg-muted/30" />
-          <div className="h-3 w-full animate-pulse rounded bg-muted/20" />
-        </div>
+    <div className="flex items-start gap-4 rounded-2xl border border-white/5 bg-card/20 p-5">
+      <div className="h-9 w-9 animate-pulse rounded-full bg-muted/30" />
+      <div className="flex-1 space-y-2">
+        <div className="h-3 w-16 animate-pulse rounded-full bg-muted/20" />
+        <div className="h-4 w-3/5 animate-pulse rounded bg-muted/30" />
+        <div className="h-3 w-24 animate-pulse rounded bg-muted/15" />
       </div>
     </div>
   );

@@ -1,11 +1,10 @@
 import type { CapacitorConfig } from "@capacitor/cli";
+import { KeyboardResize, KeyboardStyle } from "@capacitor/keyboard";
 
 const config: CapacitorConfig = {
   appId: "me.t7senlovesbesho",
   appName: "Our Space",
   webDir: "public",
-  // Points the WebView at the live Vercel deployment.
-  // The app is a shell — all logic stays on Vercel.
   server: {
     url: "https://t7senlovesbesho.me",
     cleartext: false,
@@ -23,6 +22,21 @@ const config: CapacitorConfig = {
     },
     PushNotifications: {
       presentationOptions: ["badge", "sound", "alert"],
+    },
+    LocalNotifications: {
+      // Must exist in android/app/src/main/res/drawable/
+      // Use ic_launcher_foreground as a safe default that Capacitor
+      // always generates. Replace with a proper 24dp monochrome icon
+      // for production.
+      smallIcon: "ic_launcher_foreground",
+      iconColor: "#a855f7",
+    },
+    Keyboard: {
+      // Body resize: the document body shrinks when the keyboard opens.
+      // This is the most compatible mode for Next.js web apps.
+      resize: KeyboardResize.Body,
+      style: KeyboardStyle.Dark,
+      resizeOnFullScreen: true,
     },
   },
   android: {
