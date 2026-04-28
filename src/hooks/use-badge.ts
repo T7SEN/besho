@@ -2,17 +2,9 @@
 
 import { useEffect, useCallback } from "react";
 import { getNavBadges } from "@/app/actions/badges";
+import { isNative } from "@/lib/native";
 
 const SYNC_INTERVAL_MS = 5 * 60 * 1_000; // 5 minutes
-
-function isNative(): boolean {
-  const cap = (
-    globalThis as unknown as {
-      Capacitor?: { isNativePlatform?: () => boolean };
-    }
-  ).Capacitor;
-  return typeof cap !== "undefined" && !!cap.isNativePlatform?.();
-}
 
 /**
  * Syncs the Android app icon badge count with the sum of pending tasks

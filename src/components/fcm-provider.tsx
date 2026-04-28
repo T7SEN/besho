@@ -4,11 +4,15 @@ import { useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import { dispatchPushToast } from "@/components/push-toast";
 import { getCurrentAuthor } from "@/app/actions/auth";
+import { isNative } from "@/lib/native";
 
 /**
  * Registers FCM listeners once at the layout level so they persist
- * across all page navigations. Previously this lived in the dashboard
- * page, which meant listeners were torn down on navigation.
+ * across all page navigations.
+ *
+ * Includes graceful degradation for Besho's Honor device:
+ * Devices without Google Mobile Services (GMS) will fail FCM registration.
+ * This component will catch that failure and prevent app crashes.
  */
 export function FCMProvider() {
   const [author, setAuthor] = useState<string | null>(null);
@@ -23,13 +27,7 @@ export function FCMProvider() {
   useEffect(() => {
     if (!author) return;
     if (registeredForAuthor.current === author) return;
-
-    const cap = (
-      globalThis as unknown as {
-        Capacitor?: { isNativePlatform?: () => boolean };
-      }
-    ).Capacitor;
-    if (!cap?.isNativePlatform?.()) return;
+    if (!isNative()) return;
 
     cleanupRef.current?.();
 
@@ -67,6 +65,7 @@ export function FCMProvider() {
                 body: JSON.stringify({ token: token.value }),
                 credentials: "same-origin",
               });
+
               if (!res.ok) {
                 console.error(
                   `[fcm] Server rejected token for ${author}:`,
@@ -74,6 +73,7 @@ export function FCMProvider() {
                 );
                 return;
               }
+
               registeredForAuthor.current = author;
               console.log(`[fcm] Token stored for ${author}.`);
             } catch (err) {
@@ -85,7 +85,13 @@ export function FCMProvider() {
         const errorListener = await PushNotifications.addListener(
           "registrationError",
           (err) => {
-            console.error(`[fcm] Registration error for ${author}:`, err);
+            // CRITICAL FOR HONOR DEVICES:
+            // FCM will fire this if Play Services are missing. We catch it
+            // gracefully to prevent unhandled promise rejections.
+            console.warn(
+              `[fcm] Registration error for ${author} (Likely No GMS):`,
+              err,
+            );
           },
         );
 
@@ -128,9 +134,16 @@ export function FCMProvider() {
         };
 
         if (cancelled) return;
+
+        // Attempt registration. Will throw on devices without GMS.
         await PushNotifications.register();
       } catch (err) {
-        console.error(`[fcm] Init failed for ${author}:`, err);
+        console.warn(
+          `[fcm] Init failed for ${author} (Graceful Degradation):`,
+          err,
+        );
+        // TODO: In the future, we can initialize standard Web Push Service Worker
+        // here as a fallback mechanism for Besho's devices.
       }
     };
 

@@ -2,6 +2,7 @@
 
 import { useEffect } from "react";
 import { useBadge } from "@/hooks/use-badge";
+import { isNative } from "@/lib/native";
 
 /**
  * Initializes Capacitor native plugins on app start.
@@ -9,7 +10,7 @@ import { useBadge } from "@/hooks/use-badge";
  * - StatusBar: sets dark style and background colour
  * - SplashScreen: hides with a fade
  * - LocalNotifications: requests POST_NOTIFICATIONS permission (Android 13+)
- *   and schedules the daily mood nudge
+ * and schedules the daily mood nudge
  * - Badge: syncs app icon badge count with pending tasks + unacknowledged rules
  *
  * FCM registration is intentionally excluded — it requires a confirmed
@@ -22,13 +23,7 @@ export function CapacitorInit() {
 
   // StatusBar + SplashScreen
   useEffect(() => {
-    const cap = (
-      globalThis as unknown as {
-        Capacitor?: { isNativePlatform?: () => boolean };
-      }
-    ).Capacitor;
-
-    if (!cap?.isNativePlatform?.()) return;
+    if (!isNative()) return;
 
     void (async () => {
       try {
@@ -50,13 +45,7 @@ export function CapacitorInit() {
 
   // Local notification permission + daily mood nudge
   useEffect(() => {
-    const cap = (
-      globalThis as unknown as {
-        Capacitor?: { isNativePlatform?: () => boolean };
-      }
-    ).Capacitor;
-
-    if (!cap?.isNativePlatform?.()) return;
+    if (!isNative()) return;
 
     void (async () => {
       try {
@@ -78,6 +67,7 @@ export function CapacitorInit() {
           0,
           0,
         );
+
         if (target.getTime() <= now.getTime()) {
           target.setDate(target.getDate() + 1);
         }

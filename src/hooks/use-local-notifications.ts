@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback } from "react";
+import { isNative } from "@/lib/native";
 
 // ── Notification ID ranges ────────────────────────────────────────────────────
 // Stable IDs prevent duplicate notifications when re-scheduling.
@@ -10,15 +11,6 @@ export const NOTIF_ID = {
   taskDeadline: (numericSuffix: number) => 1000 + (numericSuffix % 900),
   ruleAckDeadline: (numericSuffix: number) => 2000 + (numericSuffix % 900),
 } as const;
-
-function isNative(): boolean {
-  const cap = (
-    globalThis as unknown as {
-      Capacitor?: { isNativePlatform?: () => boolean };
-    }
-  ).Capacitor;
-  return typeof cap !== "undefined" && !!cap.isNativePlatform?.();
-}
 
 /**
  * Converts an arbitrary string ID (e.g. Redis ULID) to a stable
@@ -129,10 +121,12 @@ export function useLocalNotifications() {
       0,
       0,
     );
+
     // If 9 PM has already passed today, schedule for tomorrow
     if (target.getTime() <= now.getTime()) {
       target.setDate(target.getDate() + 1);
     }
+
     await schedule({
       id: NOTIF_ID.MOOD_NUDGE,
       title: "💝 How are you feeling?",

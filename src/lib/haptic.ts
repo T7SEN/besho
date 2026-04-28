@@ -1,3 +1,5 @@
+import { isNative } from "@/lib/native";
+
 /**
  * Unified haptic feedback utility.
  *
@@ -7,17 +9,7 @@
  * On PWA (browser): falls back to navigator.vibrate with a 50ms minimum.
  * Silently ignored on iOS and desktop.
  */
-
 type HapticStyle = "light" | "medium" | "heavy";
-
-function isNative(): boolean {
-  const cap = (
-    globalThis as unknown as {
-      Capacitor?: { isNativePlatform?: () => boolean };
-    }
-  ).Capacitor;
-  return typeof cap !== "undefined" && !!cap.isNativePlatform?.();
-}
 
 export async function vibrate(
   pattern: number | number[] = 50,

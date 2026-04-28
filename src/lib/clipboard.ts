@@ -1,3 +1,5 @@
+import { isNative } from "@/lib/native";
+
 /**
  * Writes text to the system clipboard.
  *
@@ -10,16 +12,6 @@
  *
  * Returns true on success, false on failure. Never throws.
  */
-
-function isNative(): boolean {
-  const cap = (
-    globalThis as unknown as {
-      Capacitor?: { isNativePlatform?: () => boolean };
-    }
-  ).Capacitor;
-  return typeof cap !== "undefined" && !!cap.isNativePlatform?.();
-}
-
 export async function writeToClipboard(text: string): Promise<boolean> {
   if (isNative()) {
     try {
@@ -77,8 +69,8 @@ export async function readFromClipboard(): Promise<string | null> {
     if (nav?.clipboard?.readText) {
       return await nav.clipboard.readText();
     }
-  } catch {
-    /* clipboard read denied or unavailable */
+  } catch (err) {
+    console.error("[clipboard] navigator.clipboard failed:", err);
   }
 
   return null;

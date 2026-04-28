@@ -1,5 +1,6 @@
 "use client";
 
+import { isNative } from "@/lib/native";
 import { useEffect, useState } from "react";
 
 /**
@@ -19,13 +20,7 @@ export function useKeyboardHeight(): number {
   const [height, setHeight] = useState(0);
 
   useEffect(() => {
-    const cap = (
-      globalThis as unknown as {
-        Capacitor?: { isNativePlatform?: () => boolean };
-      }
-    ).Capacitor;
-
-    if (!cap?.isNativePlatform?.()) return;
+    if (!isNative()) return;
 
     type Handle = { remove: () => void };
     let showHandle: Handle | null = null;

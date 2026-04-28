@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import { isNative } from "@/lib/native";
 
 const HEARTBEAT_INTERVAL_MS = 4_000;
 
@@ -29,15 +30,6 @@ async function clearPresence(): Promise<void> {
   }
 }
 
-function isNative(): boolean {
-  const cap = (
-    globalThis as unknown as {
-      Capacitor?: { isNativePlatform?: () => boolean };
-    }
-  ).Capacitor;
-  return typeof cap !== "undefined" && !!cap.isNativePlatform?.();
-}
-
 /**
  * Tracks the user's current page in Redis with a 10s TTL.
  * On native Android: uses Capacitor App state for reliable background detection.
@@ -56,7 +48,6 @@ export function usePresence(page: string, enabled: boolean) {
     let removeCapacitorListener: (() => void) | null = null;
 
     if (isNative()) {
-      // ── Native Android — Capacitor App state is reliable ──────────────
       void (async () => {
         try {
           const { App } = await import("@capacitor/app");

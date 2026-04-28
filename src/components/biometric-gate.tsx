@@ -6,6 +6,7 @@ import { motion, AnimatePresence } from "motion/react";
 import { Fingerprint, Lock, KeyRound, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { vibrate } from "@/lib/haptic";
+import { isNative } from "@/lib/native";
 
 const LOCK_AFTER_MS = 30_000;
 const ENROLLED_KEY = "biometric_enrolled";
@@ -30,15 +31,6 @@ type SessionStorageLike = {
   removeItem: (k: string) => void;
   setItem: (k: string, v: string) => void;
 };
-
-function isNative(): boolean {
-  const cap = (
-    globalThis as unknown as {
-      Capacitor?: { isNativePlatform?: () => boolean };
-    }
-  ).Capacitor;
-  return typeof cap !== "undefined" && !!cap.isNativePlatform?.();
-}
 
 function readSessionFlag(key: string): boolean {
   try {

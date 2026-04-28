@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { isNative } from "@/lib/native";
 
 export type ConnectionType = "wifi" | "cellular" | "none" | "unknown";
 
@@ -11,15 +12,6 @@ export interface NetworkStatus {
 
 const INITIAL: NetworkStatus = { connected: true, connectionType: "unknown" };
 
-function isNative(): boolean {
-  const cap = (
-    globalThis as unknown as {
-      Capacitor?: { isNativePlatform?: () => boolean };
-    }
-  ).Capacitor;
-  return typeof cap !== "undefined" && !!cap.isNativePlatform?.();
-}
-
 /**
  * Returns real-time network connectivity status.
  *
@@ -28,9 +20,6 @@ function isNative(): boolean {
  * no actual internet (captive portal, etc.).
  *
  * On web: falls back to navigator.onLine with online/offline events.
- *
- * Drop-in replacement for the manual navigator.onLine pattern
- * currently used in notes/page.tsx.
  */
 export function useNetwork(): NetworkStatus {
   const [status, setStatus] = useState<NetworkStatus>(INITIAL);
@@ -93,7 +82,9 @@ export function useNetwork(): NetworkStatus {
       initWeb();
     }
 
-    return () => handle?.remove();
+    return () => {
+      handle?.remove();
+    };
   }, []);
 
   return status;

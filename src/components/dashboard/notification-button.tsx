@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { Bell, BellOff, BellRing } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { isNative } from "@/lib/native";
 
 export function NotificationButton() {
   const [permission, setPermission] =
@@ -41,16 +42,17 @@ export function NotificationButton() {
       .catch((err) => console.error("Failed to get subscription:", err));
   }, []);
 
-  // Don't render on native Capacitor (no Web Push in WebView)
-  // or on unsupported platforms
-  const win = globalThis as unknown as {
+  // 1. Check for native Capacitor app
+  if (isNative()) return null;
+
+  // 2. Safely check for Web Push support on the web
+  interface WebPushGlobal {
     Notification?: unknown;
     navigator?: { serviceWorker?: unknown };
     PushManager?: unknown;
-    Capacitor?: { isNativePlatform?: () => boolean };
-  };
+  }
 
-  if (win.Capacitor?.isNativePlatform?.()) return null;
+  const win = globalThis as WebPushGlobal;
   if (!win.Notification || !win.navigator?.serviceWorker || !win.PushManager) {
     return null;
   }
@@ -83,6 +85,7 @@ export function NotificationButton() {
 
       const perm = await win.Notification.requestPermission();
       setPermission(perm);
+
       if (perm !== "granted") return;
 
       const reg = await navigator.serviceWorker.ready;
