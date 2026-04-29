@@ -10,7 +10,7 @@ import { isNative } from "@/lib/native";
 import { logout } from "@/app/actions/auth";
 
 const LOCK_AFTER_MS = 30_000;
-const COLD_START_GRACE_PERIOD_MS = 5 * 60 * 1000; // 5 minutes (Adjust as desired)
+const COLD_START_GRACE_PERIOD_MS = 5 * 60 * 1000; // 5 minutes
 const ENROLLED_KEY = "biometric_enrolled";
 const SKIP_BIOMETRIC_KEY = "ourspace_skip_biometric";
 const MAX_AUTO_FAILURES = 2;
@@ -73,8 +73,14 @@ function BiometricGateInner({ children }: BiometricGateProps) {
   const [isPending, startTransition] = useTransition();
 
   const backgroundedAtRef = useRef<number | null>(null);
+
+  // CRITICAL FIX: This ref prevents the Knox/Android lifecycle loop.
+  // It ensures that if the app goes to the background/foreground *because*
+  // of the native biometric prompt, we don't accidentally fire it again.
   const isAuthenticatingRef = useRef(false);
+
   const failureCountRef = useRef(0);
+  const hasInitializedRef = useRef(false);
 
   // ── Authenticate ──────────────────────────────────────────────────────────
   const authenticate = useCallback(async () => {
@@ -157,7 +163,11 @@ function BiometricGateInner({ children }: BiometricGateProps) {
         }
       }
     } finally {
-      isAuthenticatingRef.current = false;
+      // CRITICAL FIX: We add a tiny delay before releasing the lock to ensure
+      // Knox has completely relinquished control of the Activity lifecycle.
+      setTimeout(() => {
+        isAuthenticatingRef.current = false;
+      }, 300);
     }
   }, []);
 
@@ -167,6 +177,9 @@ function BiometricGateInner({ children }: BiometricGateProps) {
       setTimeout(() => setGateState("unavailable"), 0);
       return;
     }
+
+    if (hasInitializedRef.current) return;
+    hasInitializedRef.current = true;
 
     void (async () => {
       try {
@@ -230,6 +243,9 @@ function BiometricGateInner({ children }: BiometricGateProps) {
         const listener = await App.addListener(
           "appStateChange",
           async ({ isActive }) => {
+            // CRITICAL FIX: If Knox is currently active, ignore ALL lifecycle events.
+            if (isAuthenticatingRef.current) return;
+
             if (!isActive) {
               if (gateState === "unlocked") {
                 backgroundedAtRef.current = Date.now();
