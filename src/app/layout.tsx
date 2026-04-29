@@ -15,6 +15,7 @@ import { BiometricGate } from "@/components/biometric-gate";
 import { TopNavbar } from "@/components/navigation/top-navbar";
 import { PullToRefresh } from "@/components/pull-to-refresh";
 import { ErrorBoundary } from "@/components/ui/error-boundary";
+import { GlobalLogger } from "@/components/global-logger";
 
 const sourceSans3 = Source_Sans_3({
   subsets: ["latin"],
@@ -80,6 +81,7 @@ export default function RootLayout({
     >
       <body className="flex min-h-full flex-col">
         {/* 2. Wrap the entire React tree to catch Provider and UI crashes */}
+        <GlobalLogger />
         <ErrorBoundary>
           <SerwistProvider swUrl="/serwist/sw.js">
             <ThemeProvider

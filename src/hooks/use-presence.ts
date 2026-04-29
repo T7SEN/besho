@@ -21,16 +21,28 @@ async function setPresence(page: string): Promise<void> {
 
 async function clearPresence(): Promise<void> {
   try {
-    await fetch("/api/presence", {
+    const response = await fetch("/api/presence", {
       method: "DELETE",
       keepalive: true,
       credentials: "same-origin",
     });
+
+    if (response.status === 401) {
+      logger.debug(
+        "[presence] Session already cleared, skipping presence delete.",
+      );
+      return;
+    }
+
+    if (!response.ok) {
+      logger.warn("[presence] Unexpected response during clear:", {
+        status: response.status,
+      });
+    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-
     if (msg.includes("Failed to fetch") || msg.includes("aborted")) {
-      logger.debug("[presence] Clear aborted during reload:", { error: msg });
+      logger.debug("[presence] Clear aborted during navigation.");
     } else {
       logger.warn("[presence] Failed to clear presence:", { error: err });
     }
