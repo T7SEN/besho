@@ -13,9 +13,14 @@ async function setPresence(page: string): Promise<void> {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ page }),
       credentials: "same-origin",
+      keepalive: true,
     });
   } catch (err) {
-    logger.error("[presence] Failed to set presence:", err);
+    // Transient network failure (tab switch, page hide) — presence is
+    // best-effort. Demoted to debug so Sentry never captures this.
+    logger.debug("[presence] setPresence aborted (transient)", {
+      error: String(err),
+    });
   }
 }
 
@@ -46,6 +51,24 @@ async function clearPresence(): Promise<void> {
     } else {
       logger.warn("[presence] Failed to clear presence:", { error: err });
     }
+  }
+}
+
+/**
+ * Fires a best-effort DELETE via sendBeacon on page unload/hide.
+ * sendBeacon is guaranteed not to be cancelled by the browser on hide,
+ * unlike fetch. Uses keepalive fetch as fallback for DELETE semantics.
+ */
+function clearPresenceBeacon(): void {
+  const nav = (globalThis as unknown as { navigator?: Navigator }).navigator;
+  if (nav?.sendBeacon) {
+    nav.sendBeacon(
+      "/api/presence/beacon",
+      new Blob(["{}"], { type: "application/json" }),
+    );
+  } else {
+    // Fallback for environments without sendBeacon (rare)
+    void clearPresence();
   }
 }
 
@@ -86,7 +109,6 @@ export function usePresence(page: string, enabled: boolean) {
         }
       })();
     } else {
-      // ── PWA — browser events ───────────────────────────────────────────
       const doc = globalThis as unknown as {
         addEventListener: (type: string, fn: () => void) => void;
         removeEventListener: (type: string, fn: () => void) => void;
@@ -99,14 +121,14 @@ export function usePresence(page: string, enabled: boolean) {
 
       const handleVisibilityChange = () => {
         if (doc.visibilityState === "hidden") {
-          void clearPresence();
+          clearPresenceBeacon(); // ← beacon: browser won't cancel this
         } else {
           void setPresence(page);
         }
       };
 
       const handlePageHide = () => {
-        void clearPresence();
+        clearPresenceBeacon(); // ← beacon: guaranteed to fire on unload
       };
 
       doc.addEventListener("visibilitychange", handleVisibilityChange);
