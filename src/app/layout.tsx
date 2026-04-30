@@ -5,7 +5,6 @@ import { cn } from "@/lib/utils";
 import { ThemeProvider } from "@/components/theme-provider";
 import { SpeedInsights } from "@vercel/speed-insights/next";
 import { Analytics } from "@vercel/analytics/next";
-import { SerwistProvider } from "./serwist";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { FloatingNavbar } from "@/components/navigation/floating-navbar";
 import { CapacitorInit } from "@/components/capacitor-init";
@@ -83,28 +82,25 @@ export default function RootLayout({
         {/* 2. Wrap the entire React tree to catch Provider and UI crashes */}
         <GlobalLogger />
         <ErrorBoundary>
-          <SerwistProvider swUrl="/serwist/sw.js">
-            <ThemeProvider
-              attribute="class"
-              defaultTheme="dark"
-              forcedTheme="dark"
-              disableTransitionOnChange
-            >
-              <TooltipProvider>
-                <BiometricGate>
-                  <PullToRefresh />
-                  <TopNavbar />
-                  {children}
-                  <CapacitorInit />
-                  <PushToast />
-                  <FCMProvider />
-                  <FloatingNavbar />
-                </BiometricGate>
-              </TooltipProvider>
-            </ThemeProvider>
-          </SerwistProvider>
+          <ThemeProvider
+            attribute="class"
+            defaultTheme="dark"
+            forcedTheme="dark"
+            disableTransitionOnChange
+          >
+            <TooltipProvider>
+              <BiometricGate>
+                <PullToRefresh />
+                <TopNavbar />
+                {children}
+                <CapacitorInit />
+                <PushToast />
+                <FCMProvider />
+                <FloatingNavbar />
+              </BiometricGate>
+            </TooltipProvider>
+          </ThemeProvider>
         </ErrorBoundary>
-
         <SpeedInsights />
         <Analytics />
       </body>

@@ -52,3 +52,6 @@ public/sw*
 # Capacitor
 android/
 .claude/*
+
+# Sentry Config File
+.env.sentry-build-plugin

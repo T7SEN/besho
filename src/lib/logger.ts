@@ -1,3 +1,6 @@
+// src/lib/logger.ts
+import * as Sentry from "@sentry/nextjs";
+
 type LogLevel =
   | "trace"
   | "debug"
@@ -6,6 +9,20 @@ type LogLevel =
   | "warn"
   | "error"
   | "fatal";
+
+/**
+ * Maps custom log levels to Sentry logger methods.
+ * 'interaction' has no Sentry equivalent — mapped to 'info'.
+ */
+const SENTRY_LEVEL_MAP = {
+  trace: "trace",
+  debug: "debug",
+  info: "info",
+  interaction: "info",
+  warn: "warn",
+  error: "error",
+  fatal: "fatal",
+} as const satisfies Record<LogLevel, keyof typeof Sentry.logger>;
 
 class Logger {
   private formatError(error: unknown) {
@@ -21,32 +38,22 @@ class Logger {
     context?: Record<string, unknown>,
     error?: unknown,
   ) {
-    const logEntry: Record<string, unknown> = {
-      level,
-      message,
-      timestamp: new Date().toISOString(),
-    };
-
-    if (context && Object.keys(context).length > 0) logEntry.context = context;
-    if (error) logEntry.error = this.formatError(error);
-
     // --- LOCAL DEVELOPMENT (Colorful Strings) ---
     if (process.env.NODE_ENV !== "production") {
-      const colors = {
-        trace: "\x1b[90m", // Gray
-        debug: "\x1b[34m", // Blue
-        info: "\x1b[36m", // Cyan
-        interaction: "\x1b[35m", // Magenta
-        warn: "\x1b[33m", // Yellow
-        error: "\x1b[31m", // Red
-        fatal: "\x1b[41m\x1b[37m", // White on Red Background
+      const colors: Record<LogLevel, string> = {
+        trace: "\x1b[90m",
+        debug: "\x1b[34m",
+        info: "\x1b[36m",
+        interaction: "\x1b[35m",
+        warn: "\x1b[33m",
+        error: "\x1b[31m",
+        fatal: "\x1b[41m\x1b[37m",
       };
       const reset = "\x1b[0m";
       const prefix = `${colors[level]}[${level.toUpperCase()}] ${message}${reset}`;
-
-      const extras = [];
-      if (logEntry.context) extras.push(logEntry.context);
-      if (logEntry.error) extras.push(logEntry.error);
+      const extras: unknown[] = [];
+      if (context && Object.keys(context).length > 0) extras.push(context);
+      if (error) extras.push(this.formatError(error));
 
       if (level === "error" || level === "fatal")
         console.error(prefix, ...extras);
@@ -58,33 +65,61 @@ class Logger {
       return;
     }
 
-    // --- VERCEL PRODUCTION (Structured JSON) ---
-    const jsonOutput = JSON.stringify(logEntry);
-    if (level === "error" || level === "fatal") console.error(jsonOutput);
-    else if (level === "warn") console.warn(jsonOutput);
-    else if (level === "info" || level === "interaction")
-      console.info(jsonOutput);
-    else console.debug(jsonOutput);
+    // --- PRODUCTION (Sentry Logs + Exception Capture) ---
+    const sentryLevel = SENTRY_LEVEL_MAP[level];
+    const attributes: Record<string, string | number | boolean> = {};
+
+    // Flatten context into Sentry log attributes (must be primitives)
+    if (context) {
+      for (const [key, value] of Object.entries(context)) {
+        if (
+          typeof value === "string" ||
+          typeof value === "number" ||
+          typeof value === "boolean"
+        ) {
+          attributes[key] = value;
+        } else {
+          attributes[key] = JSON.stringify(value);
+        }
+      }
+    }
+
+    // Forward to Sentry Logs — preserves structured output in Vercel logs too
+    Sentry.logger[sentryLevel](message, attributes);
+
+    // Errors and fatals also create a full Sentry Issue with stack trace
+    if ((level === "error" || level === "fatal") && error) {
+      Sentry.captureException(error, {
+        extra: { message, ...context },
+        level: level === "fatal" ? "fatal" : "error",
+      });
+    }
   }
 
   trace(message: string, context?: Record<string, unknown>) {
     this.log("trace", message, context);
   }
+
   debug(message: string, context?: Record<string, unknown>) {
     this.log("debug", message, context);
   }
+
   info(message: string, context?: Record<string, unknown>) {
     this.log("info", message, context);
   }
+
   interaction(message: string, context?: Record<string, unknown>) {
     this.log("interaction", message, context);
   }
+
   warn(message: string, context?: Record<string, unknown>) {
     this.log("warn", message, context);
   }
+
   error(message: string, error?: unknown, context?: Record<string, unknown>) {
     this.log("error", message, context, error);
   }
+
   fatal(message: string, error?: unknown, context?: Record<string, unknown>) {
     this.log("fatal", message, context, error);
   }

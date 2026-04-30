@@ -6,10 +6,7 @@ export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
   const isPublicAsset =
-    pathname === "/manifest.json" ||
-    pathname.startsWith("/icon-") ||
-    pathname.startsWith("/serwist/") ||
-    pathname === "/~offline";
+    pathname === "/manifest.json" || pathname.startsWith("/icon-");
 
   if (isPublicAsset) return NextResponse.next();
 
@@ -58,6 +55,6 @@ export async function proxy(request: NextRequest) {
 
 export const config = {
   matcher: [
-    "/((?!api|_next/static|_next/image|favicon\\.ico|manifest\\.json|icon-|serwist|~offline|\\.*\\.svg$).*)",
+    "/((?!api|_next/static|_next/image|favicon\\.ico|manifest\\.json|icon-|\\.*\\.svg$).*)",
   ],
 };
