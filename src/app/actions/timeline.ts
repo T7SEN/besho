@@ -85,6 +85,12 @@ export async function addMilestone(
     pipeline.zadd(INDEX_KEY, { score: milestone.date, member: milestone.id });
     await pipeline.exec();
 
+    logger.interaction("[timeline] Milestone added", {
+      id: milestone.id,
+      title: milestone.title,
+      emoji: milestone.emoji,
+      author,
+    });
     revalidatePath("/timeline");
     return { success: true };
   } catch (error) {
@@ -111,6 +117,11 @@ export async function deleteMilestone(
     pipeline.zrem(INDEX_KEY, id);
     await pipeline.exec();
 
+    logger.interaction("[timeline] Milestone deleted", {
+      id,
+      title: existing.title,
+      author,
+    });
     revalidatePath("/timeline");
     return { success: true };
   } catch (error) {

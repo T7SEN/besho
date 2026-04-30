@@ -190,6 +190,13 @@ export async function createLedgerEntry(
       url: "/ledger",
     });
 
+    logger.interaction("[ledger] Entry created", {
+      id: entry.id,
+      type: entry.type,
+      category: entry.category,
+      title: entry.title,
+      by: session.author,
+    });
     revalidatePath("/ledger");
     return { success: true };
   } catch (error) {
@@ -215,6 +222,13 @@ export async function deleteLedgerEntry(
     pipeline.zrem(INDEX_KEY, id);
     await pipeline.exec();
 
+    logger.interaction("[ledger] Entry deleted", {
+      id,
+      type: existing.type,
+      category: existing.category,
+      title: existing.title,
+      by: session.author,
+    });
     revalidatePath("/ledger");
     return { success: true };
   } catch (error) {

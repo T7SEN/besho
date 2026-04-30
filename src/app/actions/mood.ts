@@ -135,6 +135,10 @@ export async function submitMood(
     await redis.set(moodKey(today, session.author), emoji, {
       ex: MOOD_RETENTION_TTL,
     });
+    logger.interaction("[mood] Mood submitted", {
+      author: session.author,
+      emoji,
+    });
     return { success: true };
   } catch (error) {
     logger.error("[mood] Failed to submit mood:", error);
@@ -154,6 +158,10 @@ export async function submitState(
     await redis.set(stateKey(today, session.author), emoji, {
       ex: MOOD_RETENTION_TTL,
     });
+    logger.interaction("[mood] State submitted", {
+      author: session.author,
+      emoji,
+    });
     return { success: true };
   } catch (error) {
     logger.error("[mood] Failed to submit state:", error);
@@ -171,7 +179,6 @@ export async function sendHug(): Promise<{
   const author = session.author as "T7SEN" | "Besho";
   const partner = author === "T7SEN" ? "Besho" : "T7SEN";
   const today = todayInCairo();
-  // Hugs are ephemeral — still expire at midnight
   const ttl = secondsUntilMidnight();
 
   try {
@@ -187,6 +194,7 @@ export async function sendHug(): Promise<{
     await redis.set(hugKey(today, author), "1", { ex: ttl });
     await sendHugPush(partner, author);
 
+    logger.interaction("[mood] Hug sent", { from: author, to: partner });
     return { success: true };
   } catch (error) {
     logger.error("[mood] Failed to send hug:", error);

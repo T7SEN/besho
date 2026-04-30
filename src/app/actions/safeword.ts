@@ -84,7 +84,8 @@ export async function triggerSafeWord(): Promise<{
 
   // Set cooldown
   await redis.set(cooldownKey(author), 1, { ex: COOLDOWN_SECONDS });
-  await recordSafeWordEvent(author); // Record in history for audit purposes
+  await recordSafeWordEvent(author);
+  logger.interaction("[safeword] Safe word triggered", { by: author });
 
   const payload = {
     title: "🔴 Safe Word",

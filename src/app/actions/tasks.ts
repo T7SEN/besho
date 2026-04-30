@@ -90,6 +90,12 @@ export async function createTask(
       url: "/tasks",
     });
 
+    logger.interaction("[tasks] Task created", {
+      id: task.id,
+      title: task.title,
+      priority: task.priority,
+      author: session.author,
+    });
     revalidatePath("/tasks");
     return { success: true };
   } catch (error) {
@@ -124,6 +130,11 @@ export async function completeTask(
         url: "/tasks",
       });
     }
+    logger.interaction("[tasks] Task completed", {
+      id,
+      title: existing.title,
+      by: session.author,
+    });
 
     revalidatePath("/tasks");
     return { success: true };
@@ -147,6 +158,10 @@ export async function deleteTask(
     pipeline.zrem(INDEX_KEY, id);
     await pipeline.exec();
 
+    logger.interaction("[tasks] Task deleted", {
+      id,
+      by: session.author,
+    });
     revalidatePath("/tasks");
     return { success: true };
   } catch (error) {

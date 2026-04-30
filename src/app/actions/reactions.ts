@@ -40,15 +40,22 @@ export async function reactToNote(
   try {
     const existing = await redis.hget<string>(key, author);
 
+    let action: "added" | "removed" | "replaced";
     if (existing === emoji) {
-      // Same emoji — remove reaction
       await redis.hdel(key, author);
+      action = "removed";
     } else {
-      // New or different emoji — set it
       await redis.hset(key, { [author]: emoji });
+      action = existing ? "replaced" : "added";
     }
 
     const all = await redis.hgetall<Record<string, string>>(key);
+    logger.interaction("[reactions] Reaction toggled", {
+      author,
+      noteId,
+      emoji,
+      action,
+    });
     return { reactions: all ?? {} };
   } catch (error) {
     logger.error("[reactions] Failed to react:", error);

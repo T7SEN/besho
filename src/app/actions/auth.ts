@@ -3,6 +3,7 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { encrypt, decrypt } from "@/lib/auth-utils";
+import { logger } from "@/lib/logger";
 
 export async function getCurrentAuthor(): Promise<"T7SEN" | "Besho" | null> {
   const cookieStore = await cookies();
@@ -24,6 +25,7 @@ export async function login(prevState: unknown, formData: FormData) {
   }
 
   if (!author) {
+    logger.warn("[auth] Failed login attempt");
     return { error: "Incorrect passcode. Please try again." };
   }
 
@@ -44,11 +46,17 @@ export async function login(prevState: unknown, formData: FormData) {
     path: "/",
   });
 
+  logger.interaction("[auth] User logged in", { author });
   redirect("/");
 }
 
 export async function logout() {
   const cookieStore = await cookies();
+  const value = cookieStore.get("session")?.value;
+  if (value) {
+    const session = await decrypt(value);
+    logger.interaction("[auth] User logged out", { author: session?.author });
+  }
   cookieStore.delete("session");
   redirect("/login");
 }

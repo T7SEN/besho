@@ -36,8 +36,6 @@ async function getSession() {
   return decrypt(value);
 }
 
-// ─── Push helper ──────────────────────────────────────────────────────────────
-
 async function sendRuleNotification(
   to: string,
   payload: { title: string; body: string; url: string },
@@ -100,7 +98,6 @@ async function sendRuleNotification(
       return;
     }
 
-    // Web Push fallback
     const subscription = await redis.get(`push:subscription:${to}`);
     if (!subscription) return;
 
@@ -118,8 +115,6 @@ async function sendRuleNotification(
     logger.error("[rules] Notification failed:", err);
   }
 }
-
-// ─── Actions ──────────────────────────────────────────────────────────────────
 
 export async function getRules(): Promise<Rule[]> {
   try {
@@ -173,6 +168,11 @@ export async function createRule(
       url: "/rules",
     });
 
+    logger.interaction("[rules] Rule created", {
+      id: rule.id,
+      title: rule.title,
+      author: session.author,
+    });
     revalidatePath("/rules");
     return { success: true };
   } catch (error) {
@@ -208,6 +208,10 @@ export async function acknowledgeRule(
       url: "/rules",
     });
 
+    logger.interaction("[rules] Rule acknowledged", {
+      id,
+      title: existing.title,
+    });
     revalidatePath("/rules");
     return { success: true };
   } catch (error) {
@@ -235,6 +239,7 @@ export async function completeRule(
     };
     await redis.set(ruleKey(id), updated);
 
+    logger.interaction("[rules] Rule completed", { id, title: existing.title });
     revalidatePath("/rules");
     return { success: true };
   } catch (error) {
@@ -255,8 +260,6 @@ export async function reopenRule(
     const existing = await redis.get<Rule>(ruleKey(id));
     if (!existing) return { error: "Rule not found." };
 
-    // Destructure out completedAt so it's absent from the stored object
-    // rather than set to undefined (which Redis would store as null)
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { completedAt: _removed, ...rest } = existing;
     const updated: Rule = {
@@ -265,6 +268,7 @@ export async function reopenRule(
     };
     await redis.set(ruleKey(id), updated);
 
+    logger.interaction("[rules] Rule reopened", { id, title: existing.title });
     revalidatePath("/rules");
     return { success: true };
   } catch (error) {
@@ -287,6 +291,7 @@ export async function deleteRule(
     pipeline.zrem(INDEX_KEY, id);
     await pipeline.exec();
 
+    logger.interaction("[rules] Rule deleted", { id });
     revalidatePath("/rules");
     return { success: true };
   } catch (error) {

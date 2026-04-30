@@ -67,6 +67,7 @@ export async function markAllNotificationsRead(): Promise<void> {
       pipeline.rpush(historyKey(author), record);
     }
     await pipeline.exec();
+    logger.interaction("[notifications] All marked as read", { author });
   } catch (error) {
     logger.error("[notifications] Failed to mark read:", error);
   }
@@ -101,6 +102,7 @@ export async function clearAllNotifications(): Promise<void> {
 
   try {
     await redis.del(historyKey(author));
+    logger.interaction("[notifications] All notifications cleared", { author });
   } catch (error) {
     logger.error("[notifications] Failed to clear history:", error);
   }
