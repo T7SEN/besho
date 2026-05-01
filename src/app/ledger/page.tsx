@@ -40,6 +40,7 @@ import { vibrate } from "@/lib/haptic";
 import { Button } from "@/components/ui/button";
 import { RichTextEditor } from "@/components/ui/rich-text-editor";
 import { MarkdownRenderer } from "@/components/ui/markdown-renderer";
+import { useKeyboardHeight } from "@/hooks/use-keyboard";
 
 type Filter = "all" | "reward" | "punishment";
 
@@ -77,6 +78,22 @@ export default function LedgerPage() {
     const list = await getLedgerEntries();
     setTimeout(() => setEntries(list), 0);
   }, []);
+
+  // ── Keyboard height via @capacitor/keyboard ──────────────────────────────
+  const keyboardHeight = useKeyboardHeight();
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (keyboardHeight > 0 && containerRef.current) {
+      const timeoutId = setTimeout(() => {
+        containerRef.current?.scrollIntoView({
+          behavior: "smooth",
+          block: "end",
+        });
+      }, 50);
+      return () => clearTimeout(timeoutId);
+    }
+  }, [keyboardHeight]);
 
   useRefreshListener(handleRefresh);
 
@@ -278,18 +295,27 @@ export default function LedgerPage() {
                   >
                     Details
                   </label>
-                  <RichTextEditor
-                    id="ledger-desc"
-                    name="description"
-                    placeholder="Additional context…"
-                    rows={2}
-                    disabled={isPending || undefined}
-                    className={cn(
-                      "w-full resize-none rounded-xl border border-white/10 bg-black/20 px-4 py-2.5 text-sm",
-                      "placeholder:text-muted-foreground/40 outline-none",
-                      "focus:border-primary/40 transition-colors",
-                    )}
-                  />
+                  <motion.div
+                    ref={containerRef}
+                    animate={{
+                      paddingBottom:
+                        keyboardHeight > 0 ? keyboardHeight + 16 : 0,
+                    }}
+                    transition={{ type: "spring", bounce: 0, duration: 0.3 }}
+                  >
+                    <RichTextEditor
+                      id="ledger-desc"
+                      name="description"
+                      placeholder="Additional context…"
+                      rows={2}
+                      disabled={isPending || undefined}
+                      className={cn(
+                        "w-full resize-none rounded-xl border border-white/10 bg-black/20 px-4 py-2.5 text-sm",
+                        "placeholder:text-muted-foreground/40 outline-none",
+                        "focus:border-primary/40 transition-colors",
+                      )}
+                    />
+                  </motion.div>
                 </div>
 
                 {/* Timestamp */}

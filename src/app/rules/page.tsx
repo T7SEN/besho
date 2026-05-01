@@ -48,6 +48,7 @@ import { vibrate } from "@/lib/haptic";
 import { Button } from "@/components/ui/button";
 import { RichTextEditor } from "@/components/ui/rich-text-editor";
 import { MarkdownRenderer } from "@/components/ui/markdown-renderer";
+import { useKeyboardHeight } from "@/hooks/use-keyboard";
 
 const STATUS_CONFIG: Record<
   RuleStatus,
@@ -148,6 +149,21 @@ export default function RulesPage() {
   const { schedule, cancel } = useLocalNotifications();
 
   usePresence("/rules", !!currentAuthor);
+
+  const keyboardHeight = useKeyboardHeight();
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (keyboardHeight > 0 && containerRef.current) {
+      const timeoutId = setTimeout(() => {
+        containerRef.current?.scrollIntoView({
+          behavior: "smooth",
+          block: "end",
+        });
+      }, 50);
+      return () => clearTimeout(timeoutId);
+    }
+  }, [keyboardHeight]);
 
   const handleRefresh = useCallback(async () => {
     const list = await getRules();
@@ -362,18 +378,27 @@ export default function RulesPage() {
                   >
                     Details
                   </label>
-                  <RichTextEditor
-                    id="rule-desc"
-                    name="description"
-                    placeholder="Context, expectations, consequences…"
-                    rows={3}
-                    disabled={isPending || undefined}
-                    className={cn(
-                      "w-full resize-none rounded-xl border border-white/10 bg-black/20 px-4 py-2.5 text-sm",
-                      "placeholder:text-muted-foreground/40 outline-none",
-                      "focus:border-primary/40 transition-colors",
-                    )}
-                  />
+                  <motion.div
+                    ref={containerRef}
+                    animate={{
+                      paddingBottom:
+                        keyboardHeight > 0 ? keyboardHeight + 16 : 0,
+                    }}
+                    transition={{ type: "spring", bounce: 0, duration: 0.3 }}
+                  >
+                    <RichTextEditor
+                      id="rule-desc"
+                      name="description"
+                      placeholder="Context, expectations, consequences…"
+                      rows={3}
+                      disabled={isPending || undefined}
+                      className={cn(
+                        "w-full resize-none rounded-xl border border-white/10 bg-black/20 px-4 py-2.5 text-sm",
+                        "placeholder:text-muted-foreground/40 outline-none",
+                        "focus:border-primary/40 transition-colors",
+                      )}
+                    />
+                  </motion.div>
                 </div>
 
                 {/* Acknowledgement deadline */}

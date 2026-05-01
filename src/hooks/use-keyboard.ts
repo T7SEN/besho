@@ -6,16 +6,15 @@ import { useEffect, useState } from "react";
 
 /**
  * Returns the current software keyboard height in pixels.
- * 0 when the keyboard is hidden or on web.
  *
- * On native: driven by @capacitor/keyboard keyboardWillShow/Hide events.
- * With Keyboard.resize = "body" in capacitor.config.ts, the body already
- * shrinks — this hook gives you the exact height for additional layout
- * adjustments (e.g. padding the compose bar above the keyboard edge).
+ * ARCHITECTURAL CONTEXT:
+ * This hook is designed to work with `resize: "none"` in capacitor.config.ts.
+ * The webview remains full-screen, and the keyboard slides over it.
+ * Use this hook to smoothly animate your input fields above the keyboard edge.
  *
  * Usage:
  *   const keyboardHeight = useKeyboardHeight()
- *   <div style={{ paddingBottom: keyboardHeight }}>...</div>
+ *   <motion.div style={{ paddingBottom: keyboardHeight }}>...
  */
 export function useKeyboardHeight(): number {
   const [height, setHeight] = useState(0);
@@ -32,11 +31,17 @@ export function useKeyboardHeight(): number {
         const { Keyboard } = await import("@capacitor/keyboard");
 
         showHandle = await Keyboard.addListener("keyboardWillShow", (info) => {
-          setTimeout(() => setHeight(info.keyboardHeight), 0);
+          // requestAnimationFrame ensures the React state update paints
+          // in sync with the browser's rendering cycle, reducing jitter.
+          requestAnimationFrame(() => {
+            setHeight(info.keyboardHeight);
+          });
         });
 
         hideHandle = await Keyboard.addListener("keyboardWillHide", () => {
-          setTimeout(() => setHeight(0), 0);
+          requestAnimationFrame(() => {
+            setHeight(0);
+          });
         });
       } catch (err) {
         logger.error("[keyboard] Failed to initialize listeners:", err);

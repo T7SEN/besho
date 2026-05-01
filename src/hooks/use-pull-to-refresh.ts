@@ -15,8 +15,6 @@ export interface PullToRefreshState {
   isPulling: boolean;
 }
 
-type TouchLike = { touches: { clientY: number }[] };
-
 export function usePullToRefresh({
   onRefresh,
   threshold = 80,
@@ -30,54 +28,56 @@ export function usePullToRefresh({
   const pullRef = useRef(0);
   const isRefreshingRef = useRef(false);
   const isPullingRef = useRef(false);
+  const animationFrameRef = useRef<number | null>(null);
 
   const reset = useCallback(() => {
     pullRef.current = 0;
     isPullingRef.current = false;
-    setTimeout(() => {
+
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+    }
+
+    requestAnimationFrame(() => {
       setPullDistance(0);
       setIsPulling(false);
-    }, 0);
+    });
   }, []);
 
   useEffect(() => {
     if (!enabled) return;
 
-    type Win = {
-      scrollY: number;
-      addEventListener: (
-        type: string,
-        fn: EventListener,
-        opts?: AddEventListenerOptions,
-      ) => void;
-      removeEventListener: (type: string, fn: EventListener) => void;
+    const handleTouchStart = (e: TouchEvent) => {
+      if (window.scrollY > 5) return;
+      startYRef.current = e.touches[0].clientY;
     };
 
-    const win = globalThis as unknown as Win;
+    const handleTouchMove = (e: TouchEvent) => {
+      if (window.scrollY > 5 || isRefreshingRef.current) return;
 
-    const handleTouchStart = (e: Event) => {
-      const te = e as unknown as TouchLike;
-      if (win.scrollY > 5) return;
-      startYRef.current = te.touches[0].clientY;
-    };
-
-    const handleTouchMove = (e: Event) => {
-      const te = e as unknown as TouchLike;
-      if (win.scrollY > 5) return;
-      if (isRefreshingRef.current) return;
-
-      const distance = te.touches[0].clientY - startYRef.current;
+      const distance = e.touches[0].clientY - startYRef.current;
       if (distance <= 0) return;
 
-      const clamped = Math.min(distance, threshold * 1.5);
+      // Architectural Upgrade: Elastic Friction
+      // Makes the pull feel heavier the further down you drag.
+      const friction = 0.45;
+      const elasticDistance = distance * friction;
+      const clamped = Math.min(elasticDistance, threshold * 1.5);
+
       pullRef.current = clamped;
 
       if (!isPullingRef.current) {
         isPullingRef.current = true;
-        setTimeout(() => setIsPulling(true), 0);
+        requestAnimationFrame(() => setIsPulling(true));
       }
 
-      setTimeout(() => setPullDistance(clamped), 0);
+      // Architectural Upgrade: Sync with browser paint cycle
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+      }
+      animationFrameRef.current = requestAnimationFrame(() => {
+        setPullDistance(clamped);
+      });
     };
 
     const handleTouchEnd = async () => {
@@ -90,38 +90,35 @@ export function usePullToRefresh({
       isPullingRef.current = false;
       pullRef.current = 0;
 
-      setTimeout(() => {
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+      }
+
+      requestAnimationFrame(() => {
         setIsPulling(false);
         setPullDistance(0);
         setIsRefreshing(true);
-      }, 0);
+      });
 
       try {
         await onRefresh();
       } finally {
         isRefreshingRef.current = false;
-        setTimeout(() => setIsRefreshing(false), 0);
+        requestAnimationFrame(() => setIsRefreshing(false));
       }
     };
 
-    win.addEventListener("touchstart", handleTouchStart as EventListener, {
-      passive: true,
-    });
-    win.addEventListener("touchmove", handleTouchMove as EventListener, {
-      passive: true,
-    });
-    win.addEventListener(
-      "touchend",
-      handleTouchEnd as unknown as EventListener,
-    );
+    window.addEventListener("touchstart", handleTouchStart, { passive: true });
+    window.addEventListener("touchmove", handleTouchMove, { passive: true });
+    window.addEventListener("touchend", handleTouchEnd);
 
     return () => {
-      win.removeEventListener("touchstart", handleTouchStart as EventListener);
-      win.removeEventListener("touchmove", handleTouchMove as EventListener);
-      win.removeEventListener(
-        "touchend",
-        handleTouchEnd as unknown as EventListener,
-      );
+      window.removeEventListener("touchstart", handleTouchStart);
+      window.removeEventListener("touchmove", handleTouchMove);
+      window.removeEventListener("touchend", handleTouchEnd);
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+      }
     };
   }, [enabled, threshold, onRefresh, reset]);
 

@@ -5,7 +5,7 @@ import { getNavBadges } from "@/app/actions/badges";
 import { isNative } from "@/lib/native";
 import { logger } from "@/lib/logger";
 
-const SYNC_INTERVAL_MS = 5 * 60 * 1_000; // 5 minutes
+const SYNC_INTERVAL_MS = 5 * 60 * 1_000;
 
 /**
  * Syncs the Android app icon badge count with the sum of pending tasks
@@ -14,17 +14,27 @@ const SYNC_INTERVAL_MS = 5 * 60 * 1_000; // 5 minutes
  * - Syncs immediately on mount
  * - Re-syncs every 5 minutes
  * - Re-syncs on app foreground (appStateChange)
- * - Clears badge on unmount
  *
  * Must only be mounted once — place in CapacitorInit.
  */
 export function useBadge(): void {
   const sync = useCallback(async () => {
     if (!isNative()) return;
+
     try {
       const { Badge } = await import("@capawesome/capacitor-badge");
       const { isSupported } = await Badge.isSupported();
       if (!isSupported) return;
+
+      // Architectural Fix 1: Android 13+ Permission Gateway
+      let permStatus = await Badge.checkPermissions();
+      if (permStatus.display === "prompt") {
+        permStatus = await Badge.requestPermissions();
+      }
+      if (permStatus.display !== "granted") {
+        logger.warn("[badge] Permission denied.");
+        return;
+      }
 
       const { pendingTasks, unacknowledgedRules } = await getNavBadges();
       const total = pendingTasks + unacknowledgedRules;
@@ -66,15 +76,8 @@ export function useBadge(): void {
     return () => {
       clearInterval(intervalId);
       removeAppListener?.();
-      // Clear badge on unmount
-      void (async () => {
-        try {
-          const { Badge } = await import("@capawesome/capacitor-badge");
-          await Badge.clear();
-        } catch (err) {
-          logger.error("[badge] Failed to clear badge:", err);
-        }
-      })();
+      // Architectural Fix 2: Badges must persist when the app is killed.
+      // Do not call Badge.clear() here.
     };
   }, [sync]);
 }

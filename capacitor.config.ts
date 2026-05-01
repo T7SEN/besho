@@ -24,17 +24,13 @@ const config: CapacitorConfig = {
       presentationOptions: ["badge", "sound", "alert"],
     },
     LocalNotifications: {
-      // Must exist in android/app/src/main/res/drawable/
-      // Use ic_launcher_foreground as a safe default that Capacitor
-      // always generates. Replace with a proper 24dp monochrome icon
-      // for production.
       smallIcon: "ic_launcher_foreground",
       iconColor: "#a855f7",
     },
     Keyboard: {
-      // Body resize: the document body shrinks when the keyboard opens.
-      // This is the most compatible mode for Next.js web apps.
-      resize: KeyboardResize.Body,
+      // Architectural Fix: Stops the OS from crushing the webview.
+      // The keyboard will now slide OVER the app, and React will handle the UI.
+      resize: KeyboardResize.None,
       style: KeyboardStyle.Dark,
       resizeOnFullScreen: true,
     },

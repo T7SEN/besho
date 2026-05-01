@@ -47,6 +47,7 @@ import { vibrate } from "@/lib/haptic";
 import { Button } from "@/components/ui/button";
 import { RichTextEditor } from "@/components/ui/rich-text-editor";
 import { MarkdownRenderer } from "@/components/ui/markdown-renderer";
+import { useKeyboardHeight } from "@/hooks/use-keyboard";
 
 const PRIORITY_CONFIG: Record<
   TaskPriority,
@@ -212,6 +213,21 @@ export default function TasksPage() {
     setDeletingId(null);
   };
 
+  const keyboardHeight = useKeyboardHeight();
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (keyboardHeight > 0 && containerRef.current) {
+      const timeoutId = setTimeout(() => {
+        containerRef.current?.scrollIntoView({
+          behavior: "smooth",
+          block: "end",
+        });
+      }, 50);
+      return () => clearTimeout(timeoutId);
+    }
+  }, [keyboardHeight]);
+
   return (
     <div className="relative min-h-screen bg-background p-6 md:p-12">
       <div className="pointer-events-none fixed inset-0 overflow-hidden">
@@ -312,18 +328,27 @@ export default function TasksPage() {
                   >
                     Details
                   </label>
-                  <RichTextEditor
-                    id="task-desc"
-                    name="description"
-                    placeholder="Additional details…"
-                    rows={2}
-                    disabled={isPending || undefined}
-                    className={cn(
-                      "w-full resize-none rounded-xl border border-white/10 bg-black/20 px-4 py-2.5 text-sm",
-                      "placeholder:text-muted-foreground/40 outline-none",
-                      "focus:border-primary/40 transition-colors",
-                    )}
-                  />
+                  <motion.div
+                    ref={containerRef}
+                    animate={{
+                      paddingBottom:
+                        keyboardHeight > 0 ? keyboardHeight + 16 : 0,
+                    }}
+                    transition={{ type: "spring", bounce: 0, duration: 0.3 }}
+                  >
+                    <RichTextEditor
+                      id="task-desc"
+                      name="description"
+                      placeholder="Additional details…"
+                      rows={2}
+                      disabled={isPending || undefined}
+                      className={cn(
+                        "w-full resize-none rounded-xl border border-white/10 bg-black/20 px-4 py-2.5 text-sm",
+                        "placeholder:text-muted-foreground/40 outline-none",
+                        "focus:border-primary/40 transition-colors",
+                      )}
+                    />
+                  </motion.div>
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">

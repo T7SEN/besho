@@ -148,6 +148,25 @@ export default function NotesPage() {
   // ── Keyboard height via @capacitor/keyboard ──────────────────────────────
   const keyboardHeight = useKeyboardHeight();
 
+  // 1. Create a reference to the wrapper
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // 2. The Auto-Scroll Logic
+  useEffect(() => {
+    // Only trigger when the keyboard actually opens
+    if (keyboardHeight > 0 && containerRef.current) {
+      // A slight 50ms delay allows the Framer Motion padding animation
+      // to initialize before the browser calculates the scroll position.
+      const timeoutId = setTimeout(() => {
+        containerRef.current?.scrollIntoView({
+          behavior: "smooth",
+          block: "end", // 'end' aligns the bottom of the container perfectly above the keyboard
+        });
+      }, 50);
+      return () => clearTimeout(timeoutId);
+    }
+  }, [keyboardHeight]);
+
   // ── Pull-to-refresh / global refresh event ───────────────────────────────
   const silentRefresh = useCallback(async () => {
     try {
@@ -502,12 +521,7 @@ export default function NotesPage() {
         )}
       </AnimatePresence>
 
-      <div
-        className="relative z-10 mx-auto max-w-3xl space-y-10 pt-4"
-        style={{
-          paddingBottom: keyboardHeight > 0 ? keyboardHeight + 96 : undefined,
-        }}
-      >
+      <div className="relative z-10 mx-auto max-w-3xl space-y-10 pt-4">
         {/* Header */}
         <div className="flex items-center justify-between">
           <Link
@@ -568,30 +582,38 @@ export default function NotesPage() {
           }}
           className="overflow-hidden rounded-3xl border border-white/5 bg-card/40 p-2 backdrop-blur-xl shadow-2xl shadow-black/40 transition-all focus-within:border-primary/30 focus-within:bg-card/60"
         >
-          <RichTextEditor
-            ref={composeRef}
-            name="content"
-            placeholder="Write a poem, a thought, or a letter…"
-            required
-            disabled={isPending || undefined}
-            value={composeContent}
-            rows={4}
-            onChange={(e) => {
-              const target = e.target;
-              setComposeContent(target.value);
-              resizeTextarea(target, 120);
+          <motion.div
+            ref={containerRef}
+            animate={{
+              paddingBottom: keyboardHeight > 0 ? keyboardHeight + 16 : 0,
             }}
-            onKeyDown={(e) => {
-              if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-                e.preventDefault();
-                formRef.current?.requestSubmit();
-              }
-            }}
-            className={cn(
-              "w-full resize-none bg-transparent p-6 text-base outline-none",
-              "font-serif leading-relaxed placeholder:text-muted-foreground/50",
-            )}
-          />
+            transition={{ type: "spring", bounce: 0, duration: 0.3 }}
+          >
+            <RichTextEditor
+              ref={composeRef}
+              name="content"
+              placeholder="Write a poem, a thought, or a letter…"
+              required
+              disabled={isPending || undefined}
+              value={composeContent}
+              rows={4}
+              onChange={(e) => {
+                const target = e.target;
+                setComposeContent(target.value);
+                resizeTextarea(target, 120);
+              }}
+              onKeyDown={(e) => {
+                if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                  e.preventDefault();
+                  formRef.current?.requestSubmit();
+                }
+              }}
+              className={cn(
+                "w-full resize-none bg-transparent p-6 text-base outline-none",
+                "font-serif leading-relaxed placeholder:text-muted-foreground/50",
+              )}
+            />
+          </motion.div>
 
           <div className="flex items-center justify-between border-t border-border/40 px-4 py-3">
             {currentAuthor ? (
@@ -1014,6 +1036,21 @@ function NoteItem({
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const keyboardHeight = useKeyboardHeight();
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (keyboardHeight > 0 && containerRef.current) {
+      const timeoutId = setTimeout(() => {
+        containerRef.current?.scrollIntoView({
+          behavior: "smooth",
+          block: "end",
+        });
+      }, 50);
+      return () => clearTimeout(timeoutId);
+    }
+  }, [keyboardHeight]);
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 16 }}
@@ -1192,31 +1229,39 @@ function NoteItem({
               transition={{ duration: 0.12 }}
               className="space-y-3"
             >
-              <RichTextEditor
-                ref={textareaRef}
-                value={editContent}
-                onChange={(e) => {
-                  const target = e.target;
-                  setEditContent(target.value);
-                  resizeTextarea(target, 112);
+              <motion.div
+                ref={containerRef}
+                animate={{
+                  paddingBottom: keyboardHeight > 0 ? keyboardHeight + 16 : 0,
                 }}
-                onKeyDown={(e) => {
-                  if (e.key === "Escape") {
-                    e.preventDefault();
-                    handleCancel();
-                  }
-                  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-                    e.preventDefault();
-                    void handleSave();
-                  }
-                }}
-                disabled={isSaving || undefined}
-                className={cn(
-                  "w-full resize-none rounded-xl border border-primary/20",
-                  "bg-black/20 p-4 font-serif text-base leading-relaxed text-foreground outline-none",
-                  "transition-colors focus:border-primary/50",
-                )}
-              />
+                transition={{ type: "spring", bounce: 0, duration: 0.3 }}
+              >
+                <RichTextEditor
+                  ref={textareaRef}
+                  value={editContent}
+                  onChange={(e) => {
+                    const target = e.target;
+                    setEditContent(target.value);
+                    resizeTextarea(target, 112);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") {
+                      e.preventDefault();
+                      handleCancel();
+                    }
+                    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                      e.preventDefault();
+                      void handleSave();
+                    }
+                  }}
+                  disabled={isSaving || undefined}
+                  className={cn(
+                    "w-full resize-none rounded-xl border border-primary/20",
+                    "bg-black/20 p-4 font-serif text-base leading-relaxed text-foreground outline-none",
+                    "transition-colors focus:border-primary/50",
+                  )}
+                />
+              </motion.div>
               <div className="flex items-center justify-between">
                 <span
                   className={cn(

@@ -16,43 +16,53 @@ const INITIAL: NetworkStatus = { connected: true, connectionType: "unknown" };
 /**
  * Returns real-time network connectivity status.
  *
- * On native Android: uses @capacitor/network which reads from
- * ConnectivityManager — accurate even when the device has WiFi but
- * no actual internet (captive portal, etc.).
- *
- * On web: falls back to navigator.onLine with online/offline events.
+ * ARCHITECTURAL UPGRADE:
+ * - Prevents async zombie listener memory leaks on native.
+ * - Syncs React state updates with browser paint frames for zero-layout-shift.
  */
 export function useNetwork(): NetworkStatus {
   const [status, setStatus] = useState<NetworkStatus>(INITIAL);
 
   useEffect(() => {
+    let mounted = true;
     type ListenerHandle = { remove: () => void };
     let handle: ListenerHandle | null = null;
 
     const applyStatus = (connected: boolean, type: string) => {
-      setTimeout(
-        () =>
-          setStatus({
-            connected,
-            connectionType: type as ConnectionType,
-          }),
-        0,
-      );
+      if (!mounted) return;
+
+      // Sync with browser painting cycle instead of arbitrary setTimeout
+      requestAnimationFrame(() => {
+        setStatus({
+          connected,
+          connectionType: type as ConnectionType,
+        });
+      });
     };
 
     const initNative = async () => {
       try {
         const { Network } = await import("@capacitor/network");
         const current = await Network.getStatus();
+
+        if (!mounted) return;
         applyStatus(current.connected, current.connectionType);
 
         const listener = await Network.addListener("networkStatusChange", (s) =>
           applyStatus(s.connected, s.connectionType),
         );
-        handle = listener;
+
+        // Architectural Fix: The Async Race Condition Gate
+        // If the component was unmounted while we were awaiting the listener,
+        // we must immediately destroy the listener we just created.
+        if (!mounted) {
+          void listener.remove();
+        } else {
+          handle = listener;
+        }
       } catch (err) {
         logger.error("[network] Capacitor init failed, using fallback:", err);
-        initWeb();
+        if (mounted) initWeb();
       }
     };
 
@@ -84,6 +94,7 @@ export function useNetwork(): NetworkStatus {
     }
 
     return () => {
+      mounted = false;
       handle?.remove();
     };
   }, []);

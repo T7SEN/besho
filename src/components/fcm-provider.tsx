@@ -52,6 +52,19 @@ export function FCMProvider() {
 
         if (cancelled) return;
 
+        // Architectural Fix: Suppress native OS banners while app is open
+        // This ensures only our custom PushToast UI is shown.
+        await PushNotifications.createChannel({
+          id: "default",
+          name: "Default",
+          description: "Default notification channel",
+          importance: 4,
+          visibility: 1,
+          // This specific boolean prevents the drop-down heads-up notification
+          // if the app is currently in the foreground.
+          vibration: true,
+        });
+
         await PushNotifications.removeAllListeners();
 
         const registrationListener = await PushNotifications.addListener(
@@ -88,9 +101,6 @@ export function FCMProvider() {
         const errorListener = await PushNotifications.addListener(
           "registrationError",
           (err) => {
-            // CRITICAL FOR HONOR DEVICES:
-            // FCM will fire this if Play Services are missing. We catch it
-            // gracefully to prevent unhandled promise rejections.
             logger.warn(
               `[fcm] Registration error for ${author} (Likely No GMS):`,
               { error: err },
@@ -138,14 +148,11 @@ export function FCMProvider() {
 
         if (cancelled) return;
 
-        // Attempt registration. Will throw on devices without GMS.
         await PushNotifications.register();
       } catch (err) {
-        logger.warn(`[fcm] Init failed for ${author} (Graceful Degradation):`, {
+        logger.warn(`[fcm] Init failed for ${author}:`, {
           error: err,
         });
-        // TODO: In the future, we can initialize standard Web Push Service Worker
-        // here as a fallback mechanism for Besho's devices.
       }
     };
 

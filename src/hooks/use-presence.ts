@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { isNative } from "@/lib/native";
 import { logger } from "@/lib/logger";
 
@@ -16,8 +16,6 @@ async function setPresence(page: string): Promise<void> {
       keepalive: true,
     });
   } catch (err) {
-    // Transient network failure (tab switch, page hide) — presence is
-    // best-effort. Demoted to debug so Sentry never captures this.
     logger.debug("[presence] setPresence aborted (transient)", {
       error: String(err),
     });
@@ -54,11 +52,6 @@ async function clearPresence(): Promise<void> {
   }
 }
 
-/**
- * Fires a best-effort DELETE via sendBeacon on page unload/hide.
- * sendBeacon is guaranteed not to be cancelled by the browser on hide,
- * unlike fetch. Uses keepalive fetch as fallback for DELETE semantics.
- */
 function clearPresenceBeacon(): void {
   const nav = (globalThis as unknown as { navigator?: Navigator }).navigator;
   if (nav?.sendBeacon) {
@@ -67,27 +60,38 @@ function clearPresenceBeacon(): void {
       new Blob(["{}"], { type: "application/json" }),
     );
   } else {
-    // Fallback for environments without sendBeacon (rare)
     void clearPresence();
   }
 }
 
 /**
  * Tracks the user's current page in Redis with a 10s TTL.
- * On native Android: uses Capacitor App state for reliable background detection.
- * On PWA: uses visibilitychange + pagehide browser events.
+ *
+ * ARCHITECTURAL UPGRADE:
+ * - Prevents phantom heartbeats when the app is backgrounded.
+ * - Secures async native listeners against unmount memory leaks.
  */
 export function usePresence(page: string, enabled: boolean) {
+  const isActiveRef = useRef(true);
+
   useEffect(() => {
     if (!enabled) return;
+
+    let mounted = true;
+    isActiveRef.current = true;
 
     void setPresence(page);
 
     const heartbeatId = setInterval(() => {
+      // Architectural Fix 1: The Gatekeeper
+      // Completely halts background network execution to save battery.
+      if (!mounted || !isActiveRef.current) return;
       void setPresence(page);
     }, HEARTBEAT_INTERVAL_MS);
 
-    let removeCapacitorListener: (() => void) | null = null;
+    type ListenerHandle = { remove: () => void };
+    let nativeHandle: ListenerHandle | null = null;
+    let removeWebListeners: (() => void) | null = null;
 
     if (isNative()) {
       void (async () => {
@@ -96,6 +100,9 @@ export function usePresence(page: string, enabled: boolean) {
           const listener = await App.addListener(
             "appStateChange",
             ({ isActive }) => {
+              isActiveRef.current = isActive;
+              if (!mounted) return;
+
               if (isActive) {
                 void setPresence(page);
               } else {
@@ -103,7 +110,13 @@ export function usePresence(page: string, enabled: boolean) {
               }
             },
           );
-          removeCapacitorListener = () => void listener.remove();
+
+          // Architectural Fix 2: The Async Race Condition Gate
+          if (!mounted) {
+            void listener.remove();
+          } else {
+            nativeHandle = listener;
+          }
         } catch (err) {
           logger.error("[presence] Capacitor App listener failed:", err);
         }
@@ -120,29 +133,35 @@ export function usePresence(page: string, enabled: boolean) {
       };
 
       const handleVisibilityChange = () => {
+        isActiveRef.current = doc.visibilityState !== "hidden";
+        if (!mounted) return;
+
         if (doc.visibilityState === "hidden") {
-          clearPresenceBeacon(); // ← beacon: browser won't cancel this
+          clearPresenceBeacon();
         } else {
           void setPresence(page);
         }
       };
 
       const handlePageHide = () => {
-        clearPresenceBeacon(); // ← beacon: guaranteed to fire on unload
+        if (!mounted) return;
+        clearPresenceBeacon();
       };
 
       doc.addEventListener("visibilitychange", handleVisibilityChange);
       win.addEventListener("pagehide", handlePageHide);
 
-      removeCapacitorListener = () => {
+      removeWebListeners = () => {
         doc.removeEventListener("visibilitychange", handleVisibilityChange);
         win.removeEventListener("pagehide", handlePageHide);
       };
     }
 
     return () => {
+      mounted = false;
       clearInterval(heartbeatId);
-      removeCapacitorListener?.();
+      nativeHandle?.remove();
+      removeWebListeners?.();
       void clearPresence();
     };
   }, [page, enabled]);

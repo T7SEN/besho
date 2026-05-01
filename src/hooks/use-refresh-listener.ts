@@ -4,20 +4,15 @@ import { useEffect } from "react";
 
 /**
  * Listens for the global 'ourspace:refresh' event dispatched by
- * PullToRefresh and calls the provided callback. Each page registers
- * its own fetch logic here so pull-to-refresh actually re-loads data.
- *
- * The callback should be a stable reference (useCallback) to avoid
- * re-registering the listener on every render.
+ * PullToRefresh and calls the provided callback.
  */
 export function useRefreshListener(onRefresh: () => void): void {
   useEffect(() => {
-    type Win = {
-      addEventListener: (type: string, fn: () => void) => void;
-      removeEventListener: (type: string, fn: () => void) => void;
+    const handleRefresh = () => onRefresh();
+    window.addEventListener("ourspace:refresh", handleRefresh);
+
+    return () => {
+      window.removeEventListener("ourspace:refresh", handleRefresh);
     };
-    const win = globalThis as unknown as Win;
-    win.addEventListener("ourspace:refresh", onRefresh);
-    return () => win.removeEventListener("ourspace:refresh", onRefresh);
   }, [onRefresh]);
 }

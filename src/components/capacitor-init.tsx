@@ -2,25 +2,23 @@
 
 import { useEffect } from "react";
 import { useBadge } from "@/hooks/use-badge";
+import { useLocalNotifications } from "@/hooks/use-local-notifications";
 import { isNative } from "@/lib/native";
 import { logger } from "@/lib/logger";
 
 /**
  * Initializes Capacitor native plugins on app start.
  *
- * - StatusBar: sets dark style and background colour
- * - SplashScreen: hides with a fade
- * - LocalNotifications: requests POST_NOTIFICATIONS permission (Android 13+)
- * and schedules the daily mood nudge
- * - Badge: syncs app icon badge count with pending tasks + unacknowledged rules
- *
- * FCM registration is intentionally excluded — it requires a confirmed
- * authenticated user and is handled by useFCMRegistration() after
- * getCurrentAuthor() resolves.
+ * - StatusBar: overlays webview for true edge-to-edge immersive UI
+ * - SplashScreen: hides with a smooth fade
+ * - LocalNotifications: requests permission and sets the daily nudge
+ * - Badge: syncs app icon badge count
  */
 export function CapacitorInit() {
   // Badge sync — runs on mount, every 5 min, and on app foreground
   useBadge();
+
+  const { requestPermission, scheduleMoodNudge } = useLocalNotifications();
 
   // StatusBar + SplashScreen
   useEffect(() => {
@@ -29,8 +27,12 @@ export function CapacitorInit() {
     void (async () => {
       try {
         const { StatusBar, Style } = await import("@capacitor/status-bar");
+
+        // Architectural Fix: True Native Immersive Mode
+        // This allows the webview to flow underneath the system clock and battery
+        // Your CSS `env(safe-area-inset-top)` will now perfectly pad the content
+        await StatusBar.setOverlaysWebView({ overlay: true });
         await StatusBar.setStyle({ style: Style.Dark });
-        await StatusBar.setBackgroundColor({ color: "#09090b" });
       } catch (err) {
         logger.error("[native] StatusBar init failed:", err);
       }
@@ -49,48 +51,13 @@ export function CapacitorInit() {
     if (!isNative()) return;
 
     void (async () => {
-      try {
-        const { LocalNotifications } =
-          await import("@capacitor/local-notifications");
-
-        const { display } = await LocalNotifications.requestPermissions();
-        if (display !== "granted") return;
-
-        // Schedule the daily mood nudge at 21:00 local time.
-        // Re-scheduling replaces any existing nudge with the same ID.
-        const now = new Date();
-        const target = new Date(
-          now.getFullYear(),
-          now.getMonth(),
-          now.getDate(),
-          21,
-          0,
-          0,
-          0,
-        );
-
-        if (target.getTime() <= now.getTime()) {
-          target.setDate(target.getDate() + 1);
-        }
-
-        await LocalNotifications.schedule({
-          notifications: [
-            {
-              id: 100, // NOTIF_ID.MOOD_NUDGE
-              title: "💝 How are you feeling?",
-              body: "Don't forget to log your mood today.",
-              schedule: { at: target, allowWhileIdle: true },
-              smallIcon: "ic_launcher_foreground",
-              sound: undefined,
-              extra: null,
-            },
-          ],
-        });
-      } catch (err) {
-        logger.error("[local-notif] Init failed:", err);
+      const isGranted = await requestPermission();
+      if (isGranted) {
+        // Utilize the DRY hook method instead of duplicating the Date math
+        await scheduleMoodNudge();
       }
     })();
-  }, []);
+  }, [requestPermission, scheduleMoodNudge]);
 
   return null;
 }

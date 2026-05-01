@@ -74,11 +74,10 @@ function BiometricGateInner({ children }: BiometricGateProps) {
   const [isPending, startTransition] = useTransition();
 
   const backgroundedAtRef = useRef<number | null>(null);
-
-  // CRITICAL FIX: This ref prevents the Knox/Android lifecycle loop.
-  // It ensures that if the app goes to the background/foreground *because*
-  // of the native biometric prompt, we don't accidentally fire it again.
   const isAuthenticatingRef = useRef(false);
+
+  // Architectural Fix: Debounce timestamp to survive the Samsung Knox / Honor gap
+  const lastAuthEndedAtRef = useRef<number>(0);
 
   const failureCountRef = useRef(0);
   const hasInitializedRef = useRef(false);
@@ -97,7 +96,6 @@ function BiometricGateInner({ children }: BiometricGateProps) {
 
       if (!isAvailable) {
         setGateState("unavailable");
-        isAuthenticatingRef.current = false;
         return;
       }
 
@@ -164,11 +162,9 @@ function BiometricGateInner({ children }: BiometricGateProps) {
         }
       }
     } finally {
-      // CRITICAL FIX: We add a tiny delay before releasing the lock to ensure
-      // Knox has completely relinquished control of the Activity lifecycle.
-      setTimeout(() => {
-        isAuthenticatingRef.current = false;
-      }, 300);
+      isAuthenticatingRef.current = false;
+      // Register the exact millisecond the prompt finished
+      lastAuthEndedAtRef.current = Date.now();
     }
   }, []);
 
@@ -244,8 +240,12 @@ function BiometricGateInner({ children }: BiometricGateProps) {
         const listener = await App.addListener(
           "appStateChange",
           async ({ isActive }) => {
-            // CRITICAL FIX: If Knox is currently active, ignore ALL lifecycle events.
+            // 1. If currently showing prompt, ignore.
             if (isAuthenticatingRef.current) return;
+
+            // 2. If the prompt JUST closed (within the last 2 seconds), ignore.
+            // This explicitly prevents the Knox/Honor double-loop.
+            if (Date.now() - lastAuthEndedAtRef.current < 2000) return;
 
             if (!isActive) {
               if (gateState === "unlocked") {

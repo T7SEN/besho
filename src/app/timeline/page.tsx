@@ -94,9 +94,6 @@ export default function TimelinePage() {
   const [state, action, isPending] = useActionState(addMilestone, null);
   const formRef = useRef<HTMLFormElement>(null);
 
-  // Pushes the milestone form above the software keyboard on Android
-  const keyboardHeight = useKeyboardHeight();
-
   usePresence("/timeline", !!currentAuthor);
 
   const handleRefresh = useCallback(async () => {
@@ -138,6 +135,21 @@ export default function TimelinePage() {
     setDeletingId(null);
   };
 
+  const keyboardHeight = useKeyboardHeight();
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (keyboardHeight > 0 && containerRef.current) {
+      const timeoutId = setTimeout(() => {
+        containerRef.current?.scrollIntoView({
+          behavior: "smooth",
+          block: "end",
+        });
+      }, 50);
+      return () => clearTimeout(timeoutId);
+    }
+  }, [keyboardHeight]);
+
   return (
     <div className="relative min-h-screen bg-background p-6 md:p-12">
       <div className="pointer-events-none fixed inset-0 overflow-hidden">
@@ -145,12 +157,7 @@ export default function TimelinePage() {
         <div className="absolute bottom-[-10%] right-[-10%] h-125 w-125 rounded-full bg-blue-500/5 blur-[150px]" />
       </div>
 
-      <div
-        className="relative z-10 mx-auto max-w-2xl space-y-10 pt-4"
-        style={{
-          paddingBottom: keyboardHeight > 0 ? keyboardHeight + 96 : undefined,
-        }}
-      >
+      <div className="relative z-10 mx-auto max-w-2xl space-y-10 pt-4">
         {/* Header */}
         <div className="flex items-center justify-between">
           <Link
@@ -259,18 +266,27 @@ export default function TimelinePage() {
                   >
                     Description
                   </label>
-                  <RichTextEditor
-                    id="timeline-desc"
-                    name="description"
-                    placeholder="A short description…"
-                    rows={2}
-                    disabled={isPending || undefined}
-                    className={cn(
-                      "w-full resize-none rounded-xl border border-white/10 bg-black/20 px-4 py-2.5 text-sm",
-                      "placeholder:text-muted-foreground/40 outline-none",
-                      "focus:border-primary/40 transition-colors",
-                    )}
-                  />
+                  <motion.div
+                    ref={containerRef}
+                    animate={{
+                      paddingBottom:
+                        keyboardHeight > 0 ? keyboardHeight + 16 : 0,
+                    }}
+                    transition={{ type: "spring", bounce: 0, duration: 0.3 }}
+                  >
+                    <RichTextEditor
+                      id="timeline-desc"
+                      name="description"
+                      placeholder="A short description…"
+                      rows={2}
+                      disabled={isPending || undefined}
+                      className={cn(
+                        "w-full resize-none rounded-xl border border-white/10 bg-black/20 px-4 py-2.5 text-sm",
+                        "placeholder:text-muted-foreground/40 outline-none",
+                        "focus:border-primary/40 transition-colors",
+                      )}
+                    />
+                  </motion.div>
                 </div>
 
                 <div>
