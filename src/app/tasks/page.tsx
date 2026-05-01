@@ -633,7 +633,7 @@ function TaskItem({
           <MarkdownRenderer
             content={task.description}
             className={cn(
-              "mt-1 text-sm leading-relaxed text-muted-foreground/70",
+              "mt-1 text-base leading-relaxed text-muted-foreground/99",
               "prose-p:my-1 prose-p:last:mb-0",
               "prose-ul:my-1 prose-ol:my-1 prose-li:my-0",
             )}
