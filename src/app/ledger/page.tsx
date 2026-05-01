@@ -38,6 +38,8 @@ import { usePresence } from "@/hooks/use-presence";
 import { useRefreshListener } from "@/hooks/use-refresh-listener";
 import { vibrate } from "@/lib/haptic";
 import { Button } from "@/components/ui/button";
+import { RichTextEditor } from "@/components/ui/rich-text-editor";
+import { MarkdownRenderer } from "@/components/ui/markdown-renderer";
 
 type Filter = "all" | "reward" | "punishment";
 
@@ -276,7 +278,7 @@ export default function LedgerPage() {
                   >
                     Details
                   </label>
-                  <textarea
+                  <RichTextEditor
                     id="ledger-desc"
                     name="description"
                     placeholder="Additional context…"
@@ -490,9 +492,14 @@ function EntryItem({
           </p>
 
           {entry.description && (
-            <p className="mt-1 text-xs leading-relaxed text-muted-foreground/60">
-              {entry.description}
-            </p>
+            <MarkdownRenderer
+              content={entry.description}
+              className={cn(
+                "mt-1 text-base leading-relaxed text-muted-foreground/99",
+                "prose-p:my-1 prose-p:last:mb-0",
+                "prose-ul:my-1 prose-ol:my-1 prose-li:my-0",
+              )}
+            />
           )}
 
           <p className="mt-2 text-[10px] font-semibold text-muted-foreground/40">

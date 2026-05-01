@@ -41,6 +41,8 @@ import {
 } from "@/hooks/use-local-notifications";
 import { vibrate } from "@/lib/haptic";
 import { Button } from "@/components/ui/button";
+import { RichTextEditor } from "@/components/ui/rich-text-editor";
+import { MarkdownRenderer } from "@/components/ui/markdown-renderer";
 
 const PRIORITY_CONFIG: Record<
   TaskPriority,
@@ -276,7 +278,7 @@ export default function TasksPage() {
                   >
                     Details
                   </label>
-                  <textarea
+                  <RichTextEditor
                     id="task-desc"
                     name="description"
                     placeholder="Additional details…"
@@ -549,9 +551,14 @@ function TaskItem({
         </div>
 
         {task.description && (
-          <p className="mt-1 text-xs leading-relaxed text-muted-foreground/60">
-            {task.description}
-          </p>
+          <MarkdownRenderer
+            content={task.description}
+            className={cn(
+              "mt-1 text-base leading-relaxed text-muted-foreground/99",
+              "prose-p:my-1 prose-p:last:mb-0",
+              "prose-ul:my-1 prose-ol:my-1 prose-li:my-0",
+            )}
+          />
         )}
 
         <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">

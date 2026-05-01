@@ -32,6 +32,8 @@ import { usePresence } from "@/hooks/use-presence";
 import { useRefreshListener } from "@/hooks/use-refresh-listener";
 import { useKeyboardHeight } from "@/hooks/use-keyboard";
 import { logger } from "@/lib/logger";
+import { RichTextEditor } from "@/components/ui/rich-text-editor";
+import { MarkdownRenderer } from "@/components/ui/markdown-renderer";
 
 const EMOJI_OPTIONS = [
   "✨",
@@ -257,7 +259,7 @@ export default function TimelinePage() {
                   >
                     Description
                   </label>
-                  <textarea
+                  <RichTextEditor
                     id="timeline-desc"
                     name="description"
                     placeholder="A short description…"
@@ -415,11 +417,14 @@ function MilestoneItem({
             <p className="text-base font-bold leading-snug text-foreground">
               {milestone.title}
             </p>
+
             {milestone.description && (
-              <p className="mt-1 text-sm text-muted-foreground/70 leading-relaxed">
-                {milestone.description}
-              </p>
+              <MarkdownRenderer
+                content={milestone.description}
+                className="mt-1 text-base leading-relaxed text-muted-foreground/99 prose-p:my-1 prose-p:last:mb-0"
+              />
             )}
+
             <div className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1">
               <span
                 className={cn(

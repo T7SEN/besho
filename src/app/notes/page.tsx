@@ -1,3 +1,4 @@
+// src/app/notes/page.tsx
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
@@ -63,6 +64,8 @@ import { useKeyboardHeight } from "@/hooks/use-keyboard";
 import { writeToClipboard } from "@/lib/clipboard";
 import { NoteReactions } from "@/components/notes/note-reactions";
 import { logger } from "@/lib/logger";
+import { RichTextEditor } from "@/components/ui/rich-text-editor";
+import { MarkdownRenderer } from "@/components/ui/markdown-renderer";
 
 declare let window: any;
 declare let document: any;
@@ -565,7 +568,7 @@ export default function NotesPage() {
           }}
           className="overflow-hidden rounded-3xl border border-white/5 bg-card/40 p-2 backdrop-blur-xl shadow-2xl shadow-black/40 transition-all focus-within:border-primary/30 focus-within:bg-card/60"
         >
-          <textarea
+          <RichTextEditor
             ref={composeRef}
             name="content"
             placeholder="Write a poem, a thought, or a letter…"
@@ -574,14 +577,14 @@ export default function NotesPage() {
             value={composeContent}
             rows={4}
             onChange={(e) => {
-              const target = e.target as any;
+              const target = e.target;
               setComposeContent(target.value);
-              resizeTextarea(target);
+              resizeTextarea(target, 120);
             }}
             onKeyDown={(e) => {
               if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
                 e.preventDefault();
-                (formRef.current as any)?.requestSubmit();
+                formRef.current?.requestSubmit();
               }
             }}
             className={cn(
@@ -689,9 +692,10 @@ export default function NotesPage() {
                   key={pn.id}
                   className="rounded-2xl border border-yellow-500/10 bg-yellow-500/5 px-5 py-4"
                 >
-                  <p className="font-serif text-sm leading-relaxed text-foreground/60">
-                    {pn.content}
-                  </p>
+                  <MarkdownRenderer
+                    content={pn.content}
+                    className="text-sm leading-relaxed text-foreground/70"
+                  />
                   <p className="mt-2 text-[10px] font-semibold uppercase tracking-wider text-yellow-500/40">
                     Written offline · will sync automatically
                   </p>
@@ -745,7 +749,7 @@ export default function NotesPage() {
                 type="text"
                 placeholder="Search notes…"
                 value={searchQuery}
-                onChange={(e) => setSearchQuery((e.target as any).value)}
+                onChange={(e) => setSearchQuery(e.target.value)}
                 className={cn(
                   "w-full rounded-full border border-white/5 bg-card/40 py-2 pl-9 pr-4",
                   "text-xs placeholder:text-muted-foreground/30 outline-none backdrop-blur-sm",
@@ -972,7 +976,7 @@ function NoteItem({
     setShowOriginal(false);
     setTimeout(() => {
       if (textareaRef.current) {
-        const target = textareaRef.current as any;
+        const target = textareaRef.current;
         target.focus();
         const len = target.value.length;
         target.setSelectionRange(len, len);
@@ -1168,9 +1172,10 @@ function NoteItem({
                     </p>
                   )}
                 </div>
-                <p className="whitespace-pre-wrap font-serif text-sm leading-relaxed text-foreground/60">
-                  {note.originalContent}
-                </p>
+                <MarkdownRenderer
+                  content={note.originalContent || ""}
+                  className="text-sm leading-relaxed text-foreground/70"
+                />
               </div>
             </motion.div>
           )}
@@ -1187,11 +1192,11 @@ function NoteItem({
               transition={{ duration: 0.12 }}
               className="space-y-3"
             >
-              <textarea
+              <RichTextEditor
                 ref={textareaRef}
                 value={editContent}
                 onChange={(e) => {
-                  const target = e.target as any;
+                  const target = e.target;
                   setEditContent(target.value);
                   resizeTextarea(target, 112);
                 }}
@@ -1263,16 +1268,18 @@ function NoteItem({
               </p>
             </motion.div>
           ) : (
-            <motion.p
+            <motion.div
               key="content"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               transition={{ duration: 0.12 }}
-              className="whitespace-pre-wrap font-serif text-base leading-relaxed text-foreground/90"
             >
-              {note.content}
-            </motion.p>
+              <MarkdownRenderer
+                content={note.content}
+                className="text-base leading-relaxed text-foreground/90 prose-p:my-1"
+              />
+            </motion.div>
           )}
         </AnimatePresence>
 

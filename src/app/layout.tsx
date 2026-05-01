@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import { Source_Sans_3 } from "next/font/google";
+import { Source_Sans_3, Tajawal } from "next/font/google";
 import "./globals.css";
 import { cn } from "@/lib/utils";
 import { ThemeProvider } from "@/components/theme-provider";
@@ -18,7 +18,17 @@ import { GlobalLogger } from "@/components/global-logger";
 
 const sourceSans3 = Source_Sans_3({
   subsets: ["latin"],
-  variable: "--font-sans",
+  variable: "--font-source-sans",
+  display: "swap",
+  adjustFontFallback: false,
+});
+
+const tajawal = Tajawal({
+  subsets: ["arabic"],
+  weight: ["400", "500", "700"],
+  variable: "--font-tajawal",
+  display: "swap",
+  adjustFontFallback: false,
 });
 
 const APP_NAME = "Our Space";
@@ -73,13 +83,13 @@ export default function RootLayout({
       className={cn(
         "h-full antialiased dark",
         sourceSans3.variable,
+        tajawal.variable,
         "font-sans",
       )}
       style={{ colorScheme: "dark" }}
       suppressHydrationWarning
     >
       <body className="flex min-h-full flex-col">
-        {/* 2. Wrap the entire React tree to catch Provider and UI crashes */}
         <GlobalLogger />
         <ErrorBoundary>
           <ThemeProvider
