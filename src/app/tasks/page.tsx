@@ -13,10 +13,12 @@ import {
   AlarmClock,
   ArrowLeft,
   CheckCircle2,
+  Check,
   Circle,
   ChevronUp,
   Clock,
   Flag,
+  Hourglass,
   Loader2,
   Plus,
   Trash2,
@@ -24,7 +26,9 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
-  completeTask,
+  submitTask,
+  approveTask,
+  rejectTask,
   createTask,
   deleteTask,
   getTasks,
@@ -94,7 +98,7 @@ export default function TasksPage() {
   const [currentAuthor, setCurrentAuthor] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [completingId, setCompletingId] = useState<string | null>(null);
+  const [processingId, setProcessingId] = useState<string | null>(null);
   const [now] = useState(() => Date.now());
 
   const [state, action, isPending] = useActionState(createTask, null);
@@ -119,7 +123,6 @@ export default function TasksPage() {
     });
   }, []);
 
-  // Schedule a local notification for the new task's deadline
   useEffect(() => {
     if (!state?.success) return;
 
@@ -131,10 +134,9 @@ export default function TasksPage() {
 
     getTasks().then((fresh) => {
       setTasks(fresh);
-      // Schedule notification for the most recently created task with a deadline
       const newest = fresh[0];
-      if (newest?.deadline && !newest.completed) {
-        const notifTime = newest.deadline - 60 * 60 * 1_000; // 1 hour before
+      if (newest?.deadline && newest.status !== "completed") {
+        const notifTime = newest.deadline - 60 * 60 * 1_000;
         void schedule({
           id: NOTIF_ID.taskDeadline(idToNumeric(newest.id)),
           title: "📋 Task due soon",
@@ -148,23 +150,55 @@ export default function TasksPage() {
   const isT7SEN = currentAuthor === "T7SEN";
   const isBesho = currentAuthor === "Besho";
 
-  const pendingTasks = tasks.filter((t) => !t.completed);
-  const completedTasks = tasks.filter((t) => t.completed);
+  const pendingTasks = tasks.filter((t) => t.status === "pending");
+  const reviewTasks = tasks.filter((t) => t.status === "in_review");
+  const completedTasks = tasks.filter((t) => t.status === "completed");
 
-  const handleComplete = async (id: string) => {
+  const handleSubmit = async (id: string) => {
     void vibrate(50, "medium");
-    setCompletingId(id);
-    const result = await completeTask(id);
+    setProcessingId(id);
+    const result = await submitTask(id);
     if (result.success) {
       setTasks((prev) =>
         prev.map((t) =>
-          t.id === id ? { ...t, completed: true, completedAt: Date.now() } : t,
+          t.id === id
+            ? { ...t, status: "in_review", submittedAt: Date.now() }
+            : t,
         ),
       );
-      // Cancel any pending deadline notification for this task
+    }
+    setProcessingId(null);
+  };
+
+  const handleApprove = async (id: string) => {
+    void vibrate(50, "medium");
+    setProcessingId(id);
+    const result = await approveTask(id);
+    if (result.success) {
+      setTasks((prev) =>
+        prev.map((t) =>
+          t.id === id
+            ? { ...t, status: "completed", completedAt: Date.now() }
+            : t,
+        ),
+      );
       void cancel([NOTIF_ID.taskDeadline(idToNumeric(id))]);
     }
-    setCompletingId(null);
+    setProcessingId(null);
+  };
+
+  const handleReject = async (id: string) => {
+    void vibrate(50, "medium");
+    setProcessingId(id);
+    const result = await rejectTask(id);
+    if (result.success) {
+      setTasks((prev) =>
+        prev.map((t) =>
+          t.id === id ? { ...t, status: "pending", submittedAt: undefined } : t,
+        ),
+      );
+    }
+    setProcessingId(null);
   };
 
   const handleDelete = async (id: string) => {
@@ -201,7 +235,7 @@ export default function TasksPage() {
               Tasks
             </h1>
             <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/40">
-              {pendingTasks.length} pending
+              {pendingTasks.length} pending · {reviewTasks.length} in review
             </span>
           </div>
 
@@ -412,10 +446,36 @@ export default function TasksPage() {
                       index={index}
                       isBesho={isBesho}
                       isT7SEN={isT7SEN}
-                      isCompleting={completingId === task.id}
+                      isProcessing={processingId === task.id}
                       now={now}
                       isDeleting={deletingId === task.id}
-                      onComplete={handleComplete}
+                      onSubmit={handleSubmit}
+                      onApprove={handleApprove}
+                      onReject={handleReject}
+                      onDelete={handleDelete}
+                    />
+                  ))}
+                </div>
+              )}
+
+              {reviewTasks.length > 0 && (
+                <div className="space-y-3">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-yellow-500/50">
+                    In Review — {reviewTasks.length}
+                  </p>
+                  {reviewTasks.map((task, index) => (
+                    <TaskItem
+                      key={task.id}
+                      task={task}
+                      index={index}
+                      isBesho={isBesho}
+                      isT7SEN={isT7SEN}
+                      isProcessing={processingId === task.id}
+                      now={now}
+                      isDeleting={deletingId === task.id}
+                      onSubmit={handleSubmit}
+                      onApprove={handleApprove}
+                      onReject={handleReject}
                       onDelete={handleDelete}
                     />
                   ))}
@@ -434,10 +494,12 @@ export default function TasksPage() {
                       index={index}
                       isBesho={isBesho}
                       isT7SEN={isT7SEN}
-                      isCompleting={false}
+                      isProcessing={false}
                       now={now}
                       isDeleting={deletingId === task.id}
-                      onComplete={handleComplete}
+                      onSubmit={handleSubmit}
+                      onApprove={handleApprove}
+                      onReject={handleReject}
                       onDelete={handleDelete}
                     />
                   ))}
@@ -456,66 +518,83 @@ function TaskItem({
   index,
   isBesho,
   isT7SEN,
-  isCompleting,
+  isProcessing,
   isDeleting,
   now,
-  onComplete,
+  onSubmit,
+  onApprove,
+  onReject,
   onDelete,
 }: {
   task: Task;
   index: number;
   isBesho: boolean;
   isT7SEN: boolean;
-  isCompleting: boolean;
+  isProcessing: boolean;
   isDeleting: boolean;
   now: number;
-  onComplete: (id: string) => void;
+  onSubmit: (id: string) => void;
+  onApprove: (id: string) => void;
+  onReject: (id: string) => void;
   onDelete: (id: string) => void;
 }) {
   const [showDelete, setShowDelete] = useState(false);
   const priority = PRIORITY_CONFIG[task.priority];
-  const isOverdue = !!task.deadline && !task.completed && task.deadline < now;
+
+  const isPending = task.status === "pending";
+  const isInReview = task.status === "in_review";
+  const isCompleted = task.status === "completed";
+  const isOverdue = !!task.deadline && !isCompleted && task.deadline < now;
 
   return (
     <motion.div
       initial={{ opacity: 0, y: 8 }}
-      animate={{ opacity: task.completed ? 0.5 : 1, y: 0 }}
+      animate={{ opacity: isCompleted ? 0.5 : 1, y: 0 }}
       transition={{ delay: Math.min(index * 0.05, 0.3) }}
       className={cn(
         "group relative flex items-start gap-4 rounded-2xl border p-5 transition-colors",
-        task.completed
+        isCompleted
           ? "border-white/5 bg-card/10"
-          : isOverdue
-            ? "border-destructive/20 bg-destructive/5"
-            : "border-white/5 bg-card/20 hover:border-white/10",
+          : isInReview
+            ? "border-yellow-500/20 bg-yellow-500/5"
+            : isOverdue
+              ? "border-destructive/20 bg-destructive/5"
+              : "border-white/5 bg-card/20 hover:border-white/10",
       )}
     >
-      {/* Overdue pulse ring — draws attention without being obnoxious */}
-      {isOverdue && !task.completed && (
+      {/* Overdue pulse ring */}
+      {isOverdue && !isCompleted && (
         <span className="pointer-events-none absolute inset-0 rounded-2xl">
           <span className="absolute inset-0 animate-ping rounded-2xl border border-destructive/30" />
         </span>
       )}
 
-      {/* Complete button — Besho only, pending tasks */}
+      {/* Left Indicator Column */}
       <div className="relative z-10 mt-0.5 shrink-0">
-        {task.completed ? (
+        {isProcessing ? (
+          <Loader2 className="h-5 w-5 animate-spin text-muted-foreground/30" />
+        ) : isCompleted ? (
           <CheckCircle2 className="h-5 w-5 text-primary/50" />
+        ) : isInReview ? (
+          <Hourglass className="h-5 w-5 text-yellow-500/50" />
         ) : isBesho ? (
           <button
-            onClick={() => onComplete(task.id)}
-            disabled={isCompleting || undefined}
-            aria-label="Mark complete"
+            onClick={() => onSubmit(task.id)}
+            disabled={isProcessing || undefined}
+            aria-label="Submit for review"
             className="text-muted-foreground/30 transition-colors hover:text-primary disabled:opacity-50"
           >
-            {isCompleting ? (
-              <Loader2 className="h-5 w-5 animate-spin" />
-            ) : (
-              <Circle className="h-5 w-5" />
-            )}
+            <Circle className="h-5 w-5" />
           </button>
         ) : (
-          <Circle className="h-5 w-5 text-muted-foreground/20" />
+          <button
+            onClick={() => onApprove(task.id)}
+            disabled={isProcessing || undefined}
+            aria-label="Mark complete directly"
+            className="text-muted-foreground/30 transition-colors hover:text-primary disabled:opacity-50"
+          >
+            <Circle className="h-5 w-5" />
+          </button>
         )}
       </div>
 
@@ -525,7 +604,7 @@ function TaskItem({
           <p
             className={cn(
               "text-sm font-bold",
-              task.completed
+              isCompleted
                 ? "text-foreground/40 line-through"
                 : "text-foreground",
             )}
@@ -542,7 +621,7 @@ function TaskItem({
             <Flag className="mr-1 inline h-2 w-2" />
             {priority.label}
           </span>
-          {isOverdue && !task.completed && (
+          {isOverdue && !isCompleted && (
             <span className="flex items-center gap-1 rounded-full bg-destructive/10 px-2 py-0.5 text-[9px] font-black uppercase tracking-wider text-destructive">
               <AlarmClock className="h-2 w-2" />
               Overdue
@@ -554,7 +633,7 @@ function TaskItem({
           <MarkdownRenderer
             content={task.description}
             className={cn(
-              "mt-1 text-base leading-relaxed text-muted-foreground/99",
+              "mt-1 text-sm leading-relaxed text-muted-foreground/70",
               "prose-p:my-1 prose-p:last:mb-0",
               "prose-ul:my-1 prose-ol:my-1 prose-li:my-0",
             )}
@@ -566,28 +645,66 @@ function TaskItem({
             <span
               className={cn(
                 "flex items-center gap-1 text-[10px] font-semibold",
-                isOverdue && !task.completed
+                isOverdue && !isCompleted
                   ? "text-destructive/70"
                   : "text-muted-foreground/40",
               )}
             >
               <Clock className="h-2.5 w-2.5" />
-              {task.completed
+              {isCompleted
                 ? formatDate(task.deadline)
                 : formatDeadline(task.deadline)}
             </span>
           )}
-          {task.completed && task.completedAt && (
+
+          {isCompleted && task.completedAt && (
             <span className="text-[10px] font-semibold text-primary/50">
               ✓ Completed {formatDate(task.completedAt)}
             </span>
           )}
-          {!task.completed && (
+
+          {isInReview && task.submittedAt && (
+            <span className="text-[10px] font-semibold text-yellow-500/50">
+              Submitted {formatDate(task.submittedAt)}
+            </span>
+          )}
+
+          {isPending && (
             <span className="text-[10px] text-muted-foreground/30">
               Assigned {formatDate(task.createdAt)}
             </span>
           )}
         </div>
+
+        {/* The Review Action Row (Only visible during review) */}
+        {isInReview && (
+          <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-white/5 pt-3">
+            {isT7SEN ? (
+              <>
+                <button
+                  onClick={() => onApprove(task.id)}
+                  disabled={isProcessing || undefined}
+                  className="flex items-center gap-1.5 rounded-full bg-green-500/15 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-green-500 transition-all hover:bg-green-500/25 disabled:opacity-50"
+                >
+                  <Check className="h-3 w-3" />
+                  Approve Task
+                </button>
+                <button
+                  onClick={() => onReject(task.id)}
+                  disabled={isProcessing || undefined}
+                  className="flex items-center gap-1.5 rounded-full bg-destructive/15 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-destructive transition-all hover:bg-destructive/25 disabled:opacity-50"
+                >
+                  <X className="h-3 w-3" />
+                  Reject
+                </button>
+              </>
+            ) : (
+              <span className="text-[10px] font-semibold text-yellow-500/50">
+                Waiting for Sir&apos;s review...
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Delete — T7SEN only */}
