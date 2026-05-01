@@ -1,6 +1,6 @@
 ---
 name: our-space
-description: Authoritative engineering guide for the "Our Space" private couples app (`github.com/t7sen/besho`, deployed at `https://t7senlovesbesho.me`, Android package `me.t7senlovesbesho`). Use this skill for any task involving this codebase — feature work, refactors, bug fixes, code review, architecture decisions, deployment, push-notification routing, biometric gating, role-based permissions (T7SEN/dom, Besho/sub), Capacitor/Android builds, Redis (Upstash) data modeling, server actions, presence/SSE, FCM + Web Push, or PWA/Serwist concerns. Trigger this whenever the user mentions OurSpace, t7senlovesbesho, the besho repo, Tasks/Rules/Ledger/Notes/Mood/SafeWord features, the FloatingNavbar, BiometricGate, FCMProvider, PushToast, the Honor-device/no-GMS fallback, or asks for help in a Next.js 16 + Capacitor 8 + Upstash Redis + Firebase Admin stack with shadcn/ui and Tailwind v4. Do NOT skip this skill just because a task "looks generic" — every line of code added to this repo must conform to its non-obvious patterns (globalThis casts, deferred setState, void vibrate, "use server" hygiene, banned features). Failing to load it produces code that breaks at runtime on Android, leaks state across re-renders, or violates the dom/sub permission model.
+description: Engineering guide for "Our Space" — a private two-user couples app at github.com/t7sen/our-space (deployed t7senlovesbesho.me, Android me.t7senlovesbesho). Use for any work in this repo: features, refactors, bug fixes, code review, deployment, push routing, biometric gate, role-based permissions (T7SEN/dom, Besho/sub), Capacitor/Android builds, Upstash Redis data, server actions, presence/SSE, FCM + Web Push, PWA/Serwist. Trigger on OurSpace, t7senlovesbesho, t7sen/our-space, Tasks/Rules/Ledger/Notes/Mood/SafeWord, FloatingNavbar, BiometricGate, FCMProvider, PushToast, the Honor/no-GMS fallback, or any Next.js 16 + React 19 + Capacitor 8 + Upstash Redis + Firebase Admin + shadcn/ui + Tailwind v4 task. Repo enforces non-obvious patterns: globalThis casts for browser globals, deferred setState in effects, void vibrate, "use server" hygiene, server-side dom/sub role checks, presence-aware push routing. Skipping this skill produces code that breaks on Android, leaks state, or violates the permission model.
 ---
 
 # Our Space — Engineering Skill
@@ -13,7 +13,7 @@ You are operating on **Our Space**, a private, two-user web + Android applicatio
 
 | Attribute           | Value                                                |
 | ------------------- | ---------------------------------------------------- |
-| Repository          | `github.com/t7sen/besho`                             |
+| Repository          | `github.com/t7sen/our-space`                         |
 | Production URL      | `https://t7senlovesbesho.me`                         |
 | Android package     | `me.t7senlovesbesho`                                 |
 | Hosting             | Vercel (web), Capacitor APK (Android)                |
@@ -443,7 +443,7 @@ Use `next/image`, `next/link`, `next/script`, and the `metadata` / `viewport` ex
 
 ## 20. GitHub & Commit Hygiene
 
-- Repo: `github.com/t7sen/besho`. Pull and review every push before responding to a session that follows new commits.
+- Repo: `github.com/t7sen/our-space`. Pull and review every push before responding to a session that follows new commits.
 - Commits: imperative subject, ≤72 chars, scoped (`notes:`, `rules:`, `push:`, `biometric:`, `ci:`).
 - PRs: not used (solo workflow), but treat every push to `main` as if it were one — verify Vercel preview, run lint, smoke-test on Android.
 - Never `git push --force` on `main`.
