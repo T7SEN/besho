@@ -11,9 +11,10 @@ import { logger } from "@/lib/logger";
  * Registers FCM listeners once at the layout level so they persist
  * across all page navigations.
  *
- * Includes graceful degradation for Besho's Honor device:
- * Devices without Google Mobile Services (GMS) will fail FCM registration.
- * This component will catch that failure and prevent app crashes.
+ * Includes graceful degradation for FCM registration failures
+ * (permission denial, network issues, OEM-specific quirks): the
+ * `registrationError` listener catches and logs without throwing,
+ * so a failed registration never crashes the app.
  */
 export function FCMProvider() {
   const [author, setAuthor] = useState<string | null>(null);
@@ -101,10 +102,9 @@ export function FCMProvider() {
         const errorListener = await PushNotifications.addListener(
           "registrationError",
           (err) => {
-            logger.warn(
-              `[fcm] Registration error for ${author} (Likely No GMS):`,
-              { error: err },
-            );
+            logger.warn(`[fcm] Registration error for ${author}:`, {
+              error: err,
+            });
           },
         );
 

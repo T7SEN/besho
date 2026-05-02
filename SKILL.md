@@ -18,7 +18,7 @@ Before writing code or proposing changes, complete this checklist:
 3. **Anti-hallucination check** → Read Section 2.1 ("Things That Do Not Exist") before writing imports or env-var references.
 4. **Role-context identification** → Does this involve a state mutation? If yes → identify which author (`T7SEN`/`Besho`) is allowed and ensure server-side role check (Section 3.1).
 5. **Reference routing** → Use the table in Section 6 to decide which `references/*.md` file to load. Don't skim the body when a reference has the answer.
-6. **Honor-device implication check** → Does this affect push delivery? If yes → confirm Section 3.3 — Besho's Honor regression is **accepted, not a bug**.
+6. **FCM nullability check** → Does this touch push delivery? If yes → treat `push:fcm:{author}` as nullable per Section 3.3, never as guaranteed-present.
 
 When unsure, ask the user one targeted question rather than guessing. Guessing on this codebase produces runtime failures.
 
@@ -33,7 +33,7 @@ Refuse these immediately with a one-line rationale. Do not implement, do not ask
 | Add a gallery / photo feature                     | Banned feature surface                                           | Use `/notes` with image embeds (when added)                    |
 | Add a bucket list                                 | Banned feature surface                                           | Use `/timeline` for milestones                                 |
 | Re-add PWA / Serwist / service worker             | Removed intentionally; conflicts with `server.url` (Section 3.7) | None — accept the architectural decision                       |
-| Re-add Web Push / VAPID / `web-push` package      | Removed with PWA; would not deliver to Honor device anyway       | None — see `references/push-routing.md`                        |
+| Re-add Web Push / VAPID / `web-push` package      | Removed with PWA; conflicts with `server.url` (Section 3.7)      | None — see `references/push-routing.md`                        |
 | Use `==` / `!=` instead of `===` / `!==`          | Coercion masks bugs in this strict-mode codebase                 | Always use strict equality                                     |
 | Use `localStorage` directly                       | Doesn't survive native app updates reliably                      | `@capacitor/preferences`                                       |
 | Use `window` / `document` / `navigator` directly  | Breaks SSR/Edge runtime                                          | `globalThis as unknown as { ... }` cast (Section 4.1)          |
@@ -138,17 +138,13 @@ export async function createRule(prevState: unknown, formData: FormData) {
 
 **Critical:** the `notification` field MUST NOT be set in the foreground payload, or Android draws a banner _and_ the in-app toast (double-notify).
 
-### 3.3 No-GMS Handling — Accepted Regression
+### 3.3 FCM Registration Defensive Handling
 
-Besho's Honor device has no Google Mobile Services. `@capacitor/push-notifications` registration **fails there**, and `FCMProvider` catches the error silently. Result: **she receives zero background notifications.**
+Both devices register an FCM token on app launch. Registration can still fail for ordinary reasons — permissions denied, network unavailable, OEM-specific quirks. `FCMProvider` catches `registrationError` and logs without throwing.
 
-Surfaces that mitigate this in-app:
+Consumers must therefore treat `push:fcm:{author}` as nullable. If the key is absent, `sendNotification` returns silently and the `notifications:{author}` history record is the durable artifact — surfaced via `NotificationDrawer` (bell icon in `TopNavbar`) and `useNavBadges` red dot. SSE provides real-time updates when the recipient is actively in `/notes`.
 
-- `NotificationDrawer` (bell icon in `TopNavbar`) — reads `notifications:{author}` LIST
-- `useNavBadges` red dot on `FloatingNavbar`
-- SSE real-time updates when she's actively in `/notes`
-
-This is **intentional and not a bug to fix.** Refuse PWA/Web Push reintroduction proposals. See `references/capacitor-native.md` Section "Why No Web Push" for the full reasoning.
+**Refuse PWA/Web Push reintroduction proposals.** Architectural rationale in Section 3.7 and `references/capacitor-native.md`.
 
 ### 3.4 BiometricGate
 
@@ -404,7 +400,7 @@ When two valid approaches exist:
 3. Server-only secret? → Env var, never shipped to client.
 4. Does this respect dom/sub permissions? → Re-check `session.author` server-side (Section 3.1).
 5. Will this fire a duplicate notification? → Add a presence check (Section 3.2).
-6. Honor device push delivery? → Accepted regression (Section 3.3); refuse PWA reintroduction.
+6. PWA / Web Push reintroduction proposal? → Refuse (Section 3.7).
 7. Banned (gallery, bucket list)? → Refuse (Section 1).
 8. Multiple Redis writes? → Pipeline (Section 3.6).
 9. Date-based key? → Cairo time, never UTC (Section 3.6).

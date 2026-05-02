@@ -141,9 +141,9 @@ Always wrap in `try/catch`. Plugin failures must never crash the calling code pa
 
 ---
 
-## No-GMS Handling (Honor Device)
+## FCM Registration Defensive Handling
 
-Besho's Honor phone and tablet have **no Google Mobile Services**. Anything that depends on Google Play APIs will fail. The codebase handles this in two places:
+Both devices register an FCM token on app launch. Registration can still fail — permissions denied, network unavailable, OEM-specific quirks. The codebase tolerates this in two places:
 
 ### 1. FCMProvider — `src/components/fcm-provider.tsx`
 
@@ -151,45 +151,33 @@ Besho's Honor phone and tablet have **no Google Mobile Services**. Anything that
 const errorListener = await PushNotifications.addListener(
   "registrationError",
   (err) => {
-    logger.warn(`[fcm] Registration error for ${author} (Likely No GMS):`, {
+    logger.warn(`[fcm] Registration error for ${author}:`, {
       error: err,
     });
   },
 );
 ```
 
-The error is **caught and logged**. It does not throw. The app continues to function normally — only background push delivery is unavailable.
+The error is **caught and logged**. It does not throw. The app continues to function normally — only background push delivery is unavailable for that user until the next successful registration.
 
 ### 2. Server-side: assume token may be null
 
-Server-side code that touches the FCM path must always `await redis.get<string>(`push:fcm:${author}`)` and check for null. Treat the absence as **expected**, not exceptional. See [`./push-routing.md`](./push-routing.md).
-
-### Accepted regression
-
-Besho receives **zero background notifications** on the Honor device. The notification is logged to `notifications:Besho` and surfaces via:
-
-- `NotificationDrawer` (in-app, opens via the bell in `TopNavbar`)
-- `useNavBadges` (red dot on `FloatingNavbar` items when there's unread content)
-- SSE real-time updates when she's actively in `/notes`
-
-This is intentional. It is **not a bug to fix**.
+Server-side code that touches the FCM path must always `await redis.get<string>(`push:fcm:${author}`)` and check for null. If absent, `sendNotification` returns silently and the `notifications:{author}` LIST record is the durable artifact — surfaced via `NotificationDrawer` (bell in `TopNavbar`), `useNavBadges` red dot, and SSE real-time updates on `/notes`.
 
 ### Why No Web Push
 
-This section exists to preempt the eventual "let me add Web Push as a fallback for Honor" proposal. The reasoning:
+This section exists to preempt the eventual "let's add Web Push as a fallback" proposal. The reasoning:
 
 1. **The hosted-webapp architecture (`server.url`) makes Web Push impractical.** Service worker support inside Capacitor's WebView is inconsistent across Android OEM customizations. Honor's WebView in particular has known issues. Building a feature whose reliability depends on the most-divergent WebView implementation in the user base is folly.
 
 2. **Web Push without a service worker is a contradiction.** Web Push requires a service worker to receive `push` events. Adding one back means rebuilding PWA infrastructure (Serwist or equivalent), which we explicitly removed.
 
-3. **The cost-to-benefit ratio is bad.** Maintaining two transport stacks (FCM + Web Push) for a two-user app is disproportionate. The user-facing benefit is "Besho gets background pushes when she's offline-but-the-server-is-up" — a narrow window.
-
-4. **The accepted regression already has mitigations** (history list, badge dot, SSE). They cover the realistic use cases.
+3. **The cost-to-benefit ratio is bad.** Maintaining two transport stacks (FCM + Web Push) for a two-user app is disproportionate.
 
 If a future contribution proposes adding Web Push back, they must:
 
-- Demonstrate the previous reasoning no longer applies (e.g., Honor stopped shipping or got GMS).
-- Implement and test on an actual Honor device (not assumptions).
+- Demonstrate the previous architectural reasoning no longer applies.
+- Implement and test on actual production devices (not assumptions).
 - Plan for maintaining two push stacks indefinitely.
 
 If those bars aren't met: refuse.

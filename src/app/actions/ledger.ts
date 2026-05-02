@@ -4,7 +4,7 @@ import { Redis } from "@upstash/redis";
 import { cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { decrypt } from "@/lib/auth-utils";
-import { pushNotificationToHistory } from "@/app/actions/notifications";
+import { sendNotification } from "@/app/actions/notifications";
 import {
   REWARD_CATEGORIES,
   PUNISHMENT_CATEGORIES,
@@ -35,89 +35,6 @@ async function getSession() {
   const value = cookieStore.get("session")?.value;
   if (!value) return null;
   return decrypt(value);
-}
-
-// ─── Push helper ──────────────────────────────────────────────────────────────
-
-async function sendLedgerNotification(
-  to: string,
-  payload: { title: string; body: string; url: string },
-): Promise<void> {
-  try {
-    await pushNotificationToHistory(to, {
-      ...payload,
-      timestamp: Date.now(),
-    });
-
-    let currentPage: string | null = null;
-    try {
-      const presenceRaw = await redis.get<string>(`presence:${to}`);
-      if (presenceRaw) {
-        const { page, ts } = JSON.parse(presenceRaw) as {
-          page: string;
-          ts: number;
-        };
-        if (Date.now() - ts < 9_000) currentPage = page;
-      }
-    } catch {
-      /* proceed */
-    }
-
-    if (currentPage === payload.url) return;
-    const isAppOpen = currentPage !== null;
-
-    const fcmToken = await redis.get<string>(`push:fcm:${to}`);
-    if (fcmToken) {
-      const { getApps, initializeApp, cert } =
-        await import("firebase-admin/app");
-      const { getMessaging } = await import("firebase-admin/messaging");
-
-      if (!getApps().length) {
-        initializeApp({
-          credential: cert({
-            projectId: process.env.FIREBASE_PROJECT_ID!,
-            clientEmail: process.env.FIREBASE_CLIENT_EMAIL!,
-            privateKey: process.env.FIREBASE_PRIVATE_KEY!.replace(/\\n/g, "\n"),
-          }),
-        });
-      }
-
-      await getMessaging().send({
-        token: fcmToken,
-        ...(isAppOpen
-          ? {
-              data: {
-                url: payload.url,
-                title: payload.title,
-                body: payload.body,
-              },
-            }
-          : {
-              notification: { title: payload.title, body: payload.body },
-              data: { url: payload.url },
-              android: { priority: "high" },
-            }),
-      });
-      return;
-    }
-
-    // Web Push fallback
-    const subscription = await redis.get(`push:subscription:${to}`);
-    if (!subscription) return;
-
-    const webpush = (await import("web-push")).default;
-    webpush.setVapidDetails(
-      process.env.VAPID_EMAIL!,
-      process.env.VAPID_PUBLIC_KEY!,
-      process.env.VAPID_PRIVATE_KEY!,
-    );
-    await webpush.sendNotification(
-      subscription as Parameters<typeof webpush.sendNotification>[0],
-      JSON.stringify(payload),
-    );
-  } catch (err) {
-    logger.error("[ledger] Notification failed:", err);
-  }
 }
 
 // ─── Actions ──────────────────────────────────────────────────────────────────
@@ -183,7 +100,7 @@ export async function createLedgerEntry(
     pipeline.zadd(INDEX_KEY, { score: timestamp, member: entry.id });
     await pipeline.exec();
 
-    await sendLedgerNotification("Besho", {
+    await sendNotification("Besho", {
       title:
         type === "reward" ? "🏆 You earned a reward" : "⚠️ Punishment logged",
       body: `${category}: ${title}`,

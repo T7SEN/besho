@@ -4,7 +4,7 @@ import { Redis } from "@upstash/redis";
 import { cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { decrypt } from "@/lib/auth-utils";
-import { pushNotificationToHistory } from "@/app/actions/notifications";
+import { sendNotification } from "@/app/actions/notifications";
 import { logger } from "@/lib/logger";
 
 export type TaskPriority = "low" | "medium" | "high" | "urgent";
@@ -97,7 +97,7 @@ export async function createTask(
     await pipeline.exec();
 
     // Notify Besho of new task
-    await sendTaskNotification("Besho", {
+    await sendNotification("Besho", {
       title: "📋 New Task",
       body: `Sir assigned: ${task.title}`,
       url: "/tasks",
@@ -138,7 +138,7 @@ export async function submitTask(
 
     // Notify T7SEN that a task needs his review
     if (session.author === "Besho") {
-      await sendTaskNotification("T7SEN", {
+      await sendNotification("T7SEN", {
         title: "👀 Task Ready for Review",
         body: `Besho submitted: ${existing.title}`,
         url: "/tasks",
@@ -181,7 +181,7 @@ export async function approveTask(
     await redis.set(taskKey(id), updated);
 
     // Notify Besho that her task was approved
-    await sendTaskNotification("Besho", {
+    await sendNotification("Besho", {
       title: "✅ Task Approved",
       body: `Sir approved: ${existing.title}`,
       url: "/tasks",
@@ -222,7 +222,7 @@ export async function rejectTask(
     await redis.set(taskKey(id), updated);
 
     // Notify Besho that her task was rejected
-    await sendTaskNotification("Besho", {
+    await sendNotification("Besho", {
       title: "❌ Task Rejected",
       body: `Sir rejected: ${existing.title}. You have to redo it.`,
       url: "/tasks",
@@ -265,76 +265,5 @@ export async function deleteTask(
   } catch (error) {
     logger.error("[tasks] Failed to delete:", error);
     return { error: "Failed to delete task." };
-  }
-}
-
-async function sendTaskNotification(
-  to: string,
-  payload: { title: string; body: string; url: string },
-): Promise<void> {
-  try {
-    await pushNotificationToHistory(to, {
-      ...payload,
-      timestamp: Date.now(),
-    });
-
-    let currentPage: string | null = null;
-    try {
-      const presenceRaw = await redis.get<string>(`presence:${to}`);
-      if (presenceRaw) {
-        try {
-          const { page, ts } = JSON.parse(presenceRaw) as {
-            page: string;
-            ts: number;
-          };
-          if (Date.now() - ts < 9_000) {
-            currentPage = page;
-          }
-        } catch {
-          currentPage = presenceRaw;
-        }
-      }
-    } catch {
-      /* proceed */
-    }
-
-    const isAppOpen = currentPage !== null;
-    if (currentPage === payload.url) return; // Already on tasks page
-
-    const fcmToken = await redis.get<string>(`push:fcm:${to}`);
-    if (fcmToken) {
-      const { getApps, initializeApp, cert } =
-        await import("firebase-admin/app");
-      const { getMessaging } = await import("firebase-admin/messaging");
-
-      if (!getApps().length) {
-        initializeApp({
-          credential: cert({
-            projectId: process.env.FIREBASE_PROJECT_ID!,
-            clientEmail: process.env.FIREBASE_CLIENT_EMAIL!,
-            privateKey: process.env.FIREBASE_PRIVATE_KEY!.replace(/\\n/g, "\n"),
-          }),
-        });
-      }
-
-      await getMessaging().send({
-        token: fcmToken,
-        ...(isAppOpen
-          ? {
-              data: {
-                url: payload.url,
-                title: payload.title,
-                body: payload.body,
-              },
-            }
-          : {
-              notification: { title: payload.title, body: payload.body },
-              data: { url: payload.url },
-              android: { priority: "high" },
-            }),
-      });
-    }
-  } catch (err) {
-    logger.error("[tasks] Notification failed:", err);
   }
 }

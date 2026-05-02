@@ -128,9 +128,9 @@ Written every 8 seconds by `usePresence` while a page is open. The 6-second TTL 
 
 ## Push Tokens
 
-| Key                 | Type   | Description                         |
-| ------------------- | ------ | ----------------------------------- |
-| `push:fcm:{author}` | STRING | FCM device token (Android with GMS) |
+| Key                 | Type   | Description                |
+| ------------------- | ------ | -------------------------- |
+| `push:fcm:{author}` | STRING | FCM device token (Android) |
 
 > **Removed:** `push:subscription:{author}` (Web Push subscription) is no longer used. PWA infrastructure was removed; Web Push delivery is gone. If your Redis still has these keys from the old codebase, drop them:
 >
@@ -138,7 +138,7 @@ Written every 8 seconds by `usePresence` while a page is open. The 6-second TTL 
 > DEL push:subscription:T7SEN push:subscription:Besho
 > ```
 
-T7SEN's Samsung registers an FCM token on app launch. Besho's Honor device cannot register FCM (no Google Mobile Services), so `push:fcm:Besho` is typically null — this is expected, not a bug. See [`./push-routing.md`](./push-routing.md).
+Both devices register an FCM token on app launch. `FCMProvider` catches any registration error and continues silently (see Section 3.3 of `AGENTS.md`), so consumers must still treat `push:fcm:{author}` as nullable.
 
 ---
 
@@ -152,7 +152,7 @@ T7SEN's Samsung registers an FCM token on app launch. Besho's Honor device canno
 
 `markAllNotificationsRead()` rewrites the entire list with `read: true` — this is a known O(n) operation but n ≤ 50 so it's fine.
 
-This list is **especially important for Besho's Honor device** since it's the only place she'll see notifications until she opens the app.
+This list is the durable artifact when FCM delivery is unavailable for any reason — both users see missed notifications next time they open the app.
 
 ---
 

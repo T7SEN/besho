@@ -18,17 +18,16 @@ The full Skill specification with YAML frontmatter lives in `SKILL.md`. This fil
 
 ## 1. Product Context
 
-| Attribute           | Value                                                |
-| ------------------- | ---------------------------------------------------- |
-| Repository          | `github.com/t7sen/our-space`                         |
-| Production URL      | `https://t7senlovesbesho.me`                         |
-| Android package     | `me.t7senlovesbesho` (do not change)                 |
-| Hosting             | Vercel (web), Capacitor APK (Android)                |
-| Architecture        | **Hosted-webapp Capacitor shell** — see Section 3.7  |
-| Package manager     | `pnpm` — never npm or yarn                           |
-| Users               | Exactly two: `T7SEN` (dom), `Besho` (sub/kitten)     |
-| Devices             | T7SEN: Samsung Android. Besho: Honor phone + tablet. |
-| Critical constraint | Besho's devices have **no Google Mobile Services**   |
+| Attribute       | Value                                                |
+| --------------- | ---------------------------------------------------- |
+| Repository      | `github.com/t7sen/our-space`                         |
+| Production URL  | `https://t7senlovesbesho.me`                         |
+| Android package | `me.t7senlovesbesho` (do not change)                 |
+| Hosting         | Vercel (web), Capacitor APK (Android)                |
+| Architecture    | **Hosted-webapp Capacitor shell** — see Section 3.7  |
+| Package manager | `pnpm` — never npm or yarn                           |
+| Users           | Exactly two: `T7SEN` (dom), `Besho` (sub/kitten)     |
+| Devices         | T7SEN: Samsung Android. Besho: Honor phone + tablet. |
 
 **Banned features.** Never suggest, scaffold, or reference: `gallery`, `bucket list`. Reject any framing that implies them and propose alternatives using `/notes`, `/timeline`, `/tasks`, `/rules`, or `/ledger`.
 
@@ -74,13 +73,15 @@ Full algorithm in [`references/push-routing.md`](./references/push-routing.md). 
    - Foreground (presence exists, different page): data-only payload → in-app `PushToast`.
    - Background/closed: full `notification` payload → OS heads-up banner.
 
-**No Web Push fallback.** If FCM fails (Honor device), notification is logged to history only.
+**No Web Push fallback.** If FCM fails, notification is logged to history only.
 
-### 3.3 No-GMS Handling
+### 3.3 FCM Registration Defensive Handling
 
-Besho's Honor device has no Google Play Services. `@capacitor/push-notifications` registration **will fail** there. `FCMProvider` (`src/components/fcm-provider.tsx`) catches `registrationError` and logs without throwing.
+Both devices register an FCM token on app launch. Registration can still fail for ordinary reasons — permissions denied, network unavailable, OEM-specific quirks. `FCMProvider` (`src/components/fcm-provider.tsx`) catches `registrationError` and logs without throwing, so a failed registration never crashes the app.
 
-**Accepted regression:** Besho gets zero background notifications on Honor. The notification is logged to `notifications:Besho` and surfaces via the in-app `NotificationDrawer`, `useNavBadges` red dot, and SSE updates when she's actively in `/notes`. **This is intentional — do not "fix" it by reintroducing PWA/Web Push.** See [`references/capacitor-native.md`](./references/capacitor-native.md).
+Server-side push code must therefore treat `push:fcm:{author}` as nullable: if the key is absent the function returns silently and the notification record in `notifications:{author}` is the durable artifact, surfaced via `NotificationDrawer` and `useNavBadges`.
+
+**Do not reintroduce PWA/Web Push** as a fallback — the architectural rationale lives in Section 3.7 (`server.url`).
 
 ### 3.4 BiometricGate
 
@@ -360,7 +361,7 @@ When in doubt:
 3. Server-only secret? → Env var, never shipped to client.
 4. Respects dom/sub permissions? → Re-check `session.author` server-side.
 5. Will this fire a duplicate notification? → Add a presence check.
-6. Honor device push delivery? → Accepted regression (Section 3.3); refuse PWA/Web Push reintroduction.
+6. PWA / Web Push reintroduction proposal? → Refuse (Section 3.7).
 7. Banned (gallery, bucket list)? → Refuse.
 8. Violates any rule above? → Refuse and explain.
 

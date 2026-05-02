@@ -5,7 +5,7 @@ import { cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { decrypt } from "@/lib/auth-utils";
 import { MAX_CONTENT_LENGTH, PAGE_SIZE } from "@/lib/notes-constants";
-import { pushNotificationToHistory } from "@/app/actions/notifications";
+import { sendNotification } from "@/app/actions/notifications";
 import { getReactionsForNotes } from "@/app/actions/reactions";
 import { logger } from "@/lib/logger";
 
@@ -44,135 +44,6 @@ async function getSessionAuthor(): Promise<"T7SEN" | "Besho" | null> {
 
 export async function getCurrentAuthor(): Promise<"T7SEN" | "Besho" | null> {
   return getSessionAuthor();
-}
-
-// ─── Replace sendPushToUser in src/app/actions/notes.ts ──────────────────────
-// Also apply the same pattern to sendHugPush in src/app/actions/mood.ts
-// Import pushNotificationToHistory at the top of both files:
-// import { pushNotificationToHistory } from "@/app/actions/notifications";
-
-async function sendPushToUser(
-  toAuthor: "T7SEN" | "Besho",
-  payload: { title: string; body: string; url: string },
-): Promise<void> {
-  if (
-    !process.env.VAPID_EMAIL ||
-    !process.env.VAPID_PUBLIC_KEY ||
-    !process.env.VAPID_PRIVATE_KEY
-  ) {
-    logger.error("[push] Missing VAPID env vars.");
-    return;
-  }
-
-  // ── Presence check ────────────────────────────────────────────────────────
-  let currentPage: string | null = null;
-  try {
-    const presenceRaw = await redis.get<string>(`presence:${toAuthor}`);
-    if (presenceRaw) {
-      try {
-        const { page, ts } = JSON.parse(presenceRaw) as {
-          page: string;
-          ts: number;
-        };
-        const ageMs = Date.now() - ts;
-        // Only consider active if heartbeat was within 12s (heartbeat is every 8s)
-        if (ageMs < 12_000) {
-          currentPage = page;
-        }
-      } catch {
-        currentPage = presenceRaw; // backward compat with old string format
-      }
-    }
-    if (currentPage === payload.url) {
-      logger.info(`[push] Skipping — ${toAuthor} is on ${payload.url}.`);
-      return;
-    }
-  } catch (err) {
-    logger.warn("[push] Presence check failed, proceeding:", { error: err });
-  }
-
-  const isAppOpen = currentPage !== null;
-
-  // ── Write to notification history ─────────────────────────────────────────
-  // Always record — regardless of whether the push sends successfully
-  try {
-    await pushNotificationToHistory(toAuthor, {
-      title: payload.title,
-      body: payload.body,
-      url: payload.url,
-      timestamp: Date.now(),
-    });
-  } catch (err) {
-    logger.error("[push] Failed to write notification history:", err);
-  }
-
-  // ── FCM (native Android) ──────────────────────────────────────────────────
-  const fcmToken = await redis.get<string>(`push:fcm:${toAuthor}`);
-  if (fcmToken) {
-    try {
-      const { getApps, initializeApp, cert } =
-        await import("firebase-admin/app");
-      const { getMessaging } = await import("firebase-admin/messaging");
-
-      if (!getApps().length) {
-        initializeApp({
-          credential: cert({
-            projectId: process.env.FIREBASE_PROJECT_ID!,
-            clientEmail: process.env.FIREBASE_CLIENT_EMAIL!,
-            privateKey: process.env.FIREBASE_PRIVATE_KEY!.replace(/\\n/g, "\n"),
-          }),
-        });
-      }
-
-      await getMessaging().send({
-        token: fcmToken,
-        // App open: data-only (Capacitor intercepts, shows in-app toast)
-        // App closed: notification message (OS shows natively)
-        ...(isAppOpen
-          ? {
-              data: {
-                url: payload.url,
-                title: payload.title,
-                body: payload.body,
-              },
-            }
-          : {
-              notification: {
-                title: payload.title,
-                body: payload.body,
-              },
-              data: { url: payload.url },
-              android: { priority: "high" },
-            }),
-      });
-
-      logger.info(`[push] FCM sent to ${toAuthor}.`);
-      return;
-    } catch (err) {
-      logger.error("[push] FCM failed, falling back to Web Push:", err);
-    }
-  }
-
-  // ── Web Push fallback (PWA) ───────────────────────────────────────────────
-  const subscription = await redis.get(`push:subscription:${toAuthor}`);
-  if (!subscription) {
-    logger.info(`[push] No subscription for ${toAuthor}.`);
-    return;
-  }
-
-  const webpush = (await import("web-push")).default;
-  webpush.setVapidDetails(
-    process.env.VAPID_EMAIL!,
-    process.env.VAPID_PUBLIC_KEY!,
-    process.env.VAPID_PRIVATE_KEY!,
-  );
-
-  await webpush.sendNotification(
-    subscription as Parameters<typeof webpush.sendNotification>[0],
-    JSON.stringify(payload),
-  );
-
-  logger.info(`[push] Web Push sent to ${toAuthor}.`);
 }
 
 // ─── Legacy migration ─────────────────────────────────────────────────────────
@@ -349,17 +220,13 @@ export async function saveNote(prevState: unknown, formData: FormData) {
 
     revalidatePath("/notes");
 
-    // Fire-and-forget push to the other user
+    // Fire-and-forget push to the other user.
     const other = author === "T7SEN" ? "Besho" : "T7SEN";
-    try {
-      await sendPushToUser(other, {
-        title: `${author} wrote a note`,
-        body: newNote.content.slice(0, 100),
-        url: "/notes",
-      });
-    } catch (pushError) {
-      logger.error("[push] Failed to notify partner:", pushError);
-    }
+    await sendNotification(other, {
+      title: `${author} wrote a note`,
+      body: newNote.content.slice(0, 100),
+      url: "/notes",
+    });
 
     return { success: true };
   } catch (error) {

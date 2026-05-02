@@ -8,13 +8,12 @@ Detailed reference for the presence-aware push notification routing in Our Space
 
 1. The app runs as a hosted-webapp Capacitor shell (`server.url`) — the WebView doesn't run service workers reliably.
 2. Maintaining two transport stacks (FCM + Web Push) for a two-user app was cost-disproportionate.
-3. Besho's Honor device (no Google Mobile Services) cannot register FCM **or** Web Push reliably — both have the same outcome on her device, so removing the second one removed maintenance burden without changing user-visible behavior.
 
 If a future contributor proposes adding Web Push back, they must read [`./capacitor-native.md`](./capacitor-native.md) Section "Why No Web Push" and explain why the prior reasoning no longer applies.
 
 ## The Four-Step Algorithm
 
-Every code path that sends a notification (`sendPushToUser`, `sendRuleNotification`, `sendHugPush`, and any future addition) **must** follow this exact sequence. Deviations cause duplicate notifications, missing notifications, or crashes on no-GMS devices.
+Every code path that sends a notification (`sendPushToUser`, `sendRuleNotification`, `sendHugPush`, and any future addition) **must** follow this exact sequence. Deviations cause duplicate notifications, missing notifications, or runtime errors.
 
 ### Step 1 — Always write to history first
 
@@ -27,7 +26,7 @@ await pushNotificationToHistory(targetAuthor, {
 });
 ```
 
-History is the source of truth even if delivery fails. The `NotificationDrawer` reads from `notifications:{author}` (LIST, capped at 50) regardless of whether FCM succeeded. **This is critical for Besho's Honor device** — the notification record is the only way she'll see the message until she opens the app.
+History is the source of truth even if delivery fails. The `NotificationDrawer` reads from `notifications:{author}` (LIST, capped at 50) regardless of whether FCM succeeded. The history record is the durable artifact when FCM delivery is unavailable for any reason — both users see missed notifications next time they open the app.
 
 ### Step 2 — Read presence
 
@@ -68,7 +67,7 @@ The recipient sees the update via SSE (`/notes`) or the `useRefreshListener` hoo
 ```ts
 const fcmToken = await redis.get<string>(`push:fcm:${targetAuthor}`);
 if (!fcmToken) {
-  logger.info(`[push] No FCM token for ${targetAuthor} (likely no GMS).`);
+  logger.info(`[push] No FCM token for ${targetAuthor}.`);
   return;
 }
 
@@ -148,7 +147,7 @@ Every page that should suppress duplicate pushes when foregrounded must call `us
 `src/components/fcm-provider.tsx`. Persistent in `layout.tsx` so registration survives navigation. Listens for:
 
 - `registration` → `POST /api/push/subscribe-fcm` to store the token
-- `registrationError` → log and continue (Honor/no-GMS — expected, not an error)
+- `registrationError` → log and continue (registration can fail for ordinary reasons — permissions, network, OEM quirks; not an error to crash on)
 - `pushNotificationReceived` → `dispatchPushToast` for the in-app toast
 - `pushNotificationActionPerformed` → navigate to `data.url`
 
@@ -176,28 +175,11 @@ Copy the `sendRuleNotification` function in `src/app/actions/rules.ts` as a temp
 
 ---
 
-## What Happens on Besho's Honor Device
-
-This is documented explicitly because it's an accepted regression that future contributors will be tempted to "fix":
-
-| Stage                | Outcome                                                                                                                                                    |
-| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Notification trigger | Server action runs, push history written                                                                                                                   |
-| Presence check       | She's not on the target page (assumption)                                                                                                                  |
-| FCM token lookup     | `redis.get('push:fcm:Besho')` returns null (no GMS, registration failed)                                                                                   |
-| Delivery             | **None.** Function returns silently.                                                                                                                       |
-| User experience      | She sees the unread notification next time she opens the app — via `NotificationDrawer`, `useNavBadges` red dot, or the page itself if she navigates to it |
-
-This is intentional. The only path that would deliver background notifications to her is reintroducing PWA + Web Push + service worker, which conflicts with the `server.url` architecture. See [`./capacitor-native.md`](./capacitor-native.md) Section "Why No Web Push."
-
----
-
 ## Failure Modes & Diagnostics
 
 | Symptom                                     | Cause                                       | Fix                                         |
 | ------------------------------------------- | ------------------------------------------- | ------------------------------------------- |
 | Duplicate banner + toast on Android         | `notification` field set in foreground path | Strip `notification` when `isAppOpen`       |
-| No notification on Honor device             | FCM token absent (expected)                 | Not a bug — accepted regression             |
 | Notifications stop after server restart     | Firebase Admin re-initialized               | Guard with `if (!getApps().length)`         |
 | Push fires while user is on the target page | Presence stale or never written             | Check `usePresence(currentRoute)` is called |
 | `FIREBASE_PRIVATE_KEY` parse error          | `\n` literals not converted                 | `.replace(/\\n/g, '\n')` at runtime         |

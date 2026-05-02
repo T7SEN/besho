@@ -4,7 +4,7 @@ import { Redis } from "@upstash/redis";
 import { cookies } from "next/headers";
 import { decrypt } from "@/lib/auth-utils";
 import { MY_TZ } from "@/lib/constants";
-import { pushNotificationToHistory } from "@/app/actions/notifications";
+import { sendNotification } from "@/app/actions/notifications";
 import { logger } from "@/lib/logger";
 
 export interface MoodData {
@@ -192,7 +192,12 @@ export async function sendHug(): Promise<{
     }
 
     await redis.set(hugKey(today, author), "1", { ex: ttl });
-    await sendHugPush(partner, author);
+
+    await sendNotification(partner, {
+      title: "💝 Virtual Hug!",
+      body: `${author} sent you a hug`,
+      url: "/",
+    });
 
     logger.interaction("[mood] Hug sent", { from: author, to: partner });
     return { success: true };
@@ -244,106 +249,4 @@ export async function getMoodHistory(days = 7): Promise<MoodHistoryEntry[]> {
     myState: values[i * 4 + 2] ?? null,
     partnerState: values[i * 4 + 3] ?? null,
   }));
-}
-
-async function sendHugPush(to: string, from: string): Promise<void> {
-  const payload = {
-    title: "💝 Virtual Hug!",
-    body: `${from} sent you a hug`,
-    url: "/",
-  };
-
-  let currentPage: string | null = null;
-  try {
-    const presenceRaw = await redis.get<string>(`presence:${to}`);
-    if (presenceRaw) {
-      try {
-        const { page, ts } = JSON.parse(presenceRaw) as {
-          page: string;
-          ts: number;
-        };
-        if (Date.now() - ts < 9_000) {
-          currentPage = page;
-        }
-      } catch {
-        currentPage = presenceRaw;
-      }
-    }
-  } catch {
-    /* proceed */
-  }
-
-  try {
-    await pushNotificationToHistory(to, {
-      ...payload,
-      timestamp: Date.now(),
-    });
-  } catch (err) {
-    logger.error("[push] Failed to write hug notification history:", err);
-  }
-
-  const isAppOpen = currentPage !== null;
-
-  const fcmToken = await redis.get<string>(`push:fcm:${to}`);
-  if (fcmToken) {
-    try {
-      const { getApps, initializeApp, cert } =
-        await import("firebase-admin/app");
-      const { getMessaging } = await import("firebase-admin/messaging");
-
-      if (!getApps().length) {
-        initializeApp({
-          credential: cert({
-            projectId: process.env.FIREBASE_PROJECT_ID!,
-            clientEmail: process.env.FIREBASE_CLIENT_EMAIL!,
-            privateKey: process.env.FIREBASE_PRIVATE_KEY!.replace(/\\n/g, "\n"),
-          }),
-        });
-      }
-
-      await getMessaging().send({
-        token: fcmToken,
-        ...(isAppOpen
-          ? {
-              data: {
-                url: payload.url,
-                title: payload.title,
-                body: payload.body,
-              },
-            }
-          : {
-              notification: {
-                title: payload.title,
-                body: payload.body,
-              },
-              data: { url: payload.url },
-              android: { priority: "high" },
-            }),
-      });
-
-      logger.info(`[push] Hug FCM sent to ${to}.`);
-      return;
-    } catch (err) {
-      logger.error("[push] Hug FCM failed:", err);
-    }
-  }
-
-  const subscription = await redis.get(`push:subscription:${to}`);
-  if (!subscription) return;
-
-  try {
-    const webpush = (await import("web-push")).default;
-    webpush.setVapidDetails(
-      process.env.VAPID_EMAIL!,
-      process.env.VAPID_PUBLIC_KEY!,
-      process.env.VAPID_PRIVATE_KEY!,
-    );
-
-    await webpush.sendNotification(
-      subscription as Parameters<typeof webpush.sendNotification>[0],
-      JSON.stringify(payload),
-    );
-  } catch (error) {
-    logger.error("[mood] Web Push failed:", error);
-  }
 }

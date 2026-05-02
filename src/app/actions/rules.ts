@@ -4,7 +4,7 @@ import { Redis } from "@upstash/redis";
 import { cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { decrypt } from "@/lib/auth-utils";
-import { pushNotificationToHistory } from "@/app/actions/notifications";
+import { sendNotification } from "@/app/actions/notifications";
 import { logger } from "@/lib/logger";
 
 export type RuleStatus = "pending" | "active" | "completed";
@@ -34,86 +34,6 @@ async function getSession() {
   const value = cookieStore.get("session")?.value;
   if (!value) return null;
   return decrypt(value);
-}
-
-async function sendRuleNotification(
-  to: string,
-  payload: { title: string; body: string; url: string },
-): Promise<void> {
-  try {
-    await pushNotificationToHistory(to, {
-      ...payload,
-      timestamp: Date.now(),
-    });
-
-    let currentPage: string | null = null;
-    try {
-      const presenceRaw = await redis.get<string>(`presence:${to}`);
-      if (presenceRaw) {
-        const { page, ts } = JSON.parse(presenceRaw) as {
-          page: string;
-          ts: number;
-        };
-        if (Date.now() - ts < 9_000) currentPage = page;
-      }
-    } catch {
-      /* proceed */
-    }
-
-    if (currentPage === payload.url) return;
-    const isAppOpen = currentPage !== null;
-
-    const fcmToken = await redis.get<string>(`push:fcm:${to}`);
-    if (fcmToken) {
-      const { getApps, initializeApp, cert } =
-        await import("firebase-admin/app");
-      const { getMessaging } = await import("firebase-admin/messaging");
-
-      if (!getApps().length) {
-        initializeApp({
-          credential: cert({
-            projectId: process.env.FIREBASE_PROJECT_ID!,
-            clientEmail: process.env.FIREBASE_CLIENT_EMAIL!,
-            privateKey: process.env.FIREBASE_PRIVATE_KEY!.replace(/\\n/g, "\n"),
-          }),
-        });
-      }
-
-      await getMessaging().send({
-        token: fcmToken,
-        ...(isAppOpen
-          ? {
-              data: {
-                url: payload.url,
-                title: payload.title,
-                body: payload.body,
-              },
-            }
-          : {
-              notification: { title: payload.title, body: payload.body },
-              data: { url: payload.url },
-              android: { priority: "high" },
-            }),
-      });
-      return;
-    }
-
-    const subscription = await redis.get(`push:subscription:${to}`);
-    if (!subscription) return;
-
-    const webpush = (await import("web-push")).default;
-    webpush.setVapidDetails(
-      process.env.VAPID_EMAIL!,
-      process.env.VAPID_PUBLIC_KEY!,
-      process.env.VAPID_PRIVATE_KEY!,
-    );
-    await webpush.sendNotification(
-      subscription as Parameters<typeof webpush.sendNotification>[0],
-      JSON.stringify(payload),
-    );
-  } catch (err) {
-    logger.error("[rules] Notification failed:", err);
-  }
 }
 
 export async function getRules(): Promise<Rule[]> {
@@ -162,7 +82,7 @@ export async function createRule(
     pipeline.zadd(INDEX_KEY, { score: rule.createdAt, member: rule.id });
     await pipeline.exec();
 
-    await sendRuleNotification("Besho", {
+    await sendNotification("Besho", {
       title: "📜 New Rule",
       body: `Sir set a new rule: ${rule.title}`,
       url: "/rules",
@@ -202,7 +122,7 @@ export async function acknowledgeRule(
     };
     await redis.set(ruleKey(id), updated);
 
-    await sendRuleNotification("T7SEN", {
+    await sendNotification("T7SEN", {
       title: "✓ Rule Acknowledged",
       body: `kitten acknowledged: ${existing.title}`,
       url: "/rules",

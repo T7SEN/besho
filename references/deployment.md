@@ -169,7 +169,7 @@ versionName "1.4.0"
 
 T7SEN's Samsung: enable **Install from unknown sources** for whatever file manager you use. Tap the APK to install.
 
-Besho's Honor: same procedure. After install, the app loads from `t7senlovesbesho.me`. FCM registration will fail (no GMS) — this is expected. Push history surfaces via `NotificationDrawer`.
+Besho's Honor: same procedure. After install, the app loads from `t7senlovesbesho.me`. Confirm FCM registration succeeds and `push:fcm:Besho` is populated; if registration fails for any reason (permissions, network, OEM quirks), push history still surfaces via `NotificationDrawer`.
 
 ### `appId` is sacred
 
