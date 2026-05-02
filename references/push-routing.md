@@ -1,8 +1,18 @@
-# Push Routing — FCM + Web Push
+# Push Routing — FCM Only
 
 Detailed reference for the presence-aware push notification routing in Our Space. Load this when implementing or modifying any push path.
 
-## The Six-Step Algorithm
+## Architecture Note
+
+**FCM is the only push transport.** There is no Web Push, no Service Worker, no VAPID. Web Push and PWA infrastructure were removed because:
+
+1. The app runs as a hosted-webapp Capacitor shell (`server.url`) — the WebView doesn't run service workers reliably.
+2. Maintaining two transport stacks (FCM + Web Push) for a two-user app was cost-disproportionate.
+3. Besho's Honor device (no Google Mobile Services) cannot register FCM **or** Web Push reliably — both have the same outcome on her device, so removing the second one removed maintenance burden without changing user-visible behavior.
+
+If a future contributor proposes adding Web Push back, they must read [`./capacitor-native.md`](./capacitor-native.md) Section "Why No Web Push" and explain why the prior reasoning no longer applies.
+
+## The Four-Step Algorithm
 
 Every code path that sends a notification (`sendPushToUser`, `sendRuleNotification`, `sendHugPush`, and any future addition) **must** follow this exact sequence. Deviations cause duplicate notifications, missing notifications, or crashes on no-GMS devices.
 
@@ -17,7 +27,7 @@ await pushNotificationToHistory(targetAuthor, {
 });
 ```
 
-History is the source of truth even if delivery fails. The `NotificationDrawer` reads from `notifications:{author}` (LIST, capped at 50) regardless of whether FCM or Web Push succeeded.
+History is the source of truth even if delivery fails. The `NotificationDrawer` reads from `notifications:{author}` (LIST, capped at 50) regardless of whether FCM succeeded. **This is critical for Besho's Honor device** — the notification record is the only way she'll see the message until she opens the app.
 
 ### Step 2 — Read presence
 
@@ -40,9 +50,7 @@ try {
 }
 ```
 
-The `12_000ms` threshold is intentional — it's wider than the 8s heartbeat interval in `usePresence` to absorb network jitter without over-extending.
-
-The `presence:{author}` key has a Redis TTL of 6 seconds (`PRESENCE_TTL` in `src/app/api/presence/route.ts`). The TTL and the 12s freshness window together act as a two-layer expiry.
+The 12-second threshold is wider than the 8-second heartbeat in `usePresence` to absorb network jitter without over-extending. The `presence:{author}` key has a Redis TTL of 6 seconds (`PRESENCE_TTL` in `src/app/api/presence/route.ts`). The TTL and the 12s freshness window together act as a two-layer expiry.
 
 ### Step 3 — Skip if recipient is on the target page
 
@@ -55,100 +63,75 @@ if (currentPage === payload.url) {
 
 The recipient sees the update via SSE (`/notes`) or the `useRefreshListener` hook on other pages. A push at this point would double-notify.
 
-### Step 4 — Decide foreground vs background
-
-```ts
-const isAppOpen = currentPage !== null;
-```
-
-If presence exists at all, the app is foregrounded somewhere. If not, it's backgrounded or closed.
-
-### Step 5 — FCM path (Android with GMS)
+### Step 4 — FCM delivery
 
 ```ts
 const fcmToken = await redis.get<string>(`push:fcm:${targetAuthor}`);
-if (fcmToken) {
-  try {
-    const { getApps, initializeApp, cert } = await import("firebase-admin/app");
-    const { getMessaging } = await import("firebase-admin/messaging");
-
-    if (!getApps().length) {
-      initializeApp({
-        credential: cert({
-          projectId: process.env.FIREBASE_PROJECT_ID!,
-          clientEmail: process.env.FIREBASE_CLIENT_EMAIL!,
-          privateKey: process.env.FIREBASE_PRIVATE_KEY!.replace(/\\n/g, "\n"),
-        }),
-      });
-    }
-
-    await getMessaging().send({
-      token: fcmToken,
-      ...(isAppOpen
-        ? {
-            // Foreground: data-only payload — Capacitor intercepts,
-            // FCMProvider dispatches PushToast in-app.
-            data: {
-              url: payload.url,
-              title: payload.title,
-              body: payload.body,
-            },
-          }
-        : {
-            // Background/closed: full notification payload —
-            // the OS draws the heads-up banner natively.
-            notification: {
-              title: payload.title,
-              body: payload.body,
-            },
-            data: { url: payload.url },
-            android: { priority: "high" },
-          }),
-    });
-    return;
-  } catch (err) {
-    logger.error("[push] FCM failed, falling back to Web Push:", err);
-  }
-}
-```
-
-Critical detail: **the `notification` field must NOT be present in the foreground payload**. If it is, Android draws a system banner _and_ the in-app `PushToast` — the user sees the same message twice.
-
-The `firebase-admin` SDK is imported dynamically. Top-level imports inflate the Edge bundle and break runtime detection.
-
-### Step 6 — Web Push fallback (no GMS / PWA)
-
-```ts
-const subscription = await redis.get(`push:subscription:${targetAuthor}`);
-if (!subscription) {
-  logger.info(`[push] No subscription for ${targetAuthor}.`);
+if (!fcmToken) {
+  logger.info(`[push] No FCM token for ${targetAuthor} (likely no GMS).`);
   return;
 }
 
-const webpush = (await import("web-push")).default;
-webpush.setVapidDetails(
-  process.env.VAPID_EMAIL!,
-  process.env.VAPID_PUBLIC_KEY!,
-  process.env.VAPID_PRIVATE_KEY!,
-);
-await webpush.sendNotification(
-  subscription as Parameters<typeof webpush.sendNotification>[0],
-  JSON.stringify(payload),
-);
+const isAppOpen = currentPage !== null;
+
+try {
+  const { getApps, initializeApp, cert } = await import("firebase-admin/app");
+  const { getMessaging } = await import("firebase-admin/messaging");
+
+  if (!getApps().length) {
+    initializeApp({
+      credential: cert({
+        projectId: process.env.FIREBASE_PROJECT_ID!,
+        clientEmail: process.env.FIREBASE_CLIENT_EMAIL!,
+        privateKey: process.env.FIREBASE_PRIVATE_KEY!.replace(/\\n/g, "\n"),
+      }),
+    });
+  }
+
+  await getMessaging().send({
+    token: fcmToken,
+    ...(isAppOpen
+      ? {
+          // Foreground: data-only payload — Capacitor intercepts,
+          // FCMProvider dispatches PushToast in-app.
+          data: {
+            url: payload.url,
+            title: payload.title,
+            body: payload.body,
+          },
+        }
+      : {
+          // Background/closed: full notification payload —
+          // the OS draws the heads-up banner natively.
+          notification: {
+            title: payload.title,
+            body: payload.body,
+          },
+          data: { url: payload.url },
+          android: { priority: "high" },
+        }),
+  });
+} catch (err) {
+  logger.error("[push] FCM send failed:", err);
+  // No fallback. The notification record in history is the only artifact.
+}
 ```
 
-This path is what reaches Besho's Honor device. The Service Worker (Serwist-generated `public/sw.js`) handles the `push` event and renders the system notification.
+**Critical detail:** the `notification` field must NOT be present in the foreground payload. If it is, Android draws a system banner _and_ the in-app `PushToast` — the user sees the same message twice.
+
+The `firebase-admin` SDK is imported dynamically. Top-level imports inflate the Edge bundle and break runtime detection.
 
 ---
 
 ## Storage Keys
 
-| Key                          | Type   | TTL  | Purpose                                |
-| ---------------------------- | ------ | ---- | -------------------------------------- |
-| `presence:{author}`          | STRING | 6s   | `{ page, ts }` JSON — heartbeat target |
-| `push:fcm:{author}`          | STRING | none | FCM device token (Android with GMS)    |
-| `push:subscription:{author}` | JSON   | none | Web Push subscription (PWA fallback)   |
-| `notifications:{author}`     | LIST   | none | Last 50 records (LPUSH + LTRIM)        |
+| Key                      | Type   | TTL  | Purpose                                |
+| ------------------------ | ------ | ---- | -------------------------------------- |
+| `presence:{author}`      | STRING | 6s   | `{ page, ts }` JSON — heartbeat target |
+| `push:fcm:{author}`      | STRING | none | FCM device token (Android with GMS)    |
+| `notifications:{author}` | LIST   | none | Last 50 records (LPUSH + LTRIM)        |
+
+> **Note:** `push:subscription:{author}` (formerly Web Push subscription) is removed. If your Redis still has dead entries, clean them: `DEL push:subscription:T7SEN push:subscription:Besho`.
 
 ---
 
@@ -156,7 +139,7 @@ This path is what reaches Besho's Honor device. The Service Worker (Serwist-gene
 
 ### `usePresence(page, paused?)`
 
-`src/hooks/use-presence.ts`. Heartbeats `POST /api/presence` every 8 seconds with the current page. Calls `DELETE /api/presence` on unmount. Pause via the second arg when the user is idle (e.g., the tab is backgrounded but the device hasn't slept).
+`src/hooks/use-presence.ts`. Heartbeats `POST /api/presence` every 8 seconds with the current page. Calls `DELETE /api/presence` on unmount. Pause via the second arg when the user is idle.
 
 Every page that should suppress duplicate pushes when foregrounded must call `usePresence(currentRoute)`.
 
@@ -165,7 +148,7 @@ Every page that should suppress duplicate pushes when foregrounded must call `us
 `src/components/fcm-provider.tsx`. Persistent in `layout.tsx` so registration survives navigation. Listens for:
 
 - `registration` → `POST /api/push/subscribe-fcm` to store the token
-- `registrationError` → log and continue (Honor/no-GMS)
+- `registrationError` → log and continue (Honor/no-GMS — expected, not an error)
 - `pushNotificationReceived` → `dispatchPushToast` for the in-app toast
 - `pushNotificationActionPerformed` → navigate to `data.url`
 
@@ -186,10 +169,26 @@ Checklist for any new server action that needs to notify the partner:
 3. Build the payload `{ title, body, url }`.
 4. Call `pushNotificationToHistory(target, { ...payload, timestamp: Date.now() })` first.
 5. Run the presence check — if `currentPage === payload.url`, return.
-6. Try FCM → fall back to Web Push. Wrap each in `try/catch` and log on failure.
+6. Try FCM. Wrap in `try/catch` and log on failure. **Do not add a Web Push fallback.**
 7. Never throw out of a notification path. The originating user action must succeed regardless of push delivery.
 
 Copy the `sendRuleNotification` function in `src/app/actions/rules.ts` as a template — it's the cleanest example.
+
+---
+
+## What Happens on Besho's Honor Device
+
+This is documented explicitly because it's an accepted regression that future contributors will be tempted to "fix":
+
+| Stage                | Outcome                                                                                                                                                    |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Notification trigger | Server action runs, push history written                                                                                                                   |
+| Presence check       | She's not on the target page (assumption)                                                                                                                  |
+| FCM token lookup     | `redis.get('push:fcm:Besho')` returns null (no GMS, registration failed)                                                                                   |
+| Delivery             | **None.** Function returns silently.                                                                                                                       |
+| User experience      | She sees the unread notification next time she opens the app — via `NotificationDrawer`, `useNavBadges` red dot, or the page itself if she navigates to it |
+
+This is intentional. The only path that would deliver background notifications to her is reintroducing PWA + Web Push + service worker, which conflicts with the `server.url` architecture. See [`./capacitor-native.md`](./capacitor-native.md) Section "Why No Web Push."
 
 ---
 
@@ -198,7 +197,7 @@ Copy the `sendRuleNotification` function in `src/app/actions/rules.ts` as a temp
 | Symptom                                     | Cause                                       | Fix                                         |
 | ------------------------------------------- | ------------------------------------------- | ------------------------------------------- |
 | Duplicate banner + toast on Android         | `notification` field set in foreground path | Strip `notification` when `isAppOpen`       |
-| No notification on Honor device             | FCM token absent (expected); no fallback    | Confirm `push:subscription:{author}` exists |
+| No notification on Honor device             | FCM token absent (expected)                 | Not a bug — accepted regression             |
 | Notifications stop after server restart     | Firebase Admin re-initialized               | Guard with `if (!getApps().length)`         |
 | Push fires while user is on the target page | Presence stale or never written             | Check `usePresence(currentRoute)` is called |
 | `FIREBASE_PRIVATE_KEY` parse error          | `\n` literals not converted                 | `.replace(/\\n/g, '\n')` at runtime         |

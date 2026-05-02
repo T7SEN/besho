@@ -7,14 +7,17 @@ Reference for Vercel (web) and Android (Capacitor) deployment pipelines, environ
 ```
 GitHub (t7sen/our-space)
     │
-    ├──→ Vercel ──→ https://t7senlovesbesho.me      (web, PWA, API routes, Edge SSE)
+    ├──→ Vercel ──→ https://t7senlovesbesho.me      (web, PWA-less, API routes, Edge SSE)
+    │                       ↑
+    │                       └──── Both phones load this URL via Capacitor's WebView
     │
-    └──→ Local clone ──→ pnpm build ──→ npx cap sync android
-                              │
-                              └──→ Android Studio ──→ signed APK ──→ devices
+    └──→ Local clone ──→ npx cap sync android ──→ Android Studio ──→ signed APK
+                              (only when Capacitor config or plugins change)
 ```
 
-The web and Android builds share the same `src/` and produce different artifacts. The Android shell wraps the same web bundle plus Capacitor plugins.
+The architecture is **hosted-webapp Capacitor**. The APK is a thin native shell that loads the live Vercel deployment. See [`./capacitor-native.md`](./capacitor-native.md) Section "Architecture" for full rationale.
+
+**Practical implication:** APK rebuilds are rare. Most "releases" are Vercel deploys. You'll bump `versionCode` only when `capacitor.config.ts` or native plugins change.
 
 ---
 
@@ -31,25 +34,23 @@ pnpm install --frozen-lockfile
 pnpm build
 ```
 
-If you ever see `Lockfile not found` in build logs, `pnpm-lock.yaml` is gitignored or missing — fix it (see "Lockfile" below).
+If you ever see `Lockfile not found` in build logs, `pnpm-lock.yaml` is gitignored or missing — fix it.
 
 ### Required environment variables
 
 All set in **Vercel → Project → Settings → Environment Variables**. Production environment.
 
-| Variable                       | Purpose                                           |
-| ------------------------------ | ------------------------------------------------- |
-| `AUTH_SECRET_KEY`              | JWT signing secret (HS256). 32+ random bytes.     |
-| `KV_REST_API_URL`              | Upstash Redis REST URL                            |
-| `KV_REST_API_TOKEN`            | Upstash Redis REST token                          |
-| `VAPID_EMAIL`                  | `mailto:` URL for VAPID                           |
-| `VAPID_PUBLIC_KEY`             | VAPID public key (also referenced client-side)    |
-| `VAPID_PRIVATE_KEY`            | VAPID private key                                 |
-| `FIREBASE_PROJECT_ID`          | Firebase project ID for FCM                       |
-| `FIREBASE_CLIENT_EMAIL`        | Service account email                             |
-| `FIREBASE_PRIVATE_KEY`         | Service account private key with **literal `\n`** |
-| `SENTRY_AUTH_TOKEN`            | For source-map upload at build time               |
-| `NEXT_PUBLIC_VAPID_PUBLIC_KEY` | Same as `VAPID_PUBLIC_KEY` but client-exposed     |
+| Variable                | Purpose                                           |
+| ----------------------- | ------------------------------------------------- |
+| `AUTH_SECRET_KEY`       | JWT signing secret (HS256). 32+ random bytes.     |
+| `KV_REST_API_URL`       | Upstash Redis REST URL                            |
+| `KV_REST_API_TOKEN`     | Upstash Redis REST token                          |
+| `FIREBASE_PROJECT_ID`   | Firebase project ID for FCM                       |
+| `FIREBASE_CLIENT_EMAIL` | Service account email                             |
+| `FIREBASE_PRIVATE_KEY`  | Service account private key with **literal `\n`** |
+| `SENTRY_AUTH_TOKEN`     | For source-map upload at build time               |
+
+> **Removed:** `VAPID_EMAIL`, `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `NEXT_PUBLIC_VAPID_PUBLIC_KEY` are no longer used. Web Push was removed when PWA was dropped. If your Vercel project still has these set, delete them — they're dead config.
 
 ### `FIREBASE_PRIVATE_KEY` quirk
 
@@ -81,7 +82,7 @@ The tunnel route exists to bypass ad-blockers. Confirm it does not collide with 
 
 `t7senlovesbesho.me` → Vercel project. DNS via the registrar's CNAME to `cname.vercel-dns.com`. No www subdomain.
 
-The domain is independent of project name and Git repo name. Renames don't affect it.
+The domain is **load-bearing** because it's hard-coded in `capacitor.config.ts` (`server.url`). If you ever change the domain, you must rebuild and redistribute the APK with the new URL.
 
 ### Deployment verification
 
@@ -89,29 +90,17 @@ After every push to `main`:
 
 1. Open the Vercel deployments tab.
 2. Confirm the build succeeded (green check).
-3. Hit `https://t7senlovesbesho.me/api/health` (if it exists) or load `/` and check the network tab for 200s.
-4. Test biometric unlock on T7SEN's device.
-5. Test Web Push fallback on Besho's device.
-6. Send a note from one account, confirm SSE delivery + push routing on the other.
+3. Hit `https://t7senlovesbesho.me/api/presence` in a browser; should return some response (even an auth error is fine — it proves the route exists).
+4. Open the APK on T7SEN's device — confirm it loads the new content.
+5. Send a note from T7SEN, confirm SSE delivery on Besho's device.
 
-If any of these fail, **redeploy without build cache** before investigating further. Stale cache is the cause of more "mystery" Vercel issues than actual code regressions.
+If any of these fail, **redeploy without build cache** before investigating further.
 
 ---
 
 ## Lockfile
 
-`pnpm-lock.yaml` **must be committed**. If it's in `.gitignore`, remove it immediately:
-
-```bash
-# Remove the gitignore entry first
-sed -i '/pnpm-lock.yaml/d' .gitignore
-
-# Force-add since it was previously ignored
-git add -f pnpm-lock.yaml
-git add .gitignore
-git commit -m "chore: commit pnpm-lock.yaml"
-git push origin main
-```
+`pnpm-lock.yaml` **must be committed**. CI uses `pnpm install --frozen-lockfile`.
 
 `package.json` should pin the package manager:
 
@@ -125,11 +114,22 @@ git push origin main
 }
 ```
 
-CI uses `pnpm install --frozen-lockfile`. Local installs after a `pnpm add` regenerate the lockfile — commit it in the same commit as the `package.json` change.
+Local installs after a `pnpm add` regenerate the lockfile — commit it in the same commit as the `package.json` change.
 
 ---
 
 ## Android — Capacitor
+
+### When to rebuild the APK
+
+Because of the `server.url` architecture, the APK is rebuilt **only** when:
+
+- `capacitor.config.ts` changes (plugin config, `appName`, splash screen, status bar, etc.)
+- A new Capacitor plugin is added or removed
+- Android-side native code or manifest changes (permissions, file provider, etc.)
+- Releasing a versioned APK for install on a device for the first time
+
+**Routine code changes do NOT require an APK rebuild.** They ship via Vercel and the WebView picks them up on next launch.
 
 ### Prerequisites
 
@@ -142,8 +142,7 @@ CI uses `pnpm install --frozen-lockfile`. Local installs after a `pnpm add` rege
 ```bash
 cd /path/to/our-space
 pnpm install --frozen-lockfile
-pnpm build                    # Next.js → /out
-npx cap sync android          # Copy /out → android/app/src/main/assets/public
+npx cap sync android          # Apply capacitor.config.ts to android/
 ```
 
 Then in Android Studio:
@@ -170,7 +169,7 @@ versionName "1.4.0"
 
 T7SEN's Samsung: enable **Install from unknown sources** for whatever file manager you use. Tap the APK to install.
 
-Besho's Honor: same procedure. Plus — verify Web Push is registered after install by sending a test notification from T7SEN's account. Without GMS, FCM will fail; the absence of a FCM token in `redis.get('push:fcm:Besho')` is the expected state.
+Besho's Honor: same procedure. After install, the app loads from `t7senlovesbesho.me`. FCM registration will fail (no GMS) — this is expected. Push history surfaces via `NotificationDrawer`.
 
 ### `appId` is sacred
 
@@ -181,7 +180,7 @@ Besho's Honor: same procedure. Plus — verify Web Push is registered after inst
 - Invalidates FCM tokens
 - Strands the old icon on the home screen until manually removed
 
-Display name (`appName: 'Our Space'` in `capacitor.config.ts`) is what the user reads — change it freely. The change propagates through `cap sync` to `android/app/src/main/res/values/strings.xml`. Don't edit `strings.xml` directly; it gets regenerated.
+Display name (`appName: 'Our Space'` in `capacitor.config.ts`) is what the user reads — change it freely.
 
 ---
 
@@ -189,22 +188,10 @@ Display name (`appName: 'Our Space'` in `capacitor.config.ts`) is what the user 
 
 - **GitHub repo rename:** safe, auto-redirects.
 - **Vercel project rename:** changes the `*.vercel.app` subdomain only; custom domain unaffected.
-- **`package.json` `name`:** safe, change to match the new repo.
+- **`package.json` `name`:** safe.
 - **`appName` in `capacitor.config.ts`:** safe, regenerates `strings.xml` on `cap sync`.
 - **`appId` in `capacitor.config.ts`:** **destructive**, see above.
-
----
-
-## Service Worker
-
-Serwist outputs `public/sw.js` and friends at build time. These files are gitignored — never commit them. Vercel and local builds both regenerate them.
-
-When deploying changes that affect the service worker (push handler, caching rules), users may see the **old** SW until they:
-
-- Close all tabs of the site
-- Or trigger an explicit update via the app's update flow
-
-For aggressive cases, bump the cache version in the Serwist config so the old SW is force-replaced.
+- **Custom domain (`t7senlovesbesho.me`):** **destructive** — requires APK rebuild because `server.url` is hard-coded. Plan ahead.
 
 ---
 
@@ -216,11 +203,12 @@ Run this after every non-trivial deploy:
 - [ ] Login works for both accounts
 - [ ] FloatingNavbar badge counts populate
 - [ ] `/notes` SSE delivers a new note within 10s
-- [ ] Push notification fires on the partner device when not on `/notes`
+- [ ] Push notification fires on T7SEN's Samsung when not on `/notes`
 - [ ] Push notification is **suppressed** when partner is on `/notes`
 - [ ] Biometric unlock on T7SEN's Samsung after backgrounding
-- [ ] Web Push delivery on Besho's Honor (manual: send a hug)
-- [ ] APK install replaces existing app without resetting biometric enrollment
+- [ ] Toggle airplane mode on T7SEN's APK → offline banner appears, submit button disables
+- [ ] Disable airplane mode → banner disappears, submit re-enables
+- [ ] APK install replaces existing app without resetting biometric enrollment (only relevant when bumping `versionCode`)
 - [ ] Sentry receives at least one event from the new release (check the Sentry dashboard)
 
 ---
@@ -229,8 +217,8 @@ Run this after every non-trivial deploy:
 
 - `next.config.ts` — Sentry wiring, tunnel route
 - `src/instrumentation.ts` — Sentry runtime registration
-- `capacitor.config.ts` — appId, appName, webDir
+- `capacitor.config.ts` — appId, appName, webDir, **server.url**
 - `android/app/build.gradle` — versionCode, versionName, applicationId
 - `package.json` — packageManager, engines, version
 - [`./push-routing.md`](./push-routing.md) — push delivery details
-- [`./capacitor-native.md`](./capacitor-native.md) — Capacitor plugin handling
+- [`./capacitor-native.md`](./capacitor-native.md) — Capacitor plugin handling, hosted-webapp architecture

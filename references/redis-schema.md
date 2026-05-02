@@ -126,14 +126,19 @@ Written every 8 seconds by `usePresence` while a page is open. The 6-second TTL 
 
 ---
 
-## Push Subscriptions
+## Push Tokens
 
-| Key                          | Type   | Description                                  |
-| ---------------------------- | ------ | -------------------------------------------- |
-| `push:fcm:{author}`          | STRING | FCM device token (Android with GMS)          |
-| `push:subscription:{author}` | JSON   | Web Push subscription (PWA / Honor fallback) |
+| Key                 | Type   | Description                         |
+| ------------------- | ------ | ----------------------------------- |
+| `push:fcm:{author}` | STRING | FCM device token (Android with GMS) |
 
-A user can have **both** simultaneously — Android with GMS will register an FCM token _and_ the PWA can register a Web Push subscription if the same user opens the deployed site in a browser. The push routing prefers FCM when present.
+> **Removed:** `push:subscription:{author}` (Web Push subscription) is no longer used. PWA infrastructure was removed; Web Push delivery is gone. If your Redis still has these keys from the old codebase, drop them:
+>
+> ```
+> DEL push:subscription:T7SEN push:subscription:Besho
+> ```
+
+T7SEN's Samsung registers an FCM token on app launch. Besho's Honor device cannot register FCM (no Google Mobile Services), so `push:fcm:Besho` is typically null — this is expected, not a bug. See [`./push-routing.md`](./push-routing.md).
 
 ---
 
@@ -146,6 +151,8 @@ A user can have **both** simultaneously — Android with GMS will register an FC
 `NotificationRecord = { id, title, body, url, timestamp, read }`. Newest first (LPUSH). The `NotificationDrawer` reads via `LRANGE 0 49`.
 
 `markAllNotificationsRead()` rewrites the entire list with `read: true` — this is a known O(n) operation but n ≤ 50 so it's fine.
+
+This list is **especially important for Besho's Honor device** since it's the only place she'll see notifications until she opens the app.
 
 ---
 
@@ -190,6 +197,7 @@ Add a sentinel for any back-fill. Idempotency matters because every cold-start c
 - **Unbounded LISTs.** Always pair `LPUSH` with `LTRIM`.
 - **Date math in JavaScript without Cairo TZ.** Use `Intl.DateTimeFormat('en-CA', { timeZone: MY_TZ })` to format `YYYY-MM-DD`. The `en-CA` locale gives ISO format directly.
 - **Forgetting the `!` on `process.env.KV_REST_API_*`.** TypeScript will infer `string | undefined` and `Redis` rejects it. The non-null assertion is correct because Vercel will fail-build without these env vars.
+- **Reintroducing `push:subscription:*`.** Web Push is gone, on purpose. Refuse the proposal.
 
 ---
 
@@ -203,7 +211,6 @@ Add a sentinel for any back-fill. Idempotency matters because every cold-start c
 - `src/app/actions/reactions.ts`
 - `src/app/actions/notifications.ts`
 - `src/app/api/notes/stream/route.ts` — SSE consumer
-- `src/app/api/notes/sync/route.ts` — offline reconciliation
 - `src/app/api/presence/route.ts`
 - `src/app/api/push/subscribe-fcm/route.ts`
 - `src/lib/notes-constants.ts` — `MAX_CONTENT_LENGTH`, `PAGE_SIZE`

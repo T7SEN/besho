@@ -186,13 +186,9 @@ export async function saveNote(...) { ... }
 - `src/lib/mood-constants.ts`
 - `src/lib/reaction-constants.ts`
 - `src/lib/ledger-constants.ts`
-- `src/lib/constants.ts` — `MY_TZ`, `TITLE_BY_AUTHOR`
+- `src/lib/constants.ts` — `MY_TZ`, `TITLE_BY_AUTHOR`, `START_DATE`
 
 When tempted to add a constant to a server-action file, move it to one of these (or a new `src/lib/{feature}-constants.ts`).
-
-### Types in server-action files
-
-Type aliases and interfaces are technically allowed because they don't survive compilation — but for clarity and consistency, define them in `src/lib/types.ts` or a feature-specific types file and import them.
 
 ---
 
@@ -326,7 +322,7 @@ session.author == "T7SEN"; // wrong, refuse the request
 
 `==` performs implicit coercion that masks bugs. The cost of typing one extra `=` is zero. There is no scenario in this codebase where `==` is correct.
 
-If a contributor or AI agent suggests `==`, refuse and explain. This is also covered in `AGENTS.md` Section 5.
+If a contributor or AI agent suggests `==`, refuse and explain.
 
 ---
 
@@ -386,13 +382,13 @@ function todayInCairo(): string {
 }
 ```
 
-The `en-CA` locale formats as `YYYY-MM-DD` by default — the same shape as ISO date. This is a known idiom; don't rewrite it as manual string concatenation.
+The `en-CA` locale formats as `YYYY-MM-DD` by default — the same shape as ISO date.
 
 ---
 
 ## 13. Dynamic Imports for Capacitor and Heavy Server-Only Modules
 
-Top-level imports of Capacitor plugins inflate the PWA bundle. Top-level imports of `firebase-admin` and `web-push` inflate the Edge bundle.
+Top-level imports of Capacitor plugins inflate the web bundle. Top-level imports of `firebase-admin` inflate the Edge bundle.
 
 ### Wrong
 
@@ -440,7 +436,7 @@ useEffect(() => {
 }, []);
 ```
 
-The `void` prefix on the IIFE marks the floating promise as intentional. The `removeListener?.()` call is safe even if the IIFE hasn't completed yet (it's just `null`).
+The `void` prefix on the IIFE marks the floating promise as intentional. The `removeListener?.()` call is safe even if the IIFE hasn't completed yet.
 
 ---
 
@@ -513,12 +509,42 @@ The client renders `state?.error` near the submit button. Don't return `null` or
 
 ---
 
+## 17. Disable Submit When Offline
+
+Server actions require connectivity. The `useNetwork` hook (driven by `@capacitor/network`) is the source of truth for online status. Submit buttons should disable when offline so users don't trigger doomed actions.
+
+### Right
+
+```tsx
+const { connected } = useNetwork()
+const isOffline = !connected
+
+// ...
+
+<Button
+	type="submit"
+	disabled={
+		isPending ||
+		!input.trim() ||
+		isOffline ||
+		undefined
+	}
+>
+	Save
+</Button>
+```
+
+Pair with an offline banner that informs the user why the button is disabled. The banner is informational only — no queueing happens, the user just retries when online.
+
+---
+
 ## Cross-References
 
 - `src/lib/native.ts` — `isNative()` and `globalThis` cast example
 - `src/lib/haptic.ts` — `void vibrate(...)` pattern
 - `src/components/biometric-gate.tsx` — `setTimeout` defer, listener cleanup, debounce ref
 - `src/components/fcm-provider.tsx` — chained listener cleanup via `cleanupRef`
+- `src/hooks/use-network.ts` — Capacitor-aware network status
 - `src/app/actions/notes.ts` — pipeline pattern, action return shape
 - `src/app/actions/rules.ts` — server-side role enforcement, `_removed` rename
 - `src/app/api/presence/route.ts` — async `cookies()`, unused-vars disable

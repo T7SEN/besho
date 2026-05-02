@@ -1,48 +1,88 @@
 ---
 name: our-space
-description: Engineering guide for "Our Space" — a private two-user couples app at github.com/t7sen/our-space (deployed t7senlovesbesho.me, Android me.t7senlovesbesho). Use for any work in this repo: features, refactors, bug fixes, code review, deployment, push routing, biometric gate, role-based permissions (T7SEN/dom, Besho/sub), Capacitor/Android builds, Upstash Redis data, server actions, presence/SSE, FCM + Web Push, PWA/Serwist. Trigger on OurSpace, t7senlovesbesho, t7sen/our-space, Tasks/Rules/Ledger/Notes/Mood/SafeWord, FloatingNavbar, BiometricGate, FCMProvider, PushToast, the Honor/no-GMS fallback, or any Next.js 16 + React 19 + Capacitor 8 + Upstash Redis + Firebase Admin + shadcn/ui + Tailwind v4 task. Repo enforces non-obvious patterns: globalThis casts for browser globals, deferred setState in effects, void vibrate, "use server" hygiene, server-side dom/sub role checks, presence-aware push routing. Skipping this skill produces code that breaks on Android, leaks state, or violates the permission model.
+description: Engineering guide for Our Space — a private two-user couples app at github.com/t7sen/our-space (deployed t7senlovesbesho.me, Android me.t7senlovesbesho). LOAD for ANY task in this repo: features, fixes, review, deployment, push routing, biometric gate, dom/sub permissions, Capacitor, Redis, server actions, presence, SSE. Triggers: OurSpace, t7senlovesbesho, Tasks/Rules/Ledger/Notes/Mood/SafeWord, FloatingNavbar, BiometricGate, FCMProvider, PushToast, Honor device, no-GMS, dom/sub, T7SEN, Besho, Sir, kitten. Stack: Next.js 16, React 19, Capacitor 8, Upstash Redis, Firebase Admin, shadcn/ui, Tailwind v4. Hosted-webapp Capacitor shell — server.url loads t7senlovesbesho.me, NOT bundled (no offline, no PWA). Enforces patterns invisible to training: globalThis casts, deferred setState, void vibrate, server-side role checks, FCM-only push, Cairo TZ keys. Skipping produces code that breaks on Android, leaks state, hallucinates removed deps (Serwist, VAPID, web-push), or violates the dom/sub model.
 ---
 
 # Our Space — Engineering Skill
 
-You are operating on **Our Space**, a private, two-user web + Android application with strict role-based dynamics. Every contribution must respect the constraints below. There is no tolerance for "close enough" — the production user base is two people who notice every regression.
+You are operating on **Our Space**, a private two-user web + Android application with strict role-based dynamics. The production user base is two people (T7SEN and Besho) who notice every regression. There is no tolerance for "close enough."
 
 ---
 
-## 1. Product Context
+## 0. Agent Pre-Flight (Run Every Request)
 
-| Attribute           | Value                                                |
-| ------------------- | ---------------------------------------------------- |
-| Repository          | `github.com/t7sen/our-space`                         |
-| Production URL      | `https://t7senlovesbesho.me`                         |
-| Android package     | `me.t7senlovesbesho`                                 |
-| Hosting             | Vercel (web), Capacitor APK (Android)                |
-| Package manager     | `pnpm` — never npm or yarn                           |
-| Users               | Exactly two: `T7SEN` (dom), `Besho` (sub/kitten)     |
-| Devices             | T7SEN: Samsung Android. Besho: Honor phone + tablet. |
-| Critical constraint | Besho's devices have **no Google Mobile Services**   |
+Before writing code or proposing changes, complete this checklist:
 
-**Banned feature surface.** The following pages/features must **never** be suggested, scaffolded, or referenced in any new work: `gallery`, `bucket list`. If a request implies them, reject the framing and propose an alternative that uses existing surfaces (`/notes`, `/timeline`, `/tasks`, `/rules`, `/ledger`).
+1. **Banned scope check** → Does the request mention `gallery` or `bucket list`? If yes → refuse, propose `/notes`/`/timeline`/`/tasks`/`/rules`/`/ledger` instead.
+2. **Architecture conflict check** → Does the request imply offline support, PWA features, service workers, web push, or removing `server.url`? If yes → refuse with rationale from Section 3.7. Do not implement.
+3. **Anti-hallucination check** → Read Section 2.1 ("Things That Do Not Exist") before writing imports or env-var references.
+4. **Role-context identification** → Does this involve a state mutation? If yes → identify which author (`T7SEN`/`Besho`) is allowed and ensure server-side role check (Section 3.1).
+5. **Reference routing** → Use the table in Section 6 to decide which `references/*.md` file to load. Don't skim the body when a reference has the answer.
+6. **Honor-device implication check** → Does this affect push delivery? If yes → confirm Section 3.3 — Besho's Honor regression is **accepted, not a bug**.
+
+When unsure, ask the user one targeted question rather than guessing. Guessing on this codebase produces runtime failures.
+
+---
+
+## 1. Refusal Catalog
+
+Refuse these immediately with a one-line rationale. Do not implement, do not ask for clarification, do not "try a workaround."
+
+| Request pattern                                   | Why refuse                                                       | Alternative to offer                                           |
+| ------------------------------------------------- | ---------------------------------------------------------------- | -------------------------------------------------------------- |
+| Add a gallery / photo feature                     | Banned feature surface                                           | Use `/notes` with image embeds (when added)                    |
+| Add a bucket list                                 | Banned feature surface                                           | Use `/timeline` for milestones                                 |
+| Re-add PWA / Serwist / service worker             | Removed intentionally; conflicts with `server.url` (Section 3.7) | None — accept the architectural decision                       |
+| Re-add Web Push / VAPID / `web-push` package      | Removed with PWA; would not deliver to Honor device anyway       | None — see `references/push-routing.md`                        |
+| Use `==` / `!=` instead of `===` / `!==`          | Coercion masks bugs in this strict-mode codebase                 | Always use strict equality                                     |
+| Use `localStorage` directly                       | Doesn't survive native app updates reliably                      | `@capacitor/preferences`                                       |
+| Use `window` / `document` / `navigator` directly  | Breaks SSR/Edge runtime                                          | `globalThis as unknown as { ... }` cast (Section 4.1)          |
+| Add Redux / Zustand / Jotai / SWR / React Query   | Two-user app; unnecessary complexity                             | `useState` / `useReducer` / `useContext` / `useOptimistic`     |
+| Remove `server.url` to "make it work offline"     | Would break SSE, server actions, instant deploys                 | Refuse; document the request                                   |
+| Hardcode `Sir`/`kitten` strings in JSX            | Vocabulary lives in `TITLE_BY_AUTHOR`                            | Import from `src/lib/constants.ts`                             |
+| Skip role check because "the UI hides the button" | Server actions are public endpoints; client is adversarial       | Add `if (session.author !== 'T7SEN')` server-side              |
+| `dangerouslySetInnerHTML` user content            | XSS vector                                                       | Use `MarkdownRenderer`                                         |
+| Top-level import of `@capacitor/*` plugin         | Inflates web bundle                                              | Dynamic `await import('...')` inside `if (isNative()) { ... }` |
+| Top-level import of `firebase-admin`              | Inflates Edge bundle                                             | Dynamic import inside the function that uses it                |
+| Bump dependency versions in feature work          | Stack is locked                                                  | Separate ticket / commit                                       |
 
 ---
 
 ## 2. Tech Stack (Locked Versions)
 
-These versions are pinned by `package.json`. Do not "upgrade as part of a feature" without an explicit ticket.
+These versions are pinned by `package.json`. Do not "upgrade as part of a feature."
 
 - **Runtime:** Next.js `16.2.4`, React `19.2.4`, TypeScript `^5`
 - **Styling:** Tailwind CSS `^4` (no `tailwind.config.*`; CSS-first via `globals.css`), `tw-animate-css`, `tailwind-merge`
-- **UI:** shadcn/ui (style: `radix-nova`, base color `zinc`, icon library `lucide`), `radix-ui`, `motion` (Framer Motion v12), `next-themes`
-- **State / Forms:** native React 19 (`useActionState`, `useTransition`), Zod for validation, no Redux
-- **Data:** Upstash Redis (`@upstash/redis`) — sole datastore. There is **no** SQL/Prisma despite a stale `/src/generated/prisma` ignore entry.
-- **Auth:** `jose` JWT in an HTTP-only `session` cookie, 30-day expiry, HS256
-- **Native shell:** Capacitor `^8.3.1` with `@aparajita/capacitor-biometric-auth`, `@capacitor/preferences`, `@capacitor/push-notifications`, `@capacitor/local-notifications`, `@capacitor/haptics`, `@capacitor/clipboard`, `@capacitor/app`, `@capacitor/keyboard`, `@capacitor/network`, `@capacitor/status-bar`, `@capacitor/splash-screen`, `@capawesome/capacitor-badge`
-- **Push:** `firebase-admin` (FCM) for Android, `web-push` (VAPID) as PWA fallback
-- **PWA:** Serwist (service worker output to `public/sw*`)
+- **UI:** shadcn/ui (style: `radix-nova`, base: `zinc`, icons: `lucide`), `radix-ui`, `motion` (Framer Motion v12), `next-themes`
+- **State / Forms:** native React 19 (`useActionState`, `useTransition`, `useOptimistic`), Zod for validation. No Redux, no SWR, no React Query.
+- **Data:** Upstash Redis (`@upstash/redis`) — sole datastore.
+- **Auth:** `jose` JWT in HTTP-only `session` cookie, HS256, 30-day.
+- **Native shell:** Capacitor `^8.3.1` + `@aparajita/capacitor-biometric-auth`, `@capacitor/preferences`, `@capacitor/push-notifications`, `@capacitor/local-notifications`, `@capacitor/haptics`, `@capacitor/clipboard`, `@capacitor/app`, `@capacitor/keyboard`, `@capacitor/network`, `@capacitor/status-bar`, `@capacitor/splash-screen`, `@capawesome/capacitor-badge`
+- **Push:** `firebase-admin` (FCM) only. **No Web Push. No PWA. No Serwist.**
 - **Observability:** Sentry (`@sentry/nextjs`, tunnelRoute `/monitoring`), Vercel Analytics + Speed Insights
-- **Build/lint:** ESLint `^9` with `eslint-config-next` flat config, `concurrently`, `esbuild`
+- **Build/lint:** ESLint `^9` flat config, `concurrently`, `esbuild`
 
-> **Next.js 16 has breaking changes from your training data.** Before using any Next.js API, confirm against `node_modules/next/dist/docs/` or the official Next.js 16 docs. Do not assume `pages/`, do not assume the old `metadata` shape, do not assume `headers()`/`cookies()` are sync — they return promises. Heed deprecation notices.
+> **Next.js 16 deviates from older training data.** `cookies()` and `headers()` return promises. Server Components are the default. Heed deprecation notices.
+
+### 2.1 Things That Do Not Exist (Anti-Hallucination Inventory)
+
+These were removed or never existed. Do not import them, reference them, or write code that uses them. If you find yourself typing one of these, **stop**.
+
+| Removed / nonexistent                                                                                 | Replacement                                                                             |
+| ----------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `@serwist/next`, `@serwist/sw`, `serwist`, `workbox-*`                                                | None — PWA removed                                                                      |
+| `web-push` package, `VAPID_*` env vars                                                                | None — Web Push removed                                                                 |
+| `navigator.serviceWorker`, `sw.register()`, `public/sw.js`, `public/manifest.json`                    | None                                                                                    |
+| `src/lib/offline-notes.ts`, `storePendingNote`, `getPendingNotes`, `removePendingNote`, `PendingNote` | None — IndexedDB queue removed                                                          |
+| `/api/notes/sync` endpoint                                                                            | None — only `/api/notes/stream` (SSE) exists in `notes/api/`                            |
+| `push:subscription:{author}` Redis key                                                                | `push:fcm:{author}` only                                                                |
+| `prisma`, `@prisma/client`, SQL migrations                                                            | Upstash Redis is the sole datastore; `/src/generated/prisma` is a stale gitignore entry |
+| Light-mode Tailwind variants                                                                          | Dark theme is forced via `forcedTheme="dark"`                                           |
+| `tailwind.config.ts` / `tailwind.config.js`                                                           | Tailwind v4 is CSS-first; tokens live in `src/app/globals.css`                          |
+| `pages/` directory, `getServerSideProps`, `getStaticProps`                                            | App Router only                                                                         |
+
+If a search result, training memory, or autocomplete suggests one of these — it is wrong for this codebase.
 
 ---
 
@@ -50,87 +90,105 @@ These versions are pinned by `package.json`. Do not "upgrade as part of a featur
 
 ### 3.1 Role-Based Dynamics (dom/sub)
 
-Every server action that mutates state **must** check `session.author` and gate on role:
+User-facing copy uses `Sir` for T7SEN and `kitten` for Besho via `TITLE_BY_AUTHOR` in `src/lib/constants.ts`. Never hard-code.
 
-- `T7SEN` is the only author who can: create rules, mark rules completed, reopen rules, create tasks, log ledger entries, view safe-word history.
-- `Besho` is the only author who can: acknowledge rules, complete tasks, send safe-word.
-- Either can: write notes, react to notes, set mood/state, send hugs.
+**Permission matrix:**
 
-Gate semantics (canonical):
+| Action                                    | T7SEN (Sir) | Besho (kitten) |
+| ----------------------------------------- | ----------- | -------------- |
+| Create/complete/reopen rules              | ✓           | ✗              |
+| Acknowledge rule                          | ✗           | ✓              |
+| Create task                               | ✓           | ✗              |
+| Complete task                             | ✗           | ✓              |
+| Log ledger entry                          | ✓           | ✗              |
+| View safe-word history                    | ✓           | ✗              |
+| Send safe-word                            | ✗           | ✓              |
+| Write notes / react / set mood / send hug | ✓           | ✓              |
+
+**Why server-side checks matter:** the UI hides buttons but server-action endpoints are public. Anyone with a session cookie can POST to them.
+
+**Canonical role check (copy this shape):**
 
 ```ts
-const session = await getSession();
-if (!session?.author) return { error: "Not authenticated." };
-if (session.author !== "T7SEN") {
-  return { error: "Only Sir can set rules." };
+// Input: a server action that mutates state
+// Output: action with role gate
+
+"use server";
+export async function createRule(prevState: unknown, formData: FormData) {
+  const session = await getSession();
+  if (!session?.author) return { error: "Not authenticated." };
+  if (session.author !== "T7SEN") {
+    return { error: "Only Sir can set rules." };
+  }
+  // ... mutation
+  return { success: true };
 }
 ```
 
-User-facing copy uses the relational vocabulary: `Sir` for T7SEN, `kitten` for Besho. These map through `TITLE_BY_AUTHOR` in `src/lib/constants.ts` — never hard-code them.
+### 3.2 Presence-Aware Push Routing (FCM-Only)
 
-### 3.2 Presence-Aware Push Routing
+**Algorithm summary** (full version: `references/push-routing.md`):
 
-The notification path is **non-trivial** and must be preserved across all features that send pushes:
+1. Always `pushNotificationToHistory(target, payload)` first — history is source of truth.
+2. Read `presence:{author}` (TTL 6s).
+3. If recipient is on the target page → **skip push** (SSE handles UI).
+4. Otherwise → FCM:
+   - Foreground (presence exists, different page): **data-only** payload → `FCMProvider` dispatches in-app `PushToast`.
+   - Background/closed: full `notification` payload → OS heads-up banner.
 
-1. **Always** call `pushNotificationToHistory(targetAuthor, payload)` first — history is the source of truth even if delivery fails.
-2. Read `presence:{author}` from Redis (TTL 6s, written via `POST /api/presence`).
-3. If the recipient's current page **equals** the target URL → **skip the push entirely** (in-app SSE handles UI updates; a push would double-notify).
-4. If presence exists but `currentPage !== payload.url` → app is foregrounded → send a **data-only** FCM message; `FCMProvider` intercepts and dispatches an in-app `PushToast`.
-5. If no presence → app is backgrounded/closed → send a full FCM `notification` payload so the OS draws the heads-up.
-6. If the recipient has no FCM token → fall back to Web Push via VAPID `subscription`.
+**Critical:** the `notification` field MUST NOT be set in the foreground payload, or Android draws a banner _and_ the in-app toast (double-notify).
 
-This is implemented in `src/app/actions/notes.ts::sendPushToUser`, `src/app/actions/rules.ts::sendRuleNotification`, `src/app/actions/mood.ts::sendHugPush`. Every new push path **must** copy this exact shape.
+### 3.3 No-GMS Handling — Accepted Regression
 
-### 3.3 No-GMS Graceful Degradation (Besho's Honor Device)
+Besho's Honor device has no Google Mobile Services. `@capacitor/push-notifications` registration **fails there**, and `FCMProvider` catches the error silently. Result: **she receives zero background notifications.**
 
-`@capacitor/push-notifications` will **fail to register** on devices without Google Play Services. `FCMProvider` (`src/components/fcm-provider.tsx`) catches `registrationError` and logs without throwing. **Never** assume an FCM token exists. Always:
+Surfaces that mitigate this in-app:
 
-1. Try FCM first (Android with GMS, T7SEN's Samsung).
-2. Fall back to Web Push via VAPID (Honor + PWA path).
-3. Local notifications (`@capacitor/local-notifications`) are used for offline reminders (deadlines), not as a replacement for push.
+- `NotificationDrawer` (bell icon in `TopNavbar`) — reads `notifications:{author}` LIST
+- `useNavBadges` red dot on `FloatingNavbar`
+- SSE real-time updates when she's actively in `/notes`
+
+This is **intentional and not a bug to fix.** Refuse PWA/Web Push reintroduction proposals. See `references/capacitor-native.md` Section "Why No Web Push" for the full reasoning.
 
 ### 3.4 BiometricGate
 
-`src/components/biometric-gate.tsx` is the primary unlock. Key invariants:
+`src/components/biometric-gate.tsx` is the primary unlock. Each ref is load-bearing:
 
-- Renders a fullscreen overlay above all routes except `UNGUARDED_ROUTES`.
-- Uses `@aparajita/capacitor-biometric-auth` + `@capacitor/preferences` (key `biometric_enrolled`, `last_unlocked_at`).
-- Cold-start grace period prevents the **Knox/Honor double-prompt loop**. `lastAuthEndedAtRef` debounces the prompt for 2s after dismissal.
-- Re-locks on `appStateChange` after `LOCK_AFTER_MS` background time.
-- Web/desktop falls through immediately (`isNative()` → false → `unavailable`).
+- `lastAuthEndedAtRef` — 2-second debounce against the **Knox/Honor double-prompt loop**
+- `last_unlocked_at` Preference — cold-start grace period
+- `LOCK_AFTER_MS` constant — re-lock threshold on `appStateChange`
 
-Do not "simplify" this component. Each ref is load-bearing.
+Do not "simplify" this component without reading `references/capacitor-native.md` Section "BiometricGate."
 
 ### 3.5 Real-Time via SSE
 
-`/notes` uses Server-Sent Events at `src/app/api/notes/stream/route.ts` (edge runtime, 45s max stream age, 10s poll, 10s keepalive). The client `EventSource` reconnects automatically. Do **not** introduce websockets without removing SSE first.
+`/notes` uses Server-Sent Events at `src/app/api/notes/stream/route.ts` (Edge runtime, 45s max stream age, 10s poll, 10s keepalive). The client `EventSource` reconnects automatically. Do not introduce websockets without first removing SSE.
 
-### 3.6 Redis (Upstash) Data Model
+### 3.6 Redis (Upstash) — Key Patterns
 
-Single Redis instance. Keys are flat, namespaced by colon:
+Single Redis instance, flat colon-namespaced keys. Full schema: `references/redis-schema.md`.
 
-| Pattern                        | Type      | Purpose                                    |
-| ------------------------------ | --------- | ------------------------------------------ |
-| `note:{id}`                    | JSON      | Single note                                |
-| `notes:index`                  | ZSET      | Note IDs by `createdAt` for pagination     |
-| `notes:count:{author}`         | INT       | Per-author counter                         |
-| `notes:pinned`                 | SET       | Pinned note IDs                            |
-| `reactions:{noteId}`           | HASH      | `{ author: emojiLabel }`                   |
-| `rule:{id}`                    | JSON      | Single rule                                |
-| `rules:index`                  | ZSET      | Rule IDs by `createdAt`                    |
-| `task:{id}` / `tasks:index`    | JSON/ZSET | Tasks                                      |
-| `ledger:{id}` / `ledger:index` | JSON/ZSET | Reward/punishment entries                  |
-| `mood:{YYYY-MM-DD}:{author}`   | STRING    | Daily mood (TTL 7d)                        |
-| `state:{YYYY-MM-DD}:{author}`  | STRING    | Daily dom/sub state (TTL 7d)               |
-| `mood:hug:{date}:{from}`       | STRING    | Hug-sent flag                              |
-| `presence:{author}`            | STRING    | `{ page, ts }` JSON, TTL 6s                |
-| `push:fcm:{author}`            | STRING    | FCM device token                           |
-| `push:subscription:{author}`   | JSON      | Web Push subscription                      |
-| `notifications:{author}`       | LIST      | Last 50 notification records (LPUSH/LTRIM) |
+```
+note:{id}                        JSON
+notes:index                      ZSET (score = createdAt)
+notes:count:{author}             INT
+reactions:{noteId}               HASH
+rule:{id} / rules:index          JSON / ZSET
+task:{id} / tasks:index          JSON / ZSET
+ledger:{id} / ledger:index       JSON / ZSET
+mood:{YYYY-MM-DD}:{author}       STRING (TTL 7d)
+state:{YYYY-MM-DD}:{author}      STRING (TTL 7d)
+presence:{author}                STRING (TTL 6s)
+push:fcm:{author}                STRING (FCM token)
+notifications:{author}           LIST (capped at 50)
+```
 
-**Always pipeline** dependent writes:
+**Always pipeline dependent writes.** Sequential awaits leave inconsistent state on partial failure.
 
 ```ts
+// Input: a multi-step write to a feature
+// Output: atomic pipeline
+
 const pipeline = redis.pipeline();
 pipeline.set(noteKey(note.id), note);
 pipeline.zadd(INDEX_KEY, { score: note.createdAt, member: note.id });
@@ -138,19 +196,42 @@ pipeline.incr(countKey(author));
 await pipeline.exec();
 ```
 
-Use `MY_TZ` (Cairo) from `src/lib/constants.ts` for any date-derived key. Never use the server's local timezone.
+**Date keys use Cairo time** (`MY_TZ` from `src/lib/constants.ts`). Never the server's local timezone — Vercel runs in UTC, the user is in Cairo.
+
+### 3.7 Hosted-Webapp Capacitor Architecture
+
+**This is unusual and intentional.** `capacitor.config.ts`:
+
+```ts
+server: { url: 'https://t7senlovesbesho.me', cleartext: false }
+```
+
+Implications:
+
+- APK is a **thin native shell**. WebView loads the live Vercel deployment on launch.
+- All server actions / SSE / route handlers work because the page is served live.
+- **Deploys are instant** — Vercel redeploy = next app launch sees the change. No APK rebuild.
+- **No offline support.** Mid-session network drops degrade via the `useNetwork`-driven offline banner and disabled submit buttons.
+- Capacitor plugins still work — they're injected into the WebView regardless of where the page loaded from.
+
+**Do not propose removing `server.url`.** The cost (Next.js static export, separate API hosting, dropping SSE) is not justified for a two-user app. Full rationale: `references/capacitor-native.md` Section "Architecture."
 
 ---
 
-## 4. Critical Coding Patterns (Non-Negotiable)
+## 4. Critical Coding Patterns (Examples)
 
-These compile and lint clean but break at runtime, in SSR, or in React 19 strict mode if violated. They are **enforced** — point them out in code review.
+These compile and lint clean but break at runtime, in SSR, or in React 19 strict mode if violated. Each pattern shows wrong → right transformations. Full rationale and 17 patterns total: `references/coding-patterns.md`.
 
-### 4.1 Browser globals via inline cast
-
-Direct `window` / `document` / `navigator` references break SSR and Edge runtime. Always:
+### 4.1 Browser Globals via Inline Cast
 
 ```ts
+// Input: code that uses navigator/window/document directly
+// Output: SSR-safe globalThis cast
+
+// Wrong — breaks in SSR / Edge runtime:
+if (navigator.vibrate) navigator.vibrate(50);
+
+// Right:
 const nav = (
   globalThis as unknown as {
     navigator?: { vibrate?: (p: number | number[]) => boolean };
@@ -159,322 +240,193 @@ const nav = (
 nav?.vibrate?.(50);
 ```
 
-```ts
-(globalThis as unknown as { location: { href: string } }).location.href = url;
-```
-
-No `typeof window !== 'undefined'` guards in new code — they're noise next to the typed cast.
-
-### 4.2 Deferred setState in effects
-
-Any `setState` invoked synchronously inside `useEffect` (especially from listeners or Capacitor callbacks) must be wrapped:
+### 4.2 Deferred setState in Effects
 
 ```ts
+// Input: setState fires synchronously inside a useEffect or Capacitor callback
+// Output: deferred via setTimeout(..., 0)
+
+// Wrong — React 19 strict-mode warning:
+useEffect(() => {
+  if (!isNative()) {
+    setGateState("unavailable");
+    return;
+  }
+}, []);
+
+// Right:
 useEffect(() => {
   if (!isNative()) {
     setTimeout(() => setGateState("unavailable"), 0);
     return;
   }
-  // ...
 }, []);
 ```
 
-This avoids React 19's "cannot update during render" warnings in concurrent scenarios.
-
-### 4.3 `vibrate()` is fire-and-forget
-
-`vibrate()` returns a promise but callers never `await`. Always prefix with `void`:
+### 4.3 `vibrate()` is Fire-and-Forget
 
 ```ts
-void vibrate(30, "light");
-void vibrate([50, 100, 50], "heavy");
+// Input: vibrate() call in a click handler
+// Output: void-prefixed call
+
+vibrate(30, "light"); // wrong — floating promise warning
+await vibrate(30, "light"); // wrong — blocks user-visible action
+void vibrate(30, "light"); // right
 ```
 
-### 4.4 `Date.now()` in render needs lazy init
-
-Server-rendered timestamps cause hydration mismatches. Use:
+### 4.4 `Date.now()` Lazy in Render
 
 ```ts
-const [now, setNow] = useState(() => Date.now());
+// Input: client component reads Date.now() during render
+// Output: lazy initializer
+
+const [now, setNow] = useState(Date.now()); // wrong — hydration mismatch
+const [now, setNow] = useState(() => Date.now()); // right
 ```
 
-Not `useState(Date.now())`.
+### 4.5 `"use server"` Files Export Only Async Functions
 
-### 4.5 `"use server"` files export only async functions
+Constants belong in `src/lib/*-constants.ts`, not in server-action files. Existing constants files: `notes-constants.ts`, `mood-constants.ts`, `reaction-constants.ts`, `ledger-constants.ts`, `constants.ts`.
 
-Adding a non-async export to a `"use server"` module breaks the build. Constants live in plain `lib/*-constants.ts` files. Examples that already exist:
-
-- `src/lib/notes-constants.ts` — `MAX_CONTENT_LENGTH`, `PAGE_SIZE`
-- `src/lib/mood-constants.ts` — mood/state option arrays
-- `src/lib/reaction-constants.ts` — labeled emoji set
-- `src/lib/ledger-constants.ts` — reward/punishment categories
-
-If you find yourself wanting to put a constant in a server-action file, move it to `src/lib/`.
-
-### 4.6 Cookies and headers are async
-
-Next.js 16:
+### 4.6 `cookies()` and `headers()` are Async (Next.js 16)
 
 ```ts
-const cookieStore = await cookies();
-const value = cookieStore.get("session")?.value;
+const cookieStore = cookies(); // wrong — Promise has no .get()
+const cookieStore = await cookies(); // right
 ```
 
-Never destructure synchronously.
+### 4.7 Server-Action Return Shape
 
-### 4.7 No `_unused` parameters via underscore convention
+Every server action consumed by `useActionState` returns `{ success?: true; error?: string }`. Never throw — `useActionState` cannot catch. Never return `null`/`undefined` — typing breaks.
 
-Use the ESLint disable comment Next's config respects:
+### 4.8 Disable Submit When Offline
 
-```ts
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-export async function DELETE(_req: NextRequest) { ... }
+```tsx
+const { connected } = useNetwork()
+const isOffline = !connected
+// ...
+<Button disabled={isPending || !content.trim() || isOffline || undefined}>
+	Save
+</Button>
 ```
 
-Or destructure-rename:
-
-```ts
-const { completedAt: _removed, ...rest } = existing;
-```
+Pair with the `useNetwork`-driven offline banner. The banner is informational only — no queueing happens, the user just retries when online.
 
 ---
 
-## 5. Code Style
+## 5. Code Style Quick Reference
 
-- **Indentation:** tabs.
-- **Quotes:** single (`'…'`), except when escaping would be worse.
-- **Semicolons:** omit unless required for ASI disambiguation.
-- **Equality:** strict (`===` / `!==`) **always**. If a user requests `==`, refuse and explain that `==` performs coercion that masks bugs.
-- **Trailing commas:** yes, in multiline literals.
-- **Line length:** 80 columns.
-- **Operator spacing:** spaces around infix operators, after keywords, after commas, before function parens.
-- **`else`** stays on the same line as the closing brace.
+- Tabs. Single quotes. No semicolons (except ASI disambiguation).
+- Strict equality always (`===` / `!==`).
+- 80-column lines, trailing commas in multiline literals.
+- `else` on the same line as the closing brace.
 - Multiline `if` / `for` always uses braces.
-- Always handle the `err` parameter in callbacks — never swallow silently except inside the documented `try { ... } catch { /* proceed */ }` pattern (presence reads, etc.).
-- No unused variables. No dead code.
+- No unused variables, no dead code.
+- Always handle `err` in callbacks. Documented exception: `try { ... } catch { /* proceed */ }` for presence reads.
 
----
+**Naming:**
 
-## 6. Naming Conventions
-
-| Case          | Use for                                                 |
-| ------------- | ------------------------------------------------------- |
-| `PascalCase`  | Components, type aliases, interfaces                    |
-| `kebab-case`  | Directory names, file names (`biometric-gate.tsx`)      |
-| `camelCase`   | Variables, functions, methods, hooks, props, properties |
-| `UPPER_SNAKE` | Env vars, module-level constants, global config         |
-
-**Specific patterns:**
+| Case          | Use                                |
+| ------------- | ---------------------------------- |
+| `PascalCase`  | Components, types, interfaces      |
+| `kebab-case`  | Filenames, directories             |
+| `camelCase`   | Variables, functions, hooks, props |
+| `UPPER_SNAKE` | Env vars, module-level constants   |
 
 - Event handlers: `handleClick`, `handleSubmit`
-- Booleans: `isLoading`, `hasError`, `canSubmit`, `isT7SEN`, `isBesho`, `isNative`
-- Hooks: `useAuth`, `usePresence`, `useKeyboardHeight`, `useNavBadges`
+- Booleans: `isLoading`, `hasError`, `canSubmit`, `isNative`, `isOffline`
+- Hooks: `useAuth`, `usePresence`, `useNetwork`, `useNavBadges`
 - Acceptable abbreviations: `err`, `req`, `res`, `props`, `ref`. Spell everything else out.
 
 ---
 
-## 7. React + Next.js 16 Practices
+## 6. Reference Routing
 
-### 7.1 Components
+Load only what the task needs. Each reference is structured for direct lookup.
 
-- Functional only. Define with the `function` keyword, not arrow components for default exports.
-- Default to **Server Components**. Add `'use client'` only when one of these is true:
-  - Event handlers
-  - Browser APIs (`globalThis as unknown as ...`)
-  - Local state (`useState`, `useReducer`)
-  - Effects (`useEffect`, `useLayoutEffect`)
-  - Capacitor plugins (always client)
-- Compose with shadcn primitives. Do not re-implement Radix.
-- Cleanup every `useEffect` that subscribes (Capacitor listeners, EventSource, intervals, timeouts).
+| Task involves...                                        | Load                             |
+| ------------------------------------------------------- | -------------------------------- |
+| Push notifications, FCM, presence routing               | `references/push-routing.md`     |
+| Redis keys, data shape, pagination, TTLs                | `references/redis-schema.md`     |
+| Capacitor plugins, hosted-webapp, BiometricGate, no-GMS | `references/capacitor-native.md` |
+| Vercel env vars, APK builds, smoke tests                | `references/deployment.md`       |
+| Anything that touches the listed coding patterns        | `references/coding-patterns.md`  |
 
-### 7.2 Performance
-
-- `useCallback` for handlers passed to memoized children or used in `useEffect` dep arrays.
-- `useMemo` for actually-expensive computation, not for every object literal.
-- Avoid inline closures in hot lists (use stable refs).
-- Code-split heavy client modules with `await import('...')` inside async handlers/effects (this is how Capacitor plugins are loaded).
-- Stable `key` props — use the entity `id`, never the array index.
-
-### 7.3 Data Fetching
-
-- **Server actions** (`'use server'`) for mutations and most reads. Pair with `revalidatePath` after writes.
-- Edge runtime route handlers for streaming (SSE) and lightweight syncs.
-- Use URL search params for shareable server state.
-- `useActionState(action, null)` is the canonical form-submission hook in this codebase.
-
-### 7.4 Built-in Components
-
-Use `next/image`, `next/link`, `next/script`, and the `metadata` / `viewport` exports from `app/*/page.tsx` and `layout.tsx`. Never roll a custom `<head>`.
+If a task touches multiple areas, load multiple references. If unsure which one applies, the routing table is right; trust it.
 
 ---
 
-## 8. TypeScript
+## 7. Implementation Quick Reference
 
-- `strict: true` is on. Don't fight it.
-- Prefer `interface` for object shapes, especially when extension is plausible.
-- Reach for utility types (`Partial`, `Pick`, `Omit`, `Readonly`, `Record`).
-- Generics where they earn their keep — typed `redis.get<T>` calls, action factories.
-- Type guards (`is X`) for narrowing, not casts.
-- `as unknown as { … }` is reserved for `globalThis` access. Casting application data with `as` is a code smell.
+Detailed treatment of each item lives in the references above. Key reminders:
 
----
-
-## 9. UI & Styling
-
-- **Tailwind v4 only.** No `tailwind.config.ts`. Tokens live in `src/app/globals.css` as CSS variables; reference them with `bg-primary`, `text-muted-foreground`, etc.
-- **Dark theme is forced** (`forcedTheme="dark"` in `ThemeProvider`). Don't add light-mode variants — they'll never run.
-- **Mobile-first.** Base classes target mobile; use `md:` for tablet+. The `FloatingNavbar` is fixed and always visible; account for `pb-24` on long pages.
-- **Color contrast** must clear WCAG AA. The `text-muted-foreground/40` pattern is widespread but only valid for non-essential metadata.
-- **Spacing scale** is the Tailwind default. Don't invent half-step paddings.
-- **Motion:** use `motion/react`. Standard entry: `initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}`. Use `layoutId` for filter pills and shared-element transitions.
+- **Components:** functional only, default to Server Components. `'use client'` only for: event handlers, browser APIs, local state, effects, Capacitor plugins.
+- **Server actions:** mutations + most reads. Pair with `revalidatePath` after writes.
+- **Forms:** uncontrolled `<form action={action}>` with `useActionState`. Submit disables when `isOffline`.
+- **Validation:** Zod at every trust boundary.
+- **Error handling:** `<ErrorBoundary>` wraps cards. Use `*Skeleton` components for fallback UI — never blank.
+- **Logging:** `src/lib/logger.ts` (`info`/`warn`/`error`/`interaction`). Never log JWTs, FCM tokens, or any secret.
+- **Sentry:** wired via `next.config.ts` + `src/instrumentation.ts`. Tunnel route `/monitoring`.
+- **Auth:** `getCurrentAuthor()` is the canonical client-callable read. JWT in `session` cookie.
+- **Capacitor:** `isNative()` from `src/lib/native.ts` is the only sanctioned platform check. Plugin imports are dynamic.
+- **A11y:** keyboard navigation, `focus-visible:`, one `h1` per route, AA contrast minimum, respect `prefers-reduced-motion`.
+- **Security:** server-side role checks, sanitized rich-text via `MarkdownRenderer`, never `dangerouslySetInnerHTML` raw user content.
 
 ---
 
-## 10. State Management
+## 8. Agent Operating Procedure
 
-- **Local:** `useState` for primitives, `useReducer` when you have ≥3 related fields, `useContext` for tree-scoped shared state (`TooltipProvider`).
-- **Server state:** server actions + `revalidatePath`. There is no client cache layer (no SWR, no React Query). If you need optimistic updates, use `useOptimistic` (React 19).
-- **Cross-page realtime:** SSE for `/notes`, polling for badge counts (`useNavBadges`), presence heartbeat (`usePresence`).
-- **No global store.** Don't introduce Redux, Zustand, or Jotai. The app is small enough that prop drilling + context is correct.
+When this skill triggers, follow this order:
 
----
+1. **Run Section 0 pre-flight.** Refuse if banned or architecturally incompatible.
+2. **State a plan before code** for any non-trivial change. The plan should name the file paths you'll touch and the function/symbol you'll edit.
+3. **Load references on demand** per Section 6. Don't rely on memory of patterns when a reference is one tool call away.
+4. **Apply Section 4 patterns** to every code change automatically. Re-check before submitting.
+5. **Cite file paths** when proposing edits. Format: `src/app/notes/page.tsx::handleFormSubmit`.
+6. **Push back on bad ideas, including from the user.** Refuse with rationale; offer alternatives. Do not sugar-coat. Examples:
+   - User asks for `==` → refuse, explain coercion.
+   - User asks to add Web Push → refuse, point to Section 3.3.
+   - User asks to skip a server-side role check → refuse, explain client adversariality.
+7. **Surface uncertainty.** If a request is ambiguous, ask one targeted question. Do not invent context.
+8. **No bugs.** Re-read every block of generated code before presenting. "Probably works" is a failure mode.
+9. **Tone:** formal, direct, technical. The user is solo-developing this. They want answers, not warmth.
 
-## 11. Forms & Validation
-
-- **Forms:** uncontrolled `<form action={action}>` paired with `useActionState`. The `formRef` reset pattern is in `/rules` and `/ledger`.
-- **Validation:** Zod schemas for any input that crosses a trust boundary (server actions, route handlers).
-- **Error returns:** server actions return `{ success?: true; error?: string }`. The client renders `state?.error` near the submit button.
-- **RichTextEditor + MarkdownRenderer:** in-house, used for note/rule/task descriptions. Reuse them; don't pull in TipTap or Lexical.
-
----
-
-## 12. Error Handling, Logging, Observability
-
-- **Logger:** `src/lib/logger.ts` — methods are `info`, `warn`, `error`, `interaction`. Log every catch in a server action.
-- **Sentry:** initialized via `next.config.ts` + `src/instrumentation.ts`. Edge and Node runtimes are wired separately. The `tunnelRoute: '/monitoring'` rewrite **must not** collide with middleware.
-- **Error boundaries:** `<ErrorBoundary>` wraps the layout root and individual cards (`WeatherCard`, `QuoteCard`). Wrap any third-party-fed widget you add.
-- **Fallback UIs:** never blank. Use the existing `*Skeleton` components (`RuleSkeleton`, `EntrySkeleton`, `WeatherSkeleton`) as templates.
-- **User-facing errors:** plain English, not stack traces. The user is your partner, not a developer.
+When you finish a non-trivial change, suggest the relevant smoke-test step from `references/deployment.md`.
 
 ---
 
-## 13. Authentication
+## 9. Decision Heuristics (Tie-Breakers)
 
-- `src/lib/auth-utils.ts` — JWT via `jose`, HS256, 30-day expiry. Payload: `{ isAuthenticated, author, expiresAt }`.
-- Cookie name: `session`. Always HTTP-only in production.
-- Login flow writes a sessionStorage `SKIP_BIOMETRIC_KEY` so the BiometricGate doesn't double-prompt on the post-login navigation.
-- `getCurrentAuthor()` is the canonical client-callable read. Use it everywhere, not direct cookie parsing.
-- Logout clears the session cookie + revokes FCM/Web Push subscriptions for that author.
+When two valid approaches exist:
 
----
-
-## 14. Capacitor / Native Concerns
-
-- **`isNative()`** (`src/lib/native.ts`) is the only sanctioned platform check. Don't sniff user agents.
-- **Plugin imports are dynamic** to keep PWA bundles slim:
-  ```ts
-  if (isNative()) {
-    const { Haptics, ImpactStyle } = await import("@capacitor/haptics");
-    // ...
-  }
-  ```
-- **Notification channel `default`** is created with `vibration: true` and importance 4 to keep heads-up banners suppressed while the app is foregrounded — our custom `PushToast` is the in-app UI.
-- **Android-only build pipeline.** Web is built via Vercel, then Capacitor wraps `android/` for the APK. The `android/` directory is **gitignored**; it's regenerated locally.
-- **Keystore:** `C:\Users\T7SEN\keys\ourspace.jks`. Build via Android Studio. Do not check the keystore or its passwords into the repo or `.env*`.
+1. Will this require offline support? → Refuse, point to Section 3.7.
+2. Will this cause a hydration mismatch? → Use lazy `useState`, defer `setState`, wrap browser globals (Section 4).
+3. Server-only secret? → Env var, never shipped to client.
+4. Does this respect dom/sub permissions? → Re-check `session.author` server-side (Section 3.1).
+5. Will this fire a duplicate notification? → Add a presence check (Section 3.2).
+6. Honor device push delivery? → Accepted regression (Section 3.3); refuse PWA reintroduction.
+7. Banned (gallery, bucket list)? → Refuse (Section 1).
+8. Multiple Redis writes? → Pipeline (Section 3.6).
+9. Date-based key? → Cairo time, never UTC (Section 3.6).
+10. Capacitor plugin? → Dynamic import, `try/catch`, `isNative()` guard.
+11. Violates any rule? → Refuse and explain.
 
 ---
 
-## 15. Deployment
-
-- **Web:** Vercel (auto-deploys on push to `main`). Check the deployment dashboard before declaring a feature shipped.
-- **Required env vars** (Vercel + local `.env.local`):
-  - `AUTH_SECRET_KEY`
-  - `KV_REST_API_URL`, `KV_REST_API_TOKEN`
-  - `VAPID_EMAIL`, `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`
-  - `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_PRIVATE_KEY` (the `\n` literals are intentional — `replace(/\\n/g, '\n')` is applied at runtime)
-  - `SENTRY_AUTH_TOKEN`, Sentry org `t7sen-c0`, project `our-space`
-- **Android:** signed APK, package `me.t7senlovesbesho`, version aligned with `package.json`. Bump `versionCode` in `android/app/build.gradle` for every release.
-- **Service worker:** Serwist outputs to `public/sw*` — gitignored, regenerated each build. Never commit them.
-
----
-
-## 16. Testing
-
-- **Unit:** Jest + React Testing Library (when introduced — repo currently has no test runner wired). Arrange-Act-Assert. Mock Capacitor plugins via the `isNative()` boundary.
-- **Integration:** test full user workflows, not implementation details. Prefer `screen.findByRole` over snapshots.
-- **Manual smoke before every push:**
-  1. Login as both authors.
-  2. Verify FloatingNavbar badges update.
-  3. Send a note, confirm SSE delivery to the partner tab and PushToast routing.
-  4. Acknowledge a rule from Besho's account.
-  5. Lock/unlock the BiometricGate from native.
-
----
-
-## 17. Accessibility
-
-- Full keyboard navigation. Every interactive element is a `button` or `Link`, never a styled `div`.
-- Focus rings: don't suppress them globally; use `focus-visible:` for keyboard-only.
-- Heading hierarchy: one `h1` per route (the page title). Card titles are `h2`/`h3`.
-- Contrast: AA minimum. `text-muted-foreground/40` is acceptable only for non-essential metadata.
-- Respect `prefers-reduced-motion` — Motion's `MotionConfig` reads it; don't override.
-- Errors are announced with `role="alert"` or visible inline copy near the offending field.
-
----
-
-## 18. Security
-
-- Sanitize all rich-text input through the Markdown renderer's allowlist. Never `dangerouslySetInnerHTML` raw user content.
-- Server actions enforce role checks **server-side**, even if the UI hides the button. Treat the client as adversarial.
-- Never log session JWTs, FCM tokens, or VAPID private keys. The logger does not redact — you are responsible.
-- Rate-limit safe-word and login endpoints if/when introduced (Upstash supports it natively).
-- CSRF: server actions are protected by Next's built-in token. Don't disable it.
-
----
-
-## 19. Documentation
-
-- **JSDoc** every exported function, hook, type, and component prop interface. Existing examples: `useLocalNotifications`, `vibrate`, `BiometricGate`, `FCMProvider`.
-- Complete sentences, proper punctuation.
-- Code blocks use language hints (` ```ts `, ` ```tsx `, ` ```bash `).
-- Update this `SKILL.md` whenever a structural pattern changes.
-
----
-
-## 20. GitHub & Commit Hygiene
-
-- Repo: `github.com/t7sen/our-space`. Pull and review every push before responding to a session that follows new commits.
-- Commits: imperative subject, ≤72 chars, scoped (`notes:`, `rules:`, `push:`, `biometric:`, `ci:`).
-- PRs: not used (solo workflow), but treat every push to `main` as if it were one — verify Vercel preview, run lint, smoke-test on Android.
-- Never `git push --force` on `main`.
-
----
-
-## 21. Working Agreements with the User
-
-- **Begin every non-trivial response with a plan or architectural overview**, then implementation.
-- **Push back on bad ideas.** If the user asks for `==`, an inline `<style>`, a global Redux store, a Gallery page, or anything that violates this skill, refuse and explain. Don't sugar-coat.
-- **No bugs.** Re-read every block of generated code before presenting it. "Probably works" is a failure.
-- **Cite the file.** When changing existing code, name the file path and the function/symbol you're editing.
-- **Be forward-thinking.** Prefer React 19 / Next.js 16 idioms over patterns from older majors, even if older patterns "still work."
-- **Tone:** formal, direct, technical. The user wants the answer, not warmth.
-
----
-
-## 22. Quick Reference — Where Things Live
+## 10. File Map
 
 ```
 src/
 ├── app/
-│   ├── layout.tsx              # Providers, BiometricGate, TopNavbar, FloatingNavbar
-│   ├── globals.css             # Tailwind v4 tokens (CSS variables)
-│   ├── page.tsx                # Dashboard (cards grid)
-│   ├── notes/                  # Notes feature + SSE
+│   ├── layout.tsx              # Providers, BiometricGate, navbars, FCMProvider
+│   ├── globals.css             # Tailwind v4 tokens
+│   ├── page.tsx                # Dashboard
+│   ├── notes/                  # Notes feature + SSE consumer
 │   ├── rules/                  # Rules lifecycle
 │   ├── tasks/                  # Tasks
 │   ├── ledger/                 # Rewards / Punishments
 │   ├── timeline/               # Shared timeline
-│   ├── actions/                # Server actions ("use server")
+│   ├── actions/                # Server actions ('use server')
 │   │   ├── auth.ts
 │   │   ├── notes.ts
 │   │   ├── rules.ts
@@ -484,9 +436,8 @@ src/
 │   │   ├── reactions.ts
 │   │   └── notifications.ts
 │   └── api/
-│       ├── presence/route.ts   # POST/DELETE presence heartbeat
+│       ├── presence/route.ts
 │       ├── notes/stream/       # Edge SSE
-│       ├── notes/sync/         # Offline-write reconciliation
 │       └── push/subscribe-fcm/ # FCM token registration
 ├── components/
 │   ├── biometric-gate.tsx
@@ -496,9 +447,7 @@ src/
 │   ├── capacitor-init.tsx
 │   ├── theme-provider.tsx
 │   ├── global-logger.tsx
-│   ├── navigation/
-│   │   ├── top-navbar.tsx
-│   │   └── floating-navbar.tsx
+│   ├── navigation/             # top-navbar, floating-navbar
 │   ├── dashboard/              # Cards: Mood, Counter, Weather, Moon, Distance, Quote, SafeWord, Birthday
 │   └── ui/                     # shadcn primitives + RichTextEditor, MarkdownRenderer, ErrorBoundary
 ├── hooks/
@@ -506,33 +455,28 @@ src/
 │   ├── use-refresh-listener.ts
 │   ├── use-local-notifications.ts
 │   ├── use-keyboard.ts
+│   ├── use-network.ts          # Drives offline banner
 │   └── use-nav-badges.ts
 ├── lib/
 │   ├── auth-utils.ts
-│   ├── native.ts
+│   ├── native.ts               # isNative()
 │   ├── haptic.ts
 │   ├── clipboard.ts
 │   ├── logger.ts
-│   ├── constants.ts            # MY_TZ, TITLE_BY_AUTHOR
+│   ├── constants.ts            # MY_TZ, TITLE_BY_AUTHOR, START_DATE
 │   ├── notes-constants.ts
 │   ├── mood-constants.ts
 │   ├── reaction-constants.ts
 │   └── ledger-constants.ts
-└── instrumentation.ts          # Sentry wiring
+└── instrumentation.ts          # Sentry
 ```
 
 ---
 
-## 23. Decision Heuristics
+## 11. References Index
 
-When in doubt:
-
-1. Does this break Besho's Honor device? → If yes, redesign with Web Push fallback.
-2. Will this cause a hydration mismatch? → Use lazy `useState`, defer `setState`, wrap browser globals.
-3. Is this a server-only secret? → Env var, never shipped to the client.
-4. Does this respect the dom/sub permission model? → Re-check `session.author` on the server.
-5. Will this fire a duplicate notification? → Add a presence check.
-6. Is this banned (gallery, bucket list)? → Refuse.
-7. Does this violate any rule above? → Refuse and explain.
-
-If the answer to (7) is "no" but the user pushes back, hold the line. The rules exist because this codebase has burned through their counterexamples already.
+- [`references/push-routing.md`](./references/push-routing.md) — full FCM routing algorithm, presence handshake, failure-mode table
+- [`references/redis-schema.md`](./references/redis-schema.md) — every Redis key, type, TTL, access pattern, anti-patterns
+- [`references/capacitor-native.md`](./references/capacitor-native.md) — hosted-webapp architecture, plugin matrix, BiometricGate state machine, "Why No Web Push"
+- [`references/deployment.md`](./references/deployment.md) — Vercel + Android pipelines, env vars, secrets, smoke-test checklist
+- [`references/coding-patterns.md`](./references/coding-patterns.md) — 17 runtime-critical patterns with wrong/right examples
