@@ -5,8 +5,7 @@ import { decrypt, encrypt } from "@/lib/auth-utils";
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  const isPublicAsset =
-    pathname === "/manifest.json" || pathname.startsWith("/icon-");
+  const isPublicAsset = pathname.startsWith("/icon-");
 
   if (isPublicAsset) return NextResponse.next();
 

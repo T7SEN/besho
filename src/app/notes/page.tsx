@@ -17,7 +17,6 @@ import {
   Check,
   CheckCheck,
   ChevronDown,
-  Clock,
   Copy,
   History,
   Loader2,
@@ -42,12 +41,6 @@ import {
   togglePinNote,
   type Note,
 } from "@/app/actions/notes";
-import {
-  getPendingNotes,
-  removePendingNote,
-  storePendingNote,
-  type PendingNote,
-} from "@/lib/offline-notes";
 import { MAX_CONTENT_LENGTH, PAGE_SIZE } from "@/lib/notes-constants";
 import { START_DATE, TITLE_BY_AUTHOR } from "@/lib/constants";
 import { Button } from "@/components/ui/button";
@@ -130,7 +123,6 @@ export default function NotesPage() {
   const [justConfirmedId, setJustConfirmedId] = useState<string | null>(null);
   const [showScrollTop, setShowScrollTop] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
-  const [offlineNotes, setOfflineNotes] = useState<PendingNote[]>([]);
 
   const charCount = composeContent.length;
   const [state, action, isPending] = useActionState(saveNote, null);
@@ -142,6 +134,8 @@ export default function NotesPage() {
   usePresence("/notes", !!currentAuthor);
 
   // ── Real network status via @capacitor/network ───────────────────────────
+  // Drives the offline banner and disables the submit button when offline,
+  // so users don't trigger doomed server actions.
   const { connected } = useNetwork();
   const isOffline = !connected;
 
@@ -202,18 +196,14 @@ export default function NotesPage() {
       getCurrentAuthor(),
       getNoteCount(),
       getNoteCountByAuthor(),
-      getPendingNotes(),
-    ]).then(
-      ([{ notes: initial, hasMore: more }, author, count, counts, pending]) => {
-        setNotes(initial);
-        setHasMore(more);
-        setCurrentAuthor(author);
-        setNoteCount(count);
-        setAuthorCounts(counts);
-        setOfflineNotes(pending);
-        setIsLoading(false);
-      },
-    );
+    ]).then(([{ notes: initial, hasMore: more }, author, count, counts]) => {
+      setNotes(initial);
+      setHasMore(more);
+      setCurrentAuthor(author);
+      setNoteCount(count);
+      setAuthorCounts(counts);
+      setIsLoading(false);
+    });
   }, []);
 
   // ── Scroll to top visibility ──────────────────────────────────────────────
@@ -224,36 +214,6 @@ export default function NotesPage() {
     window.addEventListener("scroll", onScroll, { passive: true });
     return () => window.removeEventListener("scroll", onScroll);
   }, []);
-
-  // ── Sync offline notes when connectivity restored ─────────────────────────
-  useEffect(() => {
-    if (!connected || offlineNotes.length === 0) return;
-
-    void (async () => {
-      const pending = await getPendingNotes();
-      for (const note of pending) {
-        try {
-          const res = await fetch("/api/notes/sync", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(note),
-            credentials: "same-origin",
-          });
-          if (res.ok) {
-            await removePendingNote(note.id);
-            setTimeout(
-              () =>
-                setOfflineNotes((prev) => prev.filter((n) => n.id !== note.id)),
-              0,
-            );
-          }
-        } catch (error) {
-          logger.error("[notes] Failed to sync offline note:", error);
-          /* will retry on next reconnect */
-        }
-      }
-    })();
-  }, [connected, offlineNotes.length]);
 
   // ── SSE real-time stream ──────────────────────────────────────────────────
   useEffect(() => {
@@ -342,29 +302,6 @@ export default function NotesPage() {
       },
       ...prev,
     ]);
-  }, [composeContent, currentAuthor]);
-
-  // ── Offline submit ────────────────────────────────────────────────────────
-  const handleOfflineSubmit = useCallback(async () => {
-    const content = composeContent.trim();
-    if (!content || !currentAuthor) return;
-    void vibrate();
-    const id = await storePendingNote(content);
-    const pending: PendingNote = { id, content, createdAt: Date.now() };
-    setOfflineNotes((prev) => [pending, ...prev]);
-    setComposeContent("");
-    if (composeRef.current) (composeRef.current as any).style.height = "auto";
-
-    if ("serviceWorker" in navigator) {
-      try {
-        const reg = await navigator.serviceWorker.ready;
-        if ("sync" in reg) {
-          await (reg as any).sync.register("sync-notes");
-        }
-      } catch (err) {
-        logger.warn("[notes] Sync registration failed:", { error: err });
-      }
-    }
   }, [composeContent, currentAuthor]);
 
   // ── Manual refresh (header button) ───────────────────────────────────────
@@ -504,7 +441,7 @@ export default function NotesPage() {
         )}
       </AnimatePresence>
 
-      {/* Offline banner */}
+      {/* Offline banner — informational only; no queueing happens */}
       <AnimatePresence>
         {isOffline && (
           <motion.div
@@ -515,7 +452,7 @@ export default function NotesPage() {
           >
             <div className="flex items-center gap-2 rounded-full border border-yellow-500/30 bg-card/90 px-4 py-2 text-xs font-bold uppercase tracking-wider text-yellow-500/80 shadow-lg backdrop-blur-md">
               <WifiOff className="h-3 w-3" />
-              Offline — notes will sync when reconnected
+              Offline
             </div>
           </motion.div>
         )}
@@ -572,14 +509,7 @@ export default function NotesPage() {
         <form
           ref={formRef}
           action={action}
-          onSubmit={(e) => {
-            if (isOffline) {
-              e.preventDefault();
-              void handleOfflineSubmit();
-              return;
-            }
-            handleFormSubmit();
-          }}
+          onSubmit={handleFormSubmit}
           className="overflow-hidden rounded-3xl border border-white/5 bg-card/40 p-2 backdrop-blur-xl shadow-2xl shadow-black/40 transition-all focus-within:border-primary/30 focus-within:bg-card/60"
         >
           <motion.div
@@ -669,17 +599,13 @@ export default function NotesPage() {
                   isPending ||
                   isOverLimit ||
                   !composeContent.trim() ||
+                  isOffline ||
                   undefined
                 }
                 className="rounded-full px-5 transition-all hover:scale-105"
               >
                 {isPending ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
-                ) : isOffline ? (
-                  <>
-                    Queue
-                    <Clock className="ml-1.5 h-3.5 w-3.5" />
-                  </>
                 ) : (
                   <>
                     Save
@@ -694,38 +620,6 @@ export default function NotesPage() {
             ⌘ + Enter to save
           </p>
         </form>
-
-        {/* Offline pending notes */}
-        <AnimatePresence>
-          {offlineNotes.length > 0 && (
-            <motion.div
-              initial={{ opacity: 0, height: 0 }}
-              animate={{ opacity: 1, height: "auto" }}
-              exit={{ opacity: 0, height: 0 }}
-              className="space-y-2"
-            >
-              <p className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-yellow-500/60">
-                <Clock className="h-3 w-3" />
-                {offlineNotes.length} note{offlineNotes.length > 1 ? "s" : ""}{" "}
-                pending sync
-              </p>
-              {offlineNotes.map((pn) => (
-                <div
-                  key={pn.id}
-                  className="rounded-2xl border border-yellow-500/10 bg-yellow-500/5 px-5 py-4"
-                >
-                  <MarkdownRenderer
-                    content={pn.content}
-                    className="text-sm leading-relaxed text-foreground/70"
-                  />
-                  <p className="mt-2 text-[10px] font-semibold uppercase tracking-wider text-yellow-500/40">
-                    Written offline · will sync automatically
-                  </p>
-                </div>
-              ))}
-            </motion.div>
-          )}
-        </AnimatePresence>
 
         {/* Filter + Search */}
         {!isLoading && (

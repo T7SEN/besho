@@ -65,17 +65,6 @@ GoogleService-Info.plist
 .vercel
 
 # ────────────────────────────────────────────────────────────────────────────
-# Serwist / Service worker outputs (regenerated each build)
-# ────────────────────────────────────────────────────────────────────────────
-public/sw.js
-public/sw.js.map
-public/sw-*.js
-public/sw-*.js.map
-public/swe-*.js
-public/workbox-*.js
-public/workbox-*.js.map
-
-# ────────────────────────────────────────────────────────────────────────────
 # Capacitor — native shells are regenerated from capacitor.config.ts
 # ────────────────────────────────────────────────────────────────────────────
 android/
