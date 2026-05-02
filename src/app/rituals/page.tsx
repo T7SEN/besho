@@ -56,6 +56,7 @@ import {
   WEEKDAY_LABELS,
 } from "@/lib/rituals-constants";
 import {
+  dateKeyInTz,
   formatWindowRange,
   isPrescribedDay,
   nextPrescribedDateKey,
@@ -1359,6 +1360,7 @@ function RitualSkeleton() {
 }
 
 type HistoryDotStatus =
+  | "before_creation"
   | "completed"
   | "skipped"
   | "missed"
@@ -1374,8 +1376,9 @@ function classifyHistoryDot(args: {
   isOwningDate: boolean;
   todayState: RitualTodayState;
   prescribed: boolean;
+  beforeCreation: boolean;
 }): HistoryDotStatus {
-  const { entry, isOwningDate, todayState, prescribed } = args;
+  const { entry, isOwningDate, todayState, prescribed, beforeCreation } = args;
 
   if (isOwningDate) {
     if (todayState === "completed_today") return "today_completed";
@@ -1386,6 +1389,11 @@ function classifyHistoryDot(args: {
     // paused/inactive — treat the dot as off
     return "today_off";
   }
+
+  // Pre-creation dates carry no obligation. Wins over missed/skipped/
+  // completed semantics — even if a phantom skip record exists for a
+  // pre-creation date, "Not yet started" is the truthful display.
+  if (beforeCreation) return "before_creation";
 
   if (entry.skipped) return "skipped";
   if (entry.submitted) return "completed";
@@ -1403,6 +1411,7 @@ function classifyHistoryDot(args: {
 // over the harsher red / yellow pair. Today states carry a colored
 // shadow for subtle elevation.
 const DOT_BG_BY_STATUS: Record<HistoryDotStatus, string> = {
+  before_creation: "bg-zinc-800",
   completed: "bg-emerald-400",
   today_completed: "bg-emerald-400 shadow-md shadow-emerald-500/40",
   skipped: "bg-teal-400",
@@ -1424,6 +1433,8 @@ function dotClassesFor(status: HistoryDotStatus, isExpanded: boolean): string {
 
 function statusLabel(status: HistoryDotStatus): string {
   switch (status) {
+    case "before_creation":
+      return "Not yet started";
     case "completed":
     case "today_completed":
       return "Completed";
@@ -1475,17 +1486,24 @@ function HistoryDotRow({
     anchorDateKey: ritual.anchorDateKey,
   };
 
+  // Cairo date the ritual was created. Any history entry strictly before
+  // this date predates the ritual itself and carries no obligation.
+  const createdDateKey = dateKeyInTz(ritual.createdAt);
+
   // Decorate each entry with its dot status for both row + expansion use.
   const decorated = ritual.history.map((entry) => {
     const isOwningDate = entry.dateKey === ritual.owningDateKey;
-    const prescribed = isPrescribedDay(cadenceConfig, entry.dateKey);
+    const beforeCreation = entry.dateKey < createdDateKey;
+    const prescribed =
+      !beforeCreation && isPrescribedDay(cadenceConfig, entry.dateKey);
     const status = classifyHistoryDot({
       entry,
       isOwningDate,
       todayState: ritual.todayState,
       prescribed,
+      beforeCreation,
     });
-    return { entry, status, prescribed, isOwningDate };
+    return { entry, status, prescribed, isOwningDate, beforeCreation };
   });
 
   const expanded = expandedDateKey
@@ -1494,6 +1512,7 @@ function HistoryDotRow({
 
   const canGrantSkipForExpanded = (() => {
     if (!isT7SEN || !expanded) return false;
+    if (expanded.beforeCreation) return false;
     if (!expanded.prescribed) return false;
     if (expanded.entry.submitted) return false;
     return true;
