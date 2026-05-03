@@ -58,7 +58,7 @@ Each pillar below is a one-paragraph summary. Full treatment lives in the linked
 
 ### 3.1 Role-Based Dynamics (dom/sub)
 
-Every state-mutating server action **must** check `session.author` server-side, even if the UI hides the button. T7SEN (Sir) creates rules, marks rules complete, reopens rules, creates tasks, logs ledger entries, views safe-word history. Besho (kitten) acknowledges rules, completes tasks, sends safe-word. Both write notes, react, set mood, send hugs. User copy uses `Sir` / `kitten` via `TITLE_BY_AUTHOR` in `src/lib/constants.ts`. Never hard-code. Full permission matrix and canonical role-check shape: `references/auth-and-security.md`.
+Every state-mutating server action **must** check `session.author` server-side, even if the UI hides the button. T7SEN (Sir) creates rules, marks rules complete, reopens rules, creates tasks, logs ledger entries, views safe-word history, decides permission requests, sets quotas, authors auto-decide rules. Besho (kitten) acknowledges rules, completes tasks, sends safe-word, submits permission requests, withdraws her own pending requests. Both write notes, react, set mood, send hugs. **Auto-decide rules are Sir-private** — `getAutoRules` returns `[]` for Besho; her cards show only an "Auto" chip with no rule details. User copy uses `Sir` / `kitten` via `TITLE_BY_AUTHOR` in `src/lib/constants.ts`. Never hard-code. Full permission matrix and canonical role-check shape: `references/auth-and-security.md`. Permissions surface specifics: `references/permissions.md`.
 
 ### 3.2 Presence-Aware Push Routing (FCM-Only)
 
@@ -78,7 +78,7 @@ Both devices register an FCM token on app launch. Registration can still fail fo
 
 ### 3.6 Redis (Upstash) Data Model
 
-Single Redis instance. Flat colon-namespaced keys: `note:{id}`, `notes:index` (ZSET), `reactions:{noteId}` (HASH), `rule:{id}`, `task:{id}`, `ledger:{id}`, `mood:{YYYY-MM-DD}:{author}`, `presence:{author}` (TTL 6s), `push:fcm:{author}`, `notifications:{author}` (LIST capped at 50). Always pipeline dependent writes. Use `MY_TZ` (Cairo) from `src/lib/constants.ts` for date-derived keys — never the server's local time. Full schema and anti-patterns: `references/redis-schema.md`.
+Single Redis instance. Flat colon-namespaced keys: `note:{id}`, `notes:index` (ZSET), `reactions:{noteId}` (HASH), `rule:{id}`, `task:{id}`, `ledger:{id}`, `permission:{id}`, `permissions:index` (ZSET), `permissions:auto-rules` (Sir-only JSON array), `permissions:quotas` (JSON), `mood:{YYYY-MM-DD}:{author}`, `presence:{author}` (TTL 6s), `push:fcm:{author}`, `notifications:{author}` (LIST capped at 50). Permissions has additional sub-keys for re-ask blocking, audit history, and denied-hash detection — see the reference. Always pipeline dependent writes. Use `MY_TZ` (Cairo) from `src/lib/constants.ts` for date-derived keys — never the server's local time. Full schema and anti-patterns: `references/redis-schema.md`. Permissions feature spec: `references/permissions.md`.
 
 ### 3.7 Hosted-Webapp Capacitor Architecture
 
@@ -96,6 +96,8 @@ These compile and lint clean but break at runtime, in SSR, or in React 19 strict
 - **`Date.now()` lazy in render:** `useState(() => Date.now())`, never `useState(Date.now())`.
 - **`"use server"` files export only async functions.** Move constants to `src/lib/*-constants.ts`.
 - **`cookies()` and `headers()` are async:** `const cookieStore = await cookies()`.
+- **`useSearchParams()` requires a `<Suspense>` boundary** — Next 16 prerender bails the whole route otherwise. Default-export wraps the inner component in `<Suspense fallback={...}><Inner /></Suspense>`.
+- **Optimistic UI uses snapshot-then-rollback** — `references/coding-patterns.md` § "Optimistic UI with Snapshot Rollback". Don't apply to create-paths.
 - **Unused params:** prefix with `_` and add `// eslint-disable-next-line @typescript-eslint/no-unused-vars` above the signature.
 
 ---
@@ -156,6 +158,9 @@ src/
 │   ├── tasks/                  # Tasks
 │   ├── ledger/                 # Rewards / Punishments
 │   ├── timeline/               # Shared timeline
+│   ├── permissions/            # Two-author negotiation surface (see references/permissions.md)
+│   ├── protocol/               # Shared protocol + version history; supports ?focus= deep links
+│   ├── rituals/                # Recurring obligations + LocalNotifications reminders
 │   ├── actions/                # Server actions ('use server')
 │   └── api/
 │       ├── presence/route.ts
@@ -198,16 +203,17 @@ When in doubt:
 
 Load on demand. Do not load preemptively.
 
-| Task involves...                                   | Load                               |
-| -------------------------------------------------- | ---------------------------------- |
-| Push notifications, FCM, presence routing          | `references/push-routing.md`       |
-| Redis keys, data shape, pagination, TTLs           | `references/redis-schema.md`       |
-| Capacitor plugins, hosted-webapp, BiometricGate    | `references/capacitor-native.md`   |
-| Vercel env vars, APK builds, smoke tests           | `references/deployment.md`         |
-| Runtime-critical coding patterns with examples     | `references/coding-patterns.md`    |
-| Code style, naming, React, TypeScript, UI, state   | `references/code-style.md`         |
-| Auth, error handling, security, accessibility      | `references/auth-and-security.md`  |
-| Anti-hallucination inventory (also in `SKILL.md`)  | `references/anti-hallucination.md` |
-| Full refusal catalog (also abridged in `SKILL.md`) | `references/refusal-catalog.md`    |
+| Task involves...                                        | Load                               |
+| ------------------------------------------------------- | ---------------------------------- |
+| Push notifications, FCM, presence routing               | `references/push-routing.md`       |
+| Redis keys, data shape, pagination, TTLs                | `references/redis-schema.md`       |
+| Capacitor plugins, hosted-webapp, BiometricGate         | `references/capacitor-native.md`   |
+| Vercel env vars, APK builds, smoke tests                | `references/deployment.md`         |
+| Runtime-critical coding patterns with examples          | `references/coding-patterns.md`    |
+| Code style, naming, React, TypeScript, UI, state        | `references/code-style.md`         |
+| Auth, error handling, security, accessibility           | `references/auth-and-security.md`  |
+| `/permissions` feature — schema, validation, auto-rules | `references/permissions.md`        |
+| Anti-hallucination inventory (also in `SKILL.md`)       | `references/anti-hallucination.md` |
+| Full refusal catalog (also abridged in `SKILL.md`)      | `references/refusal-catalog.md`    |
 
 If a task touches multiple areas, load multiple references. Trust the routing table.

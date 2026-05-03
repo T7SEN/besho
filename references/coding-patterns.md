@@ -509,7 +509,100 @@ The client renders `state?.error` near the submit button. Don't return `null` or
 
 ---
 
-## 17. Disable Submit When Offline
+## 17. Optimistic UI with Snapshot Rollback
+
+Decisions and cancellations on long server round-trips feel slow if the UI waits for the server before updating. Optimistic UI applies the local mutation immediately, calls the server in the background, and reconciles or rolls back based on the result. Eliminates the perceptible loader window between action and visual confirmation.
+
+This pattern is in `src/app/permissions/page.tsx::handleDecide` and `handleWithdraw`. Use it for **mutations on existing records** where you can predict the post-state without simulating server-side branching. Skip it for create-paths where the server may auto-decide, validate, or reject in ways the client can't replicate.
+
+### Wrong
+
+```ts
+const handleDecide = useCallback(
+  async (id, decision, options) => {
+    setBusyId(id);
+    try {
+      const result = await decidePermission(id, decision, options);
+      if (!result.error) await handleRefresh();
+      return { error: result.error };
+    } finally {
+      setBusyId(null);
+    }
+  },
+  [handleRefresh],
+);
+```
+
+UI waits for the round-trip. Card stays in Pending until server returns, then snaps to Decided.
+
+### Right
+
+```ts
+const handleDecide = useCallback(
+  async (id, decision, options) => {
+    setBusyId(id);
+    // Snapshot for rollback BEFORE applying optimistic update.
+    const snapshot = requests;
+    setRequests((prev) =>
+      prev.map((r) => {
+        if (r.id !== id) return r;
+        const next = {
+          ...r,
+          status: decision,
+          decidedAt: Date.now(),
+          decidedBy: "T7SEN" as const,
+        };
+        // Reset stale fields the new decision shouldn't carry.
+        delete next.reply;
+        delete next.terms;
+        delete next.denialReason;
+        if (options.reply?.trim().length) next.reply = options.reply.trim();
+        if (decision === "approved" && options.terms?.trim().length) {
+          next.terms = options.terms.trim();
+        }
+        if (decision === "denied" && options.reason) {
+          next.denialReason = options.reason;
+        }
+        return next;
+      }),
+    );
+    try {
+      const result = await decidePermission(id, decision, options);
+      if (result.error) {
+        setRequests(snapshot); // Rollback
+        return { error: result.error };
+      }
+      await handleRefresh(); // Reconcile
+      return {};
+    } finally {
+      setTimeout(() => setBusyId(null), 0);
+    }
+  },
+  [requests, handleRefresh],
+);
+```
+
+### Rules of the pattern
+
+1. **Snapshot before mutation.** `const snapshot = requests` captures the pre-mutation state for rollback. JavaScript's reference semantics make this cheap; the array literal isn't copied until React replaces it.
+2. **Mutate via the standard setter.** Don't reach into Redis or fire the server action first. Local state goes first, server second.
+3. **Reset stale fields.** When a new decision overrides an old one, explicitly delete the fields that don't apply (e.g. `terms` when switching from approve to deny). Otherwise the optimistic state has phantom fields the server-truth state won't have.
+4. **Reconcile on success.** Call `handleRefresh()` after the server confirms. The server may have side-effects (re-ask block writes, audit log entries, FCM dispatch) the optimistic state doesn't capture. Refresh fetches truth and overwrites local.
+5. **Rollback on error.** `setRequests(snapshot)` restores the pre-mutation array. The error message bubbles up to the caller.
+6. **Don't apply to create.** Create-paths often have server-side branching (auto-rules, validation cascades) that the client can't predict. The user may type something that matches an auto-rule and gets auto-decided — synthesizing the wrong post-state misleads them.
+7. **`useCallback` deps now include the state.** The handler closes over `requests` for the snapshot. Add it to deps. Re-creating on every render is fine — `RequestItem` already re-renders when parent state changes.
+
+### When NOT to apply
+
+- Create paths with unpredictable server branching (see rule 6).
+- Mutations on lists where the new record's identity comes from the server (auto-generated IDs, server-assigned timestamps that affect sort order).
+- Rare actions where the loader feedback is desirable (Sir wants to _see_ the action take a moment for high-stakes decisions).
+
+The 2-user, low-volume nature of Our Space means even slow server round-trips don't _technically_ need this pattern. Apply it where the UX wins are visible to a real user — decisions and withdrawals on `/permissions`. Don't sprinkle it on every action.
+
+---
+
+## 18. Disable Submit When Offline
 
 Server actions require connectivity. The `useNetwork` hook (driven by `@capacitor/network`) is the source of truth for online status. Submit buttons should disable when offline so users don't trigger doomed actions.
 
@@ -547,4 +640,6 @@ Pair with an offline banner that informs the user why the button is disabled. Th
 - `src/hooks/use-network.ts` — Capacitor-aware network status
 - `src/app/actions/notes.ts` — pipeline pattern, action return shape
 - `src/app/actions/rules.ts` — server-side role enforcement, `_removed` rename
+- `src/app/actions/permissions.ts` — optimistic UI consumer, validation cascade
+- `src/app/permissions/page.tsx::handleDecide` — canonical optimistic UI implementation
 - `src/app/api/presence/route.ts` — async `cookies()`, unused-vars disable

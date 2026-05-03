@@ -100,6 +100,47 @@ T7SEN creates. Besho completes.
 
 ---
 
+## Permissions (`/permissions`)
+
+| Key                                 | Type   | TTL    | Description                                                            |
+| ----------------------------------- | ------ | ------ | ---------------------------------------------------------------------- |
+| `permission:{id}`                   | JSON   | none   | `PermissionRequest` record (see `references/permissions.md` for shape) |
+| `permissions:index`                 | ZSET   | none   | Permission IDs scored by `requestedAt`                                 |
+| `permission:reask-block:{bodyHash}` | STRING | varies | Set on denial; cooldown TTL from `DENIAL_REASON_COOLDOWN_HOURS`        |
+| `permission:audit:{id}`             | LIST   | none   | Prior decision states. LPUSH'd on re-decide. Capped 20 via `LTRIM`     |
+| `permissions:denied-hashes`         | SET    | none   | Body hashes ever denied. Drives the ↺ chip ("Asked again")             |
+| `permissions:quotas`                | JSON   | none   | `{ monthlyLimits: {...}, maxPending? }` — single key, Sir-only writes  |
+| `permissions:auto-rules`            | JSON   | none   | Ordered array of `AutoDecideRule`. Sir-only readable AND writable      |
+
+### Distinct re-ask mechanisms
+
+The two re-ask keys do different jobs and shouldn't be conflated:
+
+- `permission:reask-block:{bodyHash}` — TTL'd. **Rejects** new requests during cooldown.
+- `permissions:denied-hashes` — no TTL. **Marks** new requests with `wasReasked: true` for the ↺ chip; never rejects.
+
+Both are populated together when Sir denies a request (manual or auto). The block expires; the SET membership is forever.
+
+### Body hash function
+
+`bodyHashFor(body)` lowercases, trims, collapses whitespace, then runs FNV-style integer hash to base36. Trivial rewordings (case changes, extra spaces) collide deliberately. Semantic rewording bypasses both mechanisms.
+
+### Quota window
+
+`startOfCairoMonthMs()` uses `Intl.DateTimeFormat` with `Africa/Cairo`, fixed `+02:00` offset. DST-day drift is acceptable for monthly windows. Quota check is on-the-fly: ZRANGE month-window, pipelined GET, filter to approved + matching category. O(N) scan over month records — fine at this scale.
+
+### Audit log
+
+`permission:audit:{id}` captures the OLD state on every re-decide BEFORE overwrite. First decisions (pending → decided) don't log. `getPermissions` pipelines `LLEN` for each record alongside the `GET` to surface `auditCount` in one round-trip.
+
+### Auto-rule privacy
+
+`getAutoRules` returns `[]` for Besho. Rules are Sir's private authoring artifacts. The visible `decidedByRuleId` on Besho's cards renders only an "Auto" chip — no rule details exposed.
+
+Full feature spec, validation order, and decision routing: `references/permissions.md`.
+
+---
+
 ## Mood (`/`)
 
 | Key                           | Type   | TTL | Description                     |
@@ -198,6 +239,8 @@ Add a sentinel for any back-fill. Idempotency matters because every cold-start c
 - **Date math in JavaScript without Cairo TZ.** Use `Intl.DateTimeFormat('en-CA', { timeZone: MY_TZ })` to format `YYYY-MM-DD`. The `en-CA` locale gives ISO format directly.
 - **Forgetting the `!` on `process.env.KV_REST_API_*`.** TypeScript will infer `string | undefined` and `Redis` rejects it. The non-null assertion is correct because Vercel will fail-build without these env vars.
 - **Reintroducing `push:subscription:*`.** Web Push is gone, on purpose. Refuse the proposal.
+- **Reading `permissions:auto-rules` for Besho.** Sir-only by design — `getAutoRules` returns `[]` for non-Sir. Don't relax this; rules are private authoring artifacts.
+- **Conflating `permission:reask-block:*` and `permissions:denied-hashes`.** They have different TTL semantics and different jobs (reject vs mark). Don't merge.
 
 ---
 
@@ -210,8 +253,10 @@ Add a sentinel for any back-fill. Idempotency matters because every cold-start c
 - `src/app/actions/mood.ts`
 - `src/app/actions/reactions.ts`
 - `src/app/actions/notifications.ts`
+- `src/app/actions/permissions.ts` — full permissions surface (see `references/permissions.md`)
 - `src/app/api/notes/stream/route.ts` — SSE consumer
 - `src/app/api/presence/route.ts`
 - `src/app/api/push/subscribe-fcm/route.ts`
 - `src/lib/notes-constants.ts` — `MAX_CONTENT_LENGTH`, `PAGE_SIZE`
+- `src/lib/permissions-constants.ts` — categories, denial reasons, cooldowns, `AutoDecideRule`, `MAX_AUTO_RULES`
 - `src/lib/constants.ts` — `MY_TZ`, `TITLE_BY_AUTHOR`

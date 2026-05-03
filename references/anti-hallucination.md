@@ -6,18 +6,19 @@ This file mirrors `SKILL.md` Section 2. Loaded on demand by tools that read refe
 
 ## Removed Dependencies
 
-| Removed / nonexistent                                                                                 | Replacement                                                                             |
-| ----------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| `@serwist/next`, `@serwist/sw`, `serwist`, `workbox-*`                                                | None — PWA removed                                                                      |
-| `web-push` package, `VAPID_*` env vars                                                                | None — Web Push removed                                                                 |
-| `navigator.serviceWorker`, `sw.register()`, `public/sw.js`, `public/manifest.json`                    | None                                                                                    |
-| `src/lib/offline-notes.ts`, `storePendingNote`, `getPendingNotes`, `removePendingNote`, `PendingNote` | None — IndexedDB queue removed                                                          |
-| `/api/notes/sync` endpoint                                                                            | None — only `/api/notes/stream` (SSE) exists in `notes/api/`                            |
-| `push:subscription:{author}` Redis key                                                                | `push:fcm:{author}` only                                                                |
-| `prisma`, `@prisma/client`, SQL migrations                                                            | Upstash Redis is the sole datastore; `/src/generated/prisma` is a stale gitignore entry |
-| Light-mode Tailwind variants                                                                          | Dark theme is forced via `forcedTheme="dark"`                                           |
-| `tailwind.config.ts` / `tailwind.config.js`                                                           | Tailwind v4 is CSS-first; tokens live in `src/app/globals.css`                          |
-| `pages/` directory, `getServerSideProps`, `getStaticProps`                                            | App Router only                                                                         |
+| Removed / nonexistent                                                                                                                                         | Replacement                                                                             |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `@serwist/next`, `@serwist/sw`, `serwist`, `workbox-*`                                                                                                        | None — PWA removed                                                                      |
+| `web-push` package, `VAPID_*` env vars                                                                                                                        | None — Web Push removed                                                                 |
+| `navigator.serviceWorker`, `sw.register()`, `public/sw.js`, `public/manifest.json`                                                                            | None                                                                                    |
+| `src/lib/offline-notes.ts`, `storePendingNote`, `getPendingNotes`, `removePendingNote`, `PendingNote`                                                         | None — IndexedDB queue removed                                                          |
+| `/api/notes/sync` endpoint                                                                                                                                    | None — only `/api/notes/stream` (SSE) exists in `notes/api/`                            |
+| `push:subscription:{author}` Redis key                                                                                                                        | `push:fcm:{author}` only                                                                |
+| `prisma`, `@prisma/client`, SQL migrations                                                                                                                    | Upstash Redis is the sole datastore; `/src/generated/prisma` is a stale gitignore entry |
+| Light-mode Tailwind variants                                                                                                                                  | Dark theme is forced via `forcedTheme="dark"`                                           |
+| `tailwind.config.ts` / `tailwind.config.js`                                                                                                                   | Tailwind v4 is CSS-first; tokens live in `src/app/globals.css`                          |
+| `pages/` directory, `getServerSideProps`, `getStaticProps`                                                                                                    | App Router only                                                                         |
+| `VoiceNote` type, `voiceNote` field on `PermissionRequest`, `MediaRecorder` usage in permissions, `RECORD_AUDIO` Android permission, `VOICE_NOTE_*` constants | None — voice notes were prototyped on permissions and explicitly removed                |
 
 ---
 
@@ -29,8 +30,9 @@ Training data for current LLMs predates several intentional removals from this c
 - Writing `import { Serwist } from '@serwist/next'` because the agent inferred PWA support from the Capacitor presence.
 - Referencing `process.env.VAPID_PUBLIC_KEY` because the agent assumed Web Push must be configured.
 - Reading from `pages/api/...` because the agent's training cutoff predates App Router maturity.
+- Re-suggesting voice notes for `/permissions` because audio attachments seem like a natural fit for emotional context. They were prototyped and removed — don't re-propose without explicit user instruction.
 
-Every entry above produces a runtime failure or a bundle that won't compile. Stop the moment you find yourself typing one.
+Every entry above produces a runtime failure, a bundle that won't compile, or a refused PR. Stop the moment you find yourself typing one.
 
 ---
 
