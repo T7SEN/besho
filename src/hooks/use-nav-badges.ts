@@ -11,6 +11,7 @@ const INITIAL: NavBadges = {
   pendingTasks: 0,
   unacknowledgedRules: 0,
   openRituals: 0,
+  pendingPermissions: 0,
 };
 
 /**

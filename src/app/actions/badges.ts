@@ -7,6 +7,7 @@ import { decrypt } from "@/lib/auth-utils";
 import type { Task } from "@/app/actions/tasks";
 import type { Rule } from "@/app/actions/rules";
 import type { Ritual, RitualOwner } from "@/app/actions/rituals";
+import type { PermissionRequest } from "@/app/actions/permissions";
 import { computeRitualTodayState } from "@/lib/rituals";
 
 const redis = new Redis({
@@ -18,12 +19,14 @@ export interface NavBadges {
   pendingTasks: number;
   unacknowledgedRules: number;
   openRituals: number;
+  pendingPermissions: number;
 }
 
 const EMPTY: NavBadges = {
   pendingTasks: 0,
   unacknowledgedRules: 0,
   openRituals: 0,
+  pendingPermissions: 0,
 };
 
 /**
@@ -34,6 +37,9 @@ const EMPTY: NavBadges = {
  * - `openRituals`: per-viewer count of rituals where the viewer is the
  *   owner AND the current state is `open` (window open, no submission).
  *   Computed for both authors because rituals can be owned by either.
+ * - `pendingPermissions`: T7SEN-only count of pending permission
+ *   requests awaiting Sir's decision. Always 0 for Besho — she gets
+ *   FCM pushes when Sir decides, no badge needed.
  */
 export async function getNavBadges(): Promise<NavBadges> {
   const cookieStore = await cookies();
@@ -45,11 +51,12 @@ export async function getNavBadges(): Promise<NavBadges> {
   if (author !== "T7SEN" && author !== "Besho") return EMPTY;
 
   const isBesho = author === "Besho";
+  const isT7SEN = author === "T7SEN";
 
   try {
-    // Phase 1: parallel ZRANGE for all three indices. Tasks/rules only
-    // pulled when viewer is Besho.
-    const [taskIds, ruleIds, ritualIds] = await Promise.all([
+    // Phase 1: parallel ZRANGE for all relevant indices. Tasks/rules
+    // only pulled for Besho; permissions only pulled for T7SEN.
+    const [taskIds, ruleIds, ritualIds, permissionIds] = await Promise.all([
       isBesho
         ? (redis.zrange("tasks:index", 0, -1) as Promise<string[]>)
         : Promise.resolve([] as string[]),
@@ -57,10 +64,13 @@ export async function getNavBadges(): Promise<NavBadges> {
         ? (redis.zrange("rules:index", 0, -1) as Promise<string[]>)
         : Promise.resolve([] as string[]),
       redis.zrange("rituals:index", 0, -1) as Promise<string[]>,
+      isT7SEN
+        ? (redis.zrange("permissions:index", 0, -1) as Promise<string[]>)
+        : Promise.resolve([] as string[]),
     ]);
 
     // Phase 2: parallel MGET for the records we just enumerated.
-    const [tasks, rules, rituals] = await Promise.all([
+    const [tasks, rules, rituals, permissions] = await Promise.all([
       taskIds.length
         ? redis.mget<(Pick<Task, "completed"> | null)[]>(
             ...taskIds.map((id) => `task:${id}`),
@@ -76,6 +86,11 @@ export async function getNavBadges(): Promise<NavBadges> {
             ...ritualIds.map((id) => `ritual:${id}`),
           )
         : Promise.resolve([] as (Ritual | null)[]),
+      permissionIds.length
+        ? redis.mget<(Pick<PermissionRequest, "status"> | null)[]>(
+            ...permissionIds.map((id) => `permission:${id}`),
+          )
+        : Promise.resolve([]),
     ]);
 
     // Phase 3 (rituals only): for owned-by-viewer rituals whose nominal
@@ -130,6 +145,9 @@ export async function getNavBadges(): Promise<NavBadges> {
         (r) => r !== null && r.status === "pending",
       ).length,
       openRituals,
+      pendingPermissions: permissions.filter(
+        (p) => p !== null && p.status === "pending",
+      ).length,
     };
   } catch {
     return EMPTY;

@@ -7,8 +7,10 @@ import { motion, AnimatePresence } from "motion/react";
 import {
   Home,
   BookHeart,
+  BookOpen,
   CalendarClock,
   CheckSquare,
+  Hand,
   ScrollText,
   Sparkles,
   Award,
@@ -34,6 +36,12 @@ const NAV_ITEMS: NavItem[] = [
     badgeKey: "pendingTasks",
   },
   {
+    name: "Permissions",
+    href: "/permissions",
+    icon: Hand,
+    badgeKey: "pendingPermissions",
+  },
+  {
     name: "Rules",
     href: "/rules",
     icon: ScrollText,
@@ -46,6 +54,7 @@ const NAV_ITEMS: NavItem[] = [
     badgeKey: "openRituals",
   },
   { name: "Ledger", href: "/ledger", icon: Award },
+  { name: "Protocol", href: "/protocol", icon: BookOpen },
 ];
 
 export function FloatingNavbar() {
