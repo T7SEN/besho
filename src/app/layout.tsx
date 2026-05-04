@@ -15,6 +15,7 @@ import { TopNavbar } from "@/components/navigation/top-navbar";
 import { PullToRefresh } from "@/components/pull-to-refresh";
 import { ErrorBoundary } from "@/components/ui/error-boundary";
 import { GlobalLogger } from "@/components/global-logger";
+import { SentryUserProvider } from "@/components/sentry-user-provider";
 
 const sourceSans3 = Source_Sans_3({
   subsets: ["latin"],
@@ -105,6 +106,7 @@ export default function RootLayout({
                 <CapacitorInit />
                 <PushToast />
                 <FCMProvider />
+                <SentryUserProvider />
                 <FloatingNavbar />
               </BiometricGate>
             </TooltipProvider>
