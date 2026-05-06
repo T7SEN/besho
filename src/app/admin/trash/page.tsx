@@ -12,9 +12,11 @@ import {
 } from "lucide-react";
 import {
   getTrashList,
+  getTrashRetention,
   restoreTrashEntryAction,
   deleteTrashEntryAction,
   purgeTrashAction,
+  setTrashRetention,
 } from "@/app/actions/admin";
 import {
   TRASH_FEATURE_LABELS,
@@ -51,8 +53,8 @@ function formatRelative(ts: number, now: number): string {
   return `${Math.round(diff / 86_400_000)}d ago`;
 }
 
-function expiresAt(deletedAt: number): number {
-  return deletedAt + 7 * 24 * 60 * 60 * 1000;
+function expiresAt(deletedAt: number, retentionDays: number): number {
+  return deletedAt + retentionDays * 24 * 60 * 60 * 1000;
 }
 
 export default function TrashPage() {
@@ -64,6 +66,11 @@ export default function TrashPage() {
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
   const [confirmingPurge, setConfirmingPurge] = useState(false);
+  const [retentionDays, setRetentionDays] = useState<number>(7);
+  const [retentionBounds, setRetentionBounds] = useState<{
+    min: number;
+    max: number;
+  }>({ min: 1, max: 90 });
 
   const fetchTrash = useCallback(async () => {
     setRefreshing(true);
@@ -89,6 +96,19 @@ export default function TrashPage() {
     const id = setInterval(() => void fetchTrash(), POLL_MS);
     return () => clearInterval(id);
   }, [fetchTrash]);
+
+  useEffect(() => {
+    const t = setTimeout(() => {
+      void (async () => {
+        const result = await getTrashRetention();
+        if (result.days) setRetentionDays(result.days);
+        if (typeof result.min === "number" && typeof result.max === "number") {
+          setRetentionBounds({ min: result.min, max: result.max });
+        }
+      })();
+    }, 0);
+    return () => clearTimeout(t);
+  }, []);
 
   useEffect(() => {
     const id = setInterval(() => setTick(Date.now()), 30_000);
@@ -201,9 +221,19 @@ export default function TrashPage() {
 
       <h1 className="text-2xl font-bold tracking-tight">Trash</h1>
       <p className="mt-1 mb-4 text-sm text-muted-foreground">
-        Soft-deleted records auto-expire after 7 days. Restore puts the record
-        back in its original index with the original score.
+        Soft-deleted records auto-expire after{" "}
+        <span className="font-semibold text-foreground">
+          {retentionDays} {retentionDays === 1 ? "day" : "days"}
+        </span>
+        . Restore puts the record back in its original index with the
+        original score.
       </p>
+
+      <RetentionDial
+        days={retentionDays}
+        bounds={retentionBounds}
+        onSaved={(d) => setRetentionDays(d)}
+      />
 
       <div className="-mx-4 mb-4 flex gap-2 overflow-x-auto px-4 md:mx-0 md:px-0">
         {FEATURE_FILTERS.map((f) => (
@@ -276,7 +306,10 @@ export default function TrashPage() {
                       </p>
                       <p className="mt-0.5 text-[10px] text-muted-foreground">
                         deleted {formatRelative(entry.deletedAt, tick)} · expires{" "}
-                        {formatRelative(expiresAt(entry.deletedAt), tick)
+                        {formatRelative(
+                          expiresAt(entry.deletedAt, retentionDays),
+                          tick,
+                        )
                           .replace("ago", "")
                           .trim()}{" "}
                         from now
@@ -392,5 +425,85 @@ export default function TrashPage() {
         </div>
       )}
     </main>
+  );
+}
+
+function RetentionDial({
+  days,
+  bounds,
+  onSaved,
+}: {
+  days: number;
+  bounds: { min: number; max: number };
+  onSaved: (days: number) => void;
+}) {
+  const [draft, setDraft] = useState<string>(String(days));
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  // Keep the draft in sync with external updates (initial fetch).
+  useEffect(() => {
+    setDraft(String(days));
+  }, [days]);
+
+  const dirty = draft.trim() !== String(days);
+
+  const handleSave = async () => {
+    const n = Number(draft);
+    if (!Number.isFinite(n) || n < bounds.min || n > bounds.max) {
+      setErr(`Must be ${bounds.min}-${bounds.max}.`);
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    setMsg(null);
+    void vibrate(40, "medium");
+    const result = await setTrashRetention(Math.floor(n));
+    setBusy(false);
+    if (result.error) {
+      setErr(result.error);
+      return;
+    }
+    if (typeof result.days === "number") {
+      onSaved(result.days);
+      setMsg("Saved. Existing entries keep their original TTL.");
+    }
+  };
+
+  return (
+    <section className="mb-6 rounded-2xl border border-border/40 bg-card p-4">
+      <div className="flex flex-wrap items-end gap-3">
+        <label className="flex flex-col gap-1">
+          <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+            Retention (days)
+          </span>
+          <input
+            type="number"
+            inputMode="numeric"
+            value={draft}
+            min={bounds.min}
+            max={bounds.max}
+            onChange={(e) => setDraft(e.target.value)}
+            className="w-24 rounded border border-border/60 bg-input/40 px-2 py-1 text-sm tabular-nums focus:border-primary focus:outline-none"
+          />
+        </label>
+        <button
+          type="button"
+          onClick={() => void handleSave()}
+          disabled={busy || !dirty}
+          className="flex items-center gap-1.5 rounded-full bg-primary px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-primary-foreground transition-opacity active:scale-95 disabled:opacity-40"
+        >
+          {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+          Save
+        </button>
+        <span className="text-[10px] text-muted-foreground/70">
+          Range {bounds.min}-{bounds.max}. New TTL applies only to records
+          deleted from now on.
+        </span>
+      </div>
+      {msg && <p className="mt-2 text-[10px] text-emerald-400">{msg}</p>}
+      {err && <p className="mt-2 text-[10px] text-destructive">{err}</p>}
+    </section>
   );
 }

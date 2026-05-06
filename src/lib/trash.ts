@@ -36,8 +36,67 @@ export interface TrashEntry {
   extraRecords?: { key: string; value: unknown }[];
 }
 
-const TTL_SECONDS = 7 * 24 * 60 * 60;
+/** Default retention. Sir can override via `trash:retention-days`. */
+export const DEFAULT_TRASH_RETENTION_DAYS = 7;
+export const TRASH_RETENTION_KEY = "trash:retention-days";
+/** Bounds. Lower bound prevents accidental zeroing; upper bound prevents
+ *  runaway storage if Sir fat-fingers. */
+export const MIN_TRASH_RETENTION_DAYS = 1;
+export const MAX_TRASH_RETENTION_DAYS = 90;
 const GLOBAL_INDEX = "trash:index";
+
+// 5s in-process cache mirroring restraint.ts. The TTL is read on every
+// trash write; without the cache that's a Redis RTT for each `delete*` /
+// `purgeAll*` call.
+interface RetentionCache {
+  days: number;
+  until: number;
+}
+const RETENTION_CACHE_MS = 5_000;
+let retentionCache: RetentionCache | null = null;
+
+export async function getTrashRetentionDays(r: Redis): Promise<number> {
+  const now = Date.now();
+  if (retentionCache && retentionCache.until > now) return retentionCache.days;
+  let days = DEFAULT_TRASH_RETENTION_DAYS;
+  try {
+    const v = await r.get<number | string>(TRASH_RETENTION_KEY);
+    const n = Number(v);
+    if (
+      Number.isFinite(n) &&
+      n >= MIN_TRASH_RETENTION_DAYS &&
+      n <= MAX_TRASH_RETENTION_DAYS
+    ) {
+      days = Math.floor(n);
+    }
+  } catch {
+    // fall through with default
+  }
+  retentionCache = { days, until: now + RETENTION_CACHE_MS };
+  return days;
+}
+
+export async function setTrashRetentionDays(
+  r: Redis,
+  days: number,
+): Promise<void> {
+  const n = Math.floor(Number(days));
+  if (
+    !Number.isFinite(n) ||
+    n < MIN_TRASH_RETENTION_DAYS ||
+    n > MAX_TRASH_RETENTION_DAYS
+  ) {
+    throw new Error(
+      `Retention must be ${MIN_TRASH_RETENTION_DAYS}-${MAX_TRASH_RETENTION_DAYS} days.`,
+    );
+  }
+  await r.set(TRASH_RETENTION_KEY, n);
+  retentionCache = { days: n, until: Date.now() + RETENTION_CACHE_MS };
+}
+
+function ttlSecondsForDays(days: number): number {
+  return days * 24 * 60 * 60;
+}
 
 function featureIndexKey(feature: TrashFeature) {
   return `trash:index:${feature}`;
@@ -72,14 +131,17 @@ export interface MoveToTrashOptions {
 }
 
 /**
- * Append a record to the trash index. The record JSON gets a 7-day TTL;
- * the ZSET indexes are swept on read for entries whose JSON has expired.
+ * Append a record to the trash index. The record JSON gets a TTL pulled
+ * from `trash:retention-days` (5s-cached, defaults to 7 days). The ZSET
+ * indexes are swept on read for entries whose JSON has expired.
  */
 export async function moveToTrash(
   r: Redis,
   options: MoveToTrashOptions,
 ): Promise<void> {
   const at = Date.now();
+  const days = await getTrashRetentionDays(r);
+  const ttl = ttlSecondsForDays(days);
   const entry: TrashEntry = {
     feature: options.feature,
     id: options.id,
@@ -95,7 +157,7 @@ export async function moveToTrash(
   await r
     .pipeline()
     .set(entryKey(options.feature, options.id), JSON.stringify(entry), {
-      ex: TTL_SECONDS,
+      ex: ttl,
     })
     .zadd(GLOBAL_INDEX, {
       score: at,
@@ -118,6 +180,8 @@ export async function moveManyToTrash(
 ): Promise<void> {
   if (!entries.length) return;
   const at = Date.now();
+  const days = await getTrashRetentionDays(r);
+  const ttl = ttlSecondsForDays(days);
   const p = r.pipeline();
   for (const opts of entries) {
     if (opts.payload === undefined) continue;
@@ -134,7 +198,7 @@ export async function moveManyToTrash(
       extraRecords: opts.extraRecords,
     };
     p.set(entryKey(opts.feature, opts.id), JSON.stringify(entry), {
-      ex: TTL_SECONDS,
+      ex: ttl,
     });
     p.zadd(GLOBAL_INDEX, {
       score: at,

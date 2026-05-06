@@ -1,8 +1,11 @@
 import Link from "next/link";
 import {
   Activity,
+  ArrowLeft,
+  Award,
   BarChart3,
   CalendarHeart,
+  Database,
   Download,
   Eye,
   HeartPulse,
@@ -15,6 +18,7 @@ import {
 } from "lucide-react";
 import { SummonButton } from "@/components/admin/summon-button";
 import { RestraintToggle } from "@/components/admin/restraint-toggle";
+import { getDeployInfo, type DeployInfo } from "@/app/actions/admin";
 
 const TOOLS = [
   {
@@ -89,12 +93,49 @@ const TOOLS = [
     description: "Edit relationship start + per-author birthdays.",
     Icon: CalendarHeart,
   },
+  {
+    href: "/admin/rewards",
+    title: "Rewards & obedience",
+    description: "Tier catalog, weights, streak threshold, multipliers.",
+    Icon: Award,
+  },
+  {
+    href: "/admin/redis",
+    title: "Redis inspector",
+    description: "Read-only probe by exact key. Type, TTL, capped preview.",
+    Icon: Database,
+  },
 ] as const;
 
-export default function AdminLandingPage() {
+function DeployFooter({ info }: { info: DeployInfo | null }) {
+  if (!info) return null;
+  const parts: string[] = [];
+  parts.push(`v${info.version}`);
+  if (info.commitShaShort) parts.push(`commit ${info.commitShaShort}`);
+  if (info.branch) parts.push(`branch ${info.branch}`);
+  parts.push(`env ${info.env}`);
+  const serverTime = new Date(info.serverTime).toISOString().replace("T", " ").slice(0, 19);
+  parts.push(`server ${serverTime}`);
+  return (
+    <p className="mt-8 text-center text-[10px] text-muted-foreground/60">
+      {parts.join(" · ")}
+    </p>
+  );
+}
+
+export default async function AdminLandingPage() {
+  const deploy = await getDeployInfo();
+  const info = deploy.info ?? null;
   return (
     <main className="mx-auto max-w-3xl p-4 pb-28 md:p-12 md:pb-32">
       <header className="mb-6">
+        <Link
+          href="/"
+          className="group mb-4 inline-flex items-center gap-2 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
+        >
+          <ArrowLeft className="h-4 w-4 transition-transform group-hover:-translate-x-1" />
+          Back
+        </Link>
         <h1 className="text-2xl font-bold tracking-tight">Admin</h1>
         <p className="mt-1 text-sm text-muted-foreground">
           Sir-only tooling. Server-side enforced; the routes redirect anyone else.
@@ -125,6 +166,8 @@ export default function AdminLandingPage() {
           </Link>
         ))}
       </div>
+
+      <DeployFooter info={info} />
     </main>
   );
 }

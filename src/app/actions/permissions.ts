@@ -10,6 +10,7 @@ import { logger } from "@/lib/logger";
 import { startOfCairoMonthMs } from "@/lib/cairo-time";
 import { moveToTrash, moveManyToTrash } from "@/lib/trash";
 import { assertWriteAllowed } from "@/lib/restraint";
+import { recordObedienceEvent } from "@/lib/obedience";
 import {
   PERMISSION_CATEGORIES,
   type PermissionCategory,
@@ -518,9 +519,31 @@ export async function createPermission(
     return { error: `Request too long (${MAX_BODY_LENGTH} chars max).` };
   }
 
+  // Persistent "asked-again" detection runs FIRST — independent of the
+  // TTL'd reask-block. We need to know about the hit even if the
+  // request gets rejected, so the obedience deduction (`-1` per re-ask
+  // attempt) fires either way. The block check happens after.
+  const bodyHash = bodyHashFor(body);
+  let wasReasked = false;
+  try {
+    const seen = await redis.sismember(DENIED_HASHES_KEY, bodyHash);
+    wasReasked = seen === 1;
+  } catch (error) {
+    logger.error("[permissions] Re-ask detection failed:", error);
+    // Fail open — just don't mark.
+  }
+  // Obedience: -1 per re-ask attempt. eventId is per-attempt (ts +
+  // hash) so persistent retries actually accumulate the penalty.
+  if (wasReasked) {
+    void recordObedienceEvent(
+      "Besho",
+      "permission_reasked",
+      `reask-${Date.now()}-${bodyHash}`,
+    );
+  }
+
   // Re-ask block — same body recently denied?
   try {
-    const bodyHash = bodyHashFor(body);
     const blockKey = reaskBlockKey(bodyHash);
     const blocked = await redis.get<string>(blockKey);
     if (blocked) {
@@ -533,20 +556,6 @@ export async function createPermission(
   } catch (error) {
     // Fail open on infra errors — better a duplicate than block a real ask.
     logger.error("[permissions] Re-ask block check failed:", error);
-  }
-
-  // Persistent "asked-again" detection — survives the cooldown window
-  // so Sir can spot persistence patterns even on re-asks that are
-  // technically in-bounds. Distinct from the block above: this just
-  // labels the request, never rejects.
-  let wasReasked = false;
-  try {
-    const hash = bodyHashFor(body);
-    const seen = await redis.sismember(DENIED_HASHES_KEY, hash);
-    wasReasked = seen === 1;
-  } catch (error) {
-    logger.error("[permissions] Re-ask detection failed:", error);
-    // Fail open — just don't mark.
   }
 
   let category: PermissionCategory | undefined;
@@ -739,9 +748,9 @@ export async function createPermission(
     // Auto-denials still set the re-ask block — same body shouldn't
     // re-fire the same rule on every retry. Also record the hash in
     // the persistent denied-hashes set so the next attempt (even after
-    // cooldown) gets the ↺ chip.
+    // cooldown) gets the ↺ chip. `bodyHash` is the function-scope
+    // value computed at the top of this action.
     if (matchedRule && matchedRule.decision === "denied") {
-      const bodyHash = bodyHashFor(body);
       pipeline.sadd(DENIED_HASHES_KEY, bodyHash);
       const cooldownHours =
         DENIAL_REASON_COOLDOWN_HOURS[matchedRule.denialReason ?? "default"];
@@ -753,6 +762,18 @@ export async function createPermission(
     }
 
     await pipeline.exec();
+
+    // Obedience: +1 for an approved permission (manual or auto). The
+    // manual-approve path is in `decidePermission`; the auto-approve
+    // case fires here.
+    if (matchedRule && matchedRule.decision === "approved") {
+      void recordObedienceEvent(
+        "Besho",
+        "permission_approved",
+        request.id,
+        requestedAt,
+      );
+    }
 
     const fcmExtras: string[] = [];
     if (price !== undefined) fcmExtras.push(`$${price}`);
@@ -932,6 +953,19 @@ export async function decidePermission(
     }
 
     await pipeline.exec();
+
+    // Obedience: +1 for manual approval. Auto-approve emits in
+    // createPermission. Re-decides also emit — Sir flipping deny→approve
+    // counts as a fresh approval. eventId = id, so a deliberate re-approve
+    // overwrites rather than double-credits.
+    if (decision === "approved") {
+      void recordObedienceEvent(
+        "Besho",
+        "permission_approved",
+        id,
+        decidedAt,
+      );
+    }
 
     const titleByDecision: Record<"approved" | "denied" | "queued", string> = {
       approved: "✓ Approved",

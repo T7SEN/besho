@@ -355,6 +355,92 @@ interface DeviceRecord {
 
 ---
 
+## Rewards & obedience (`/rewards`, `/admin/rewards`)
+
+Score-based reward system on top of `/ledger` (which stays as Sir's manual log). Score lives per Besho-week, drives a 5-tier ladder Sir authors, claim-and-deliver flow gated on Sir.
+
+| Key                                          | Type   | TTL  | Description                                                                          |
+| -------------------------------------------- | ------ | ---- | ------------------------------------------------------------------------------------ |
+| `obedience:weights`                          | JSON   | none | `Record<ObedienceEventType, number>` — Sir-tunable points per event. Defaults seeded |
+| `obedience:streak-threshold`                 | INT    | none | Displayed-score floor for "high-score week"; default 80                              |
+| `obedience:multipliers`                      | JSON   | none | Number array — index = consecutive prior high-score weeks; default `[1, 1.1, 1.2, 1.3]` |
+| `obedience:events:{author}:{weekKey}`        | ZSET   | none | Member `{eventType}:{eventId}`, score = points. Member dedup makes retries idempotent |
+| `obedience:streak:{author}`                  | INT    | none | Consecutive prior high-score weeks (entering current week)                           |
+| `obedience:multiplier:{author}:{weekKey}`    | FLOAT  | none | Frozen multiplier captured at finalize                                               |
+| `obedience:finalized:{author}:{weekKey}`     | "1"    | none | Sentinel — set by `finalizeWeek` to make idempotent                                  |
+| `obedience:tier-notified:{author}:{weekKey}` | INT    | none | Highest tier-threshold already FCM'd this week — prevents repeat unlock notifications |
+| `obedience:audit:{author}:{weekKey}`         | ZSET   | none | Per-emit audit. Score = ms ts; member = `{type}:{eventId}` (matches the events ZSET so a join recovers points). Updated to latest ts on retry |
+| `rewards:tiers`                              | JSON   | none | Sir-authored tier catalog — fixed 5 entries, ascending thresholds                    |
+| `reward:claim:{id}`                          | JSON   | none | One claim record (one per Besho-week)                                                |
+| `rewards:claims:by-author:{author}`          | ZSET   | none | Claim ids scored by `requestedAt` — own history                                      |
+| `rewards:claims:pending`                     | ZSET   | none | Pending claims awaiting Sir's deliver/deny                                           |
+| `rewards:claims:by-week:{author}:{weekKey}`  | STRING | none | Single claim id per (author, weekKey) — enforces 1-claim-per-week                    |
+
+`weekKey` is the Sunday `YYYY-MM-DD` from `currentReviewWeekDate(now)`; `/rewards` aligns with `/review` weeks.
+
+### Score model
+
+| Default weight | Event                                            | Source                                                              |
+| -------------- | ------------------------------------------------ | ------------------------------------------------------------------- |
+| +10            | `task_on_time` — submitted on/before deadline    | `tasks.approveTask` (ts = `submittedAt`)                            |
+| +4             | `task_late` — submitted after deadline           | same path; flag flipped when `submittedAt > deadline`               |
+| −4             | `task_missed` — past deadline, never completed   | `/api/cron/obedience-sweep`                                         |
+| +5             | `ritual_on_time` — Besho-owned ritual in window  | `rituals.submitOccurrence`                                          |
+| −3             | `ritual_missed` — daily/weekly window closed     | `/api/cron/obedience-sweep` (every_n_days skipped, by design)       |
+| +3             | `rule_acked` — within `acknowledgeDeadline`      | `rules.acknowledgeRule`                                             |
+| −2             | `rule_unacked` — past deadline, still pending    | `/api/cron/obedience-sweep`                                         |
+| +1             | `permission_approved` — manual or auto-approve   | `permissions.decidePermission`, `permissions.createPermission` (auto path) |
+| −1             | `permission_reasked` — `denied-hashes` hit       | `permissions.createPermission`, fired per attempt                   |
+| +1             | `mood_checkin` — once per day, Besho only        | `mood.submitMood`. State submission is intentionally NOT scored.    |
+| −10            | `restraint_engaged` — off → on transition only   | `admin.setRestraintState`                                           |
+| variable       | `manual_adjust` — Sir-supplied points + reason   | `admin.adminAdjustScore` (Sir-only, both authors target)            |
+
+`recordObedienceEvent` is best-effort — failures never break the calling write path. Member `{type}:{eventId}` makes retries idempotent (ZADD overwrites the score).
+
+### Multiplier + tier math
+
+- Displayed score = `round(rawScore * multiplier)`. Multiplier comes from `multiplierForStreak(streakEntering, multipliers[])`. Past weeks use the frozen multiplier captured at finalize.
+- Unlocked tier = highest tier with `threshold ≤ displayedScore`.
+- Claim window: only the immediately prior week is claimable. Older lapses. `rewards:claims:by-week:*` enforces 1 claim per week.
+
+### Finalization
+
+`finalizeWeek(author, weekKey)` is idempotent — runs once via the sentinel. It:
+
+1. Computes the week score (events × current multiplier).
+2. Bumps `obedience:streak:{author}` if displayed ≥ threshold; resets to 0 otherwise.
+3. Stores `obedience:multiplier:{author}:{weekKey}` (frozen).
+4. Sets `obedience:finalized:{author}:{weekKey}` sentinel.
+5. Fires a recap FCM to **both authors** (`📊 Week wrapped — {label}`, body carries score + tier + multiplier + streak fragment). Best-effort — FCM failure does not roll back the finalize.
+
+Driven by `/api/cron/obedience-sweep` daily, with `catchUpFinalizations` (4-week walk-back) as a robustness fallback when reading `/rewards` finds an unfinalized prior week.
+
+### Tier-unlock notifications
+
+`recordObedienceEvent` fires `maybeNotifyTierUnlock(author, weekKey)` after every **positive** emit (points > 0). The helper compares the current unlocked tier's threshold to the value stored at `obedience:tier-notified:{author}:{weekKey}` and, if higher, sends Besho an FCM (`🏆 {tier.name} unlocked`) and updates the sentinel. Negative emits (and Sir-targeted emits) skip the check — there is no notification for tier-DROP, and Sir is not scored.
+
+### Reward emoji
+
+`RewardItem` carries an optional `emoji` field (≤8 chars to allow compound emoji). The emoji is **snapshotted at claim time** onto `RewardClaim.rewardEmoji`, so renames/deletes in the catalog don't rewrite history.
+
+### Manual adjustment
+
+`admin.adminAdjustScore({ author, points, reason, weekKey? })` lets Sir grant ad-hoc obedience points outside the canonical event types. Lands as a `manual_adjust` ZSET member with the supplied points value. The `reason` string is **not** stored on the event — it lives in the activity log via `logger.interaction`. `manual_adjust` is excluded from the weights editor in `/admin/rewards` (each emit supplies its points value); the stored `obedience:weights.manual_adjust` is always 0 and unused.
+
+---
+
+## Trash retention
+
+Default 7 days. Sir-editable via `trash:retention-days` (STRING int, range 1–90). Read at every `moveToTrash` / `moveManyToTrash` call through the 5s in-process cache in `@/lib/trash`. Changing the value affects **only future deletions** — Redis TTLs are set at SET time and not recomputed retroactively.
+
+| Key                      | Type   | Description                                                |
+| ------------------------ | ------ | ---------------------------------------------------------- |
+| `trash:retention-days`   | INT    | Sir-set TTL for trash entries (1-90 days). Default 7.      |
+
+UI: `/admin/trash` carries a "Retention (days)" dial at the top of the page.
+
+---
+
 ## Migration Sentinels
 
 | Key                        | Purpose                                                       |
@@ -383,6 +469,9 @@ Add a sentinel for any back-fill. Idempotency matters because every cold-start c
 - **Skipping `assertWriteAllowed` on a new Besho-writable action.** Every Besho-write entry point checks restraint. There is no middleware; the guard is per-action by design. Skipping it gives Besho a back-door around the lock.
 - **Logging the submitted passcode in `auth:failures`.** The record stores `passcodeLen` only. Even on a 2-user app with fixed passcodes, never write the value — the export tool dumps every key.
 - **Re-reading `mode:restraint:Besho` directly inside an action.** Use `assertWriteAllowed`; it caches and centralizes the rule (e.g., Sir always passes).
+- **Calling `recordObedienceEvent` from non-feature code.** It belongs at the natural action site (e.g. `tasks.approveTask`, `rules.acknowledgeRule`). Don't call it from UI code, components, or hooks. The cron sweep (`/api/cron/obedience-sweep`) owns the missed-event emissions; don't duplicate them in feature code.
+- **Bypassing `assertWriteAllowed` in `claimReward`.** Claiming is a Besho-write; the restraint guard applies regardless of intuition. Same per-action pattern as the rest of the codebase.
+- **Hard-deleting reward claims.** Claims are append-only audit history. There is no `delete*` action exposed; don't add one. If admin cleanup is ever needed, route through `/admin/trash`-style soft-delete first.
 
 ---
 
@@ -411,4 +500,8 @@ Add a sentinel for any back-fill. Idempotency matters because every cold-start c
 - `src/lib/device-id.ts` — `getOrCreateDeviceId`, `buildFingerprint`
 - `src/components/device-tracker.tsx` — mounted once in `src/app/layout.tsx` after `BiometricGate`
 - `src/lib/restraint.ts` — `assertWriteAllowed`, `isRestrained`, `setRestraintRaw`, `readRestraintRaw`
-- `src/app/actions/admin.ts` — `getStats`, `getHealthSnapshot`, `repairIndexes`, `getActivityHeatmap`, `adminSetMoodForAuthor`, `adminClearMoodForAuthor`, `getRelationshipDates`, `setRelationshipDates`, `getAuthFailures`, `clearAuthFailures`, `getRestraintState`, `setRestraintState`
+- `src/app/actions/admin.ts` — `getStats`, `getHealthSnapshot`, `repairIndexes`, `getActivityHeatmap`, `adminSetMoodForAuthor`, `adminClearMoodForAuthor`, `getRelationshipDates`, `setRelationshipDates`, `getAuthFailures`, `clearAuthFailures`, `getRestraintState`, `setRestraintState`, `getRewardTiers`, `setRewardTiers`, `getObedienceWeights`, `setObedienceWeights`, `getStreakSettings`, `setStreakSettings`, `recomputeWeek`, `getObedienceAdminSnapshot`, `adminSetStreakRaw`, `adminAdjustScore`, `getObedienceEventLog`, `inspectRedisKey`, `getDeployInfo`, `getTrashRetention`, `setTrashRetention`
+- `src/lib/obedience.ts` — `recordObedienceEvent`, `recordObedienceEventForWeek`, `getWeekState`, `computeWeekScore`, `currentWeekKey`, `finalizeWeek`, `catchUpFinalizations`, `getEventLog`, weight/tier/streak/multiplier read+write helpers (5s in-process cache mirroring `restraint.ts`)
+- `src/lib/reward-types.ts` — `ObedienceEventType`, `RewardTier`, `RewardItem`, `RewardClaim`, `ObedienceWeights`, `ObedienceWeekState`, default seeds + validation bounds
+- `src/app/actions/rewards.ts` — `getRewardsBundle`, `getRewardsHistory`, `claimReward`, `deliverClaim`, `denyClaim`, `listPendingClaims`, `listClaimsForAuthor`, `previewMultiplierForStreak`
+- `src/app/api/cron/obedience-sweep/route.ts` — daily missed-event sweep + week finalization; bearer-auth, no `vercel.json`

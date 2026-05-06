@@ -12,6 +12,7 @@ import {
   BookOpen,
   CalendarClock,
   CheckSquare,
+  Gift,
   Hand,
   ScrollText,
   Shield,
@@ -72,6 +73,7 @@ const MORE_ITEMS: NavItem[] = [
   },
   { name: "Timeline", href: "/timeline", icon: CalendarClock },
   { name: "Ledger", href: "/ledger", icon: Award },
+  { name: "Rewards", href: "/rewards", icon: Gift },
   { name: "Review", href: "/review", icon: MessageSquareQuote },
   { name: "Protocol", href: "/protocol", icon: BookOpen },
 ];

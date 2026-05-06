@@ -8,6 +8,7 @@ import { addDaysCairo, todayKeyCairo } from "@/lib/cairo-time";
 import { sendNotification } from "@/app/actions/notifications";
 import { logger } from "@/lib/logger";
 import { assertWriteAllowed } from "@/lib/restraint";
+import { recordObedienceEvent } from "@/lib/obedience";
 
 export interface MoodData {
   myMood: string | null;
@@ -114,6 +115,14 @@ export async function submitMood(
     const today = todayKeyCairo();
 
     await redis.set(moodKey(today, author), trimmed);
+
+    // Obedience: +1 mood check-in per day (Besho only). Member-key
+    // dedup by date — multiple mood updates on the same day still
+    // credit only once. State submissions are intentionally NOT scored
+    // (per user spec: state remains a free expressive surface).
+    if (author === "Besho") {
+      void recordObedienceEvent("Besho", "mood_checkin", `mood:${today}`);
+    }
 
     logger.interaction("[mood] Mood set", { author, mood: trimmed });
     return { success: true };

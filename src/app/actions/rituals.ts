@@ -9,6 +9,7 @@ import { sendNotification } from "@/app/actions/notifications";
 import { logger } from "@/lib/logger";
 import { moveToTrash, moveManyToTrash } from "@/lib/trash";
 import { assertWriteAllowed } from "@/lib/restraint";
+import { recordObedienceEvent } from "@/lib/obedience";
 import {
   HISTORY_DOT_ROW_DAYS,
   MAX_EVERY_N_DAYS,
@@ -655,6 +656,20 @@ export async function submitOccurrence(
       writePipeline.set(longestStreakKey(ritualId), String(newStreak));
     }
     await writePipeline.exec();
+
+    // Obedience emit — Besho-owned rituals only. Submitting INSIDE the
+    // window means on-time (the action rejects out-of-window submits
+    // already, so reaching here is sufficient). Member-key dedup uses
+    // `${ritualId}:${dateKey}` so retries within the same window
+    // overwrite rather than double-credit.
+    if (ritual.owner === "Besho") {
+      void recordObedienceEvent(
+        "Besho",
+        "ritual_on_time",
+        `${ritualId}:${dateKey}`,
+        now,
+      );
+    }
 
     const partner: RitualOwner = session.author === "T7SEN" ? "Besho" : "T7SEN";
     await sendNotification(partner, {

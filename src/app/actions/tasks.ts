@@ -8,6 +8,7 @@ import { sendNotification } from "@/app/actions/notifications";
 import { logger } from "@/lib/logger";
 import { moveToTrash, moveManyToTrash } from "@/lib/trash";
 import { assertWriteAllowed } from "@/lib/restraint";
+import { recordObedienceEvent } from "@/lib/obedience";
 
 export type TaskPriority = "low" | "medium" | "high" | "urgent";
 export type TaskStatus = "pending" | "in_review" | "completed";
@@ -184,6 +185,19 @@ export async function approveTask(
     };
 
     await redis.set(taskKey(id), updated);
+
+    // Obedience emit. Score lands in the week the work was DONE
+    // (submittedAt), not the week Sir got around to approving. On-time
+    // is computed against the original deadline.
+    const submittedAt = existing.submittedAt ?? updated.completedAt ?? Date.now();
+    const onTime =
+      typeof existing.deadline !== "number" || submittedAt <= existing.deadline;
+    void recordObedienceEvent(
+      "Besho",
+      onTime ? "task_on_time" : "task_late",
+      existing.id,
+      submittedAt,
+    );
 
     // Notify Besho that her task was approved
     await sendNotification("Besho", {

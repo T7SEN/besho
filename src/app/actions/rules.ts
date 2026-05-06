@@ -9,6 +9,7 @@ import { sendNotification } from "@/app/actions/notifications";
 import { logger } from "@/lib/logger";
 import { moveToTrash, moveManyToTrash } from "@/lib/trash";
 import { assertWriteAllowed } from "@/lib/restraint";
+import { recordObedienceEvent } from "@/lib/obedience";
 
 export type RuleStatus = "pending" | "active" | "completed";
 
@@ -121,12 +122,23 @@ export async function acknowledgeRule(
     if (existing.status !== "pending")
       return { error: "Rule is not pending acknowledgement." };
 
+    const ackedAt = Date.now();
     const updated: Rule = {
       ...existing,
       status: "active",
-      acknowledgedAt: Date.now(),
+      acknowledgedAt: ackedAt,
     };
     await redis.set(ruleKey(id), updated);
+
+    // Obedience emit — only credit when within the deadline. Late acks
+    // don't count positively (and the cron will emit `rule_unacked` if
+    // unacked at week close).
+    const withinDeadline =
+      typeof existing.acknowledgeDeadline !== "number" ||
+      ackedAt <= existing.acknowledgeDeadline;
+    if (withinDeadline) {
+      void recordObedienceEvent("Besho", "rule_acked", existing.id, ackedAt);
+    }
 
     await sendNotification("T7SEN", {
       title: "✓ Rule Acknowledged",

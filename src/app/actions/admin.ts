@@ -17,6 +17,10 @@ import {
   restoreFromTrash,
   deleteTrashEntry,
   purgeTrash,
+  getTrashRetentionDays,
+  setTrashRetentionDays,
+  MIN_TRASH_RETENTION_DAYS,
+  MAX_TRASH_RETENTION_DAYS,
   type TrashEntry,
   type TrashFeature,
 } from "@/lib/trash";
@@ -29,6 +33,42 @@ import {
 import { todayKeyCairo } from "@/lib/cairo-time";
 import { sendNotification } from "./notifications";
 import type { AuthFailureRecord } from "./auth";
+import {
+  recordObedienceEvent,
+  recordObedienceEventForWeek,
+  getTiers as readTiers,
+  setTiersRaw,
+  getWeights as readObedienceWeights,
+  setWeightsRaw,
+  getStreakThreshold as readStreakThreshold,
+  setStreakThresholdRaw,
+  getMultipliers as readMultipliers,
+  setMultipliersRaw,
+  getStreak,
+  setStreakRaw,
+  finalizeWeek,
+  computeWeekScore,
+  currentWeekKey,
+  getEventLog,
+  type ObedienceAuditEntry,
+} from "@/lib/obedience";
+import {
+  type RewardTier,
+  type RewardItem,
+  type ObedienceWeights,
+  REWARD_TIER_COUNT,
+  TUNABLE_EVENT_TYPES,
+  REWARD_LABEL_MAX,
+  REWARD_BODY_MAX,
+  REWARD_EMOJI_MAX,
+  TIER_NAME_MAX,
+  MAX_REWARDS_PER_TIER,
+  MAX_TIER_THRESHOLD,
+  MAX_MULTIPLIER,
+  MANUAL_ADJUST_MIN,
+  MANUAL_ADJUST_MAX,
+  MANUAL_ADJUST_REASON_MAX,
+} from "@/lib/reward-types";
 
 const redis = new Redis({
   url: process.env.KV_REST_API_URL!,
@@ -537,7 +577,21 @@ export async function setRestraintState(
   const guard = await requireSir();
   if (!guard.ok) return { error: guard.error };
   try {
+    const previous = await readRestraintRaw();
     await setRestraintRaw(on);
+
+    // Obedience: -10 per restraint engagement (off → on transition).
+    // Lifting (on → off) does NOT credit — that's not earned. Each
+    // engagement gets a unique eventId so re-engagements within the
+    // same week stack the penalty.
+    if (on && !previous) {
+      void recordObedienceEvent(
+        "Besho",
+        "restraint_engaged",
+        crypto.randomUUID(),
+      );
+    }
+
     logger.interaction("[admin] restraint toggled", {
       on,
       by: guard.session.author,
@@ -1565,6 +1619,48 @@ export async function deleteTrashEntryAction(
   }
 }
 
+export interface TrashRetentionResult {
+  days?: number;
+  min?: number;
+  max?: number;
+  error?: string;
+}
+
+export async function getTrashRetention(): Promise<TrashRetentionResult> {
+  const guard = await requireSir();
+  if (!guard.ok) return { error: guard.error };
+  try {
+    const days = await getTrashRetentionDays(redis);
+    return {
+      days,
+      min: MIN_TRASH_RETENTION_DAYS,
+      max: MAX_TRASH_RETENTION_DAYS,
+    };
+  } catch (err) {
+    logger.error("[admin] retention read failed", err);
+    return { error: "Read failed." };
+  }
+}
+
+export async function setTrashRetention(
+  days: number,
+): Promise<{ success?: boolean; error?: string; days?: number }> {
+  const guard = await requireSir();
+  if (!guard.ok) return { error: guard.error };
+  try {
+    await setTrashRetentionDays(redis, days);
+    logger.interaction("[admin] trash retention updated", {
+      by: guard.session.author,
+      days,
+    });
+    revalidatePath("/admin/trash");
+    return { success: true, days: Math.floor(Number(days)) };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Save failed.";
+    return { error: msg };
+  }
+}
+
 export async function purgeTrashAction(
   feature?: TrashFeature,
 ): Promise<{ success?: boolean; error?: string; deletedCount?: number }> {
@@ -1586,3 +1682,688 @@ export async function purgeTrashAction(
     return { error: "Purge failed." };
   }
 }
+
+// ──────────────────────────────────────────────────────────────────
+// Rewards / obedience tunables — Sir-only catalog + weight editor.
+// ──────────────────────────────────────────────────────────────────
+
+export interface RewardTiersResult {
+  tiers?: RewardTier[];
+  error?: string;
+}
+
+export async function getRewardTiers(): Promise<RewardTiersResult> {
+  const guard = await requireSir();
+  if (!guard.ok) return { error: guard.error };
+  try {
+    return { tiers: await readTiers() };
+  } catch (err) {
+    logger.error("[admin] tiers read failed", err);
+    return { error: "Failed to read tiers." };
+  }
+}
+
+function validateTiers(tiers: unknown): RewardTier[] | { error: string } {
+  if (!Array.isArray(tiers)) return { error: "Tiers must be an array." };
+  if (tiers.length !== REWARD_TIER_COUNT) {
+    return {
+      error: `Tier count is fixed at ${REWARD_TIER_COUNT}.`,
+    };
+  }
+  const seenTierIds = new Set<string>();
+  let lastThreshold = -Infinity;
+  const out: RewardTier[] = [];
+  for (let i = 0; i < tiers.length; i++) {
+    const t = tiers[i] as Partial<RewardTier> | null | undefined;
+    if (!t || typeof t !== "object") {
+      return { error: `Tier ${i + 1} is malformed.` };
+    }
+    const id = typeof t.id === "string" ? t.id.trim() : "";
+    if (!id) return { error: `Tier ${i + 1} is missing an id.` };
+    if (seenTierIds.has(id)) {
+      return { error: `Duplicate tier id: ${id}.` };
+    }
+    seenTierIds.add(id);
+
+    const name = typeof t.name === "string" ? t.name.trim() : "";
+    if (!name) return { error: `Tier ${i + 1} needs a name.` };
+    if (name.length > TIER_NAME_MAX) {
+      return { error: `Tier name too long (max ${TIER_NAME_MAX}).` };
+    }
+
+    const threshold = Number(t.threshold);
+    if (!Number.isFinite(threshold) || threshold < 0 || threshold > MAX_TIER_THRESHOLD) {
+      return {
+        error: `Tier ${i + 1} threshold must be 0-${MAX_TIER_THRESHOLD}.`,
+      };
+    }
+    if (threshold < lastThreshold) {
+      return { error: "Tier thresholds must be ascending." };
+    }
+    lastThreshold = threshold;
+
+    if (!Array.isArray(t.rewards)) {
+      return { error: `Tier ${i + 1} rewards must be an array.` };
+    }
+    if (t.rewards.length > MAX_REWARDS_PER_TIER) {
+      return {
+        error: `Too many rewards in ${name} (max ${MAX_REWARDS_PER_TIER}).`,
+      };
+    }
+    const seenRewardIds = new Set<string>();
+    const rewards: RewardItem[] = [];
+    for (let j = 0; j < t.rewards.length; j++) {
+      const r = t.rewards[j] as Partial<RewardItem> | null | undefined;
+      if (!r || typeof r !== "object") {
+        return { error: `Reward ${j + 1} in ${name} is malformed.` };
+      }
+      const rid = typeof r.id === "string" ? r.id.trim() : "";
+      if (!rid) {
+        return { error: `Reward ${j + 1} in ${name} is missing an id.` };
+      }
+      if (seenRewardIds.has(rid)) {
+        return { error: `Duplicate reward id in ${name}: ${rid}.` };
+      }
+      seenRewardIds.add(rid);
+
+      const label = typeof r.label === "string" ? r.label.trim() : "";
+      if (!label) {
+        return { error: `Reward ${j + 1} in ${name} needs a label.` };
+      }
+      if (label.length > REWARD_LABEL_MAX) {
+        return {
+          error: `Reward label too long (max ${REWARD_LABEL_MAX}).`,
+        };
+      }
+      const body = typeof r.body === "string" ? r.body.trim() : "";
+      if (body.length > REWARD_BODY_MAX) {
+        return {
+          error: `Reward body too long (max ${REWARD_BODY_MAX}).`,
+        };
+      }
+      const emoji = typeof r.emoji === "string" ? r.emoji.trim() : "";
+      if (emoji.length > REWARD_EMOJI_MAX) {
+        return {
+          error: `Reward emoji too long (max ${REWARD_EMOJI_MAX} chars).`,
+        };
+      }
+      rewards.push({
+        id: rid,
+        label,
+        ...(body.length > 0 && { body }),
+        ...(emoji.length > 0 && { emoji }),
+      });
+    }
+
+    out.push({ id, name, threshold, rewards });
+  }
+  return out;
+}
+
+export async function setRewardTiers(
+  tiers: RewardTier[],
+): Promise<{ success?: boolean; error?: string }> {
+  const guard = await requireSir();
+  if (!guard.ok) return { error: guard.error };
+
+  const validated = validateTiers(tiers);
+  if ("error" in validated) return { error: validated.error };
+
+  try {
+    await setTiersRaw(validated);
+    logger.interaction("[admin] reward tiers updated", {
+      by: guard.session.author,
+      count: validated.length,
+    });
+    revalidatePath("/rewards");
+    revalidatePath("/admin/rewards");
+    return { success: true };
+  } catch (err) {
+    logger.error("[admin] tiers write failed", err);
+    return { error: "Save failed." };
+  }
+}
+
+export interface ObedienceWeightsResult {
+  weights?: ObedienceWeights;
+  error?: string;
+}
+
+export async function getObedienceWeights(): Promise<ObedienceWeightsResult> {
+  const guard = await requireSir();
+  if (!guard.ok) return { error: guard.error };
+  try {
+    return { weights: await readObedienceWeights() };
+  } catch (err) {
+    logger.error("[admin] weights read failed", err);
+    return { error: "Failed to read weights." };
+  }
+}
+
+export async function setObedienceWeights(
+  weights: ObedienceWeights,
+): Promise<{ success?: boolean; error?: string }> {
+  const guard = await requireSir();
+  if (!guard.ok) return { error: guard.error };
+  if (!weights || typeof weights !== "object") {
+    return { error: "Invalid weights." };
+  }
+  const sanitized = {} as ObedienceWeights;
+  for (const type of TUNABLE_EVENT_TYPES) {
+    const v = Number((weights as Record<string, unknown>)[type]);
+    if (!Number.isFinite(v) || v < -100 || v > 100) {
+      return { error: `Weight for ${type} must be -100..100.` };
+    }
+    sanitized[type] = Math.round(v);
+  }
+  // manual_adjust is non-tunable; the stored default is 0 and unused
+  // (every emit supplies its points value explicitly).
+  sanitized.manual_adjust = 0;
+  try {
+    await setWeightsRaw(sanitized);
+    logger.interaction("[admin] obedience weights updated", {
+      by: guard.session.author,
+    });
+    revalidatePath("/admin/rewards");
+    return { success: true };
+  } catch (err) {
+    logger.error("[admin] weights write failed", err);
+    return { error: "Save failed." };
+  }
+}
+
+export interface StreakSettingsResult {
+  threshold?: number;
+  multipliers?: readonly number[];
+  error?: string;
+}
+
+export async function getStreakSettings(): Promise<StreakSettingsResult> {
+  const guard = await requireSir();
+  if (!guard.ok) return { error: guard.error };
+  try {
+    const [threshold, multipliers] = await Promise.all([
+      readStreakThreshold(),
+      readMultipliers(),
+    ]);
+    return { threshold, multipliers };
+  } catch (err) {
+    logger.error("[admin] streak settings read failed", err);
+    return { error: "Failed to read streak settings." };
+  }
+}
+
+export async function setStreakSettings(
+  threshold: number,
+  multipliers: number[],
+): Promise<{ success?: boolean; error?: string }> {
+  const guard = await requireSir();
+  if (!guard.ok) return { error: guard.error };
+  if (
+    !Number.isFinite(threshold) ||
+    threshold < 0 ||
+    threshold > MAX_TIER_THRESHOLD
+  ) {
+    return { error: `Threshold must be 0-${MAX_TIER_THRESHOLD}.` };
+  }
+  if (!Array.isArray(multipliers) || multipliers.length === 0) {
+    return { error: "Multipliers must be a non-empty array." };
+  }
+  if (multipliers.length > 10) {
+    return { error: "Too many multiplier steps (max 10)." };
+  }
+  for (const m of multipliers) {
+    if (!Number.isFinite(m) || m < 0 || m > MAX_MULTIPLIER) {
+      return { error: `Each multiplier must be 0-${MAX_MULTIPLIER}.` };
+    }
+  }
+  try {
+    await Promise.all([
+      setStreakThresholdRaw(Math.round(threshold)),
+      setMultipliersRaw(multipliers.map((m) => Number(m.toFixed(2)))),
+    ]);
+    logger.interaction("[admin] streak settings updated", {
+      by: guard.session.author,
+      threshold,
+      multipliers,
+    });
+    revalidatePath("/admin/rewards");
+    return { success: true };
+  } catch (err) {
+    logger.error("[admin] streak settings write failed", err);
+    return { error: "Save failed." };
+  }
+}
+
+export interface RecomputeWeekResult {
+  success?: boolean;
+  error?: string;
+  finalized?: boolean;
+  reason?: string;
+  displayedScore?: number;
+}
+
+export async function recomputeWeek(
+  author: Author,
+  weekKey: string,
+): Promise<RecomputeWeekResult> {
+  const guard = await requireSir();
+  if (!guard.ok) return { error: guard.error };
+  if (author !== "T7SEN" && author !== "Besho") {
+    return { error: "Invalid author." };
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(weekKey)) {
+    return { error: "Invalid week key." };
+  }
+  try {
+    const result = await finalizeWeek(author, weekKey);
+    logger.interaction("[admin] week recomputed", {
+      by: guard.session.author,
+      author,
+      weekKey,
+      ...result,
+    });
+    revalidatePath("/rewards");
+    revalidatePath("/admin/rewards");
+    return { success: true, ...result };
+  } catch (err) {
+    logger.error("[admin] recompute failed", err);
+    return { error: "Recompute failed." };
+  }
+}
+
+export interface ObedienceAdminSnapshot {
+  besho: {
+    currentWeek: { weekKey: string; rawScore: number; displayedScore: number };
+    streak: number;
+  };
+  weights: ObedienceWeights;
+  tiers: RewardTier[];
+  streakThreshold: number;
+  multipliers: readonly number[];
+  generatedAt: number;
+}
+
+export async function getObedienceAdminSnapshot(): Promise<{
+  snapshot?: ObedienceAdminSnapshot;
+  error?: string;
+}> {
+  const guard = await requireSir();
+  if (!guard.ok) return { error: guard.error };
+  try {
+    const [tiers, weights, threshold, mults, streak] = await Promise.all([
+      readTiers(),
+      readObedienceWeights(),
+      readStreakThreshold(),
+      readMultipliers(),
+      getStreak("Besho"),
+    ]);
+    const weekKey = currentWeekKey();
+    const score = await computeWeekScore("Besho", weekKey);
+    return {
+      snapshot: {
+        besho: {
+          currentWeek: {
+            weekKey,
+            rawScore: score.rawScore,
+            displayedScore: score.displayedScore,
+          },
+          streak,
+        },
+        weights,
+        tiers,
+        streakThreshold: threshold,
+        multipliers: mults,
+        generatedAt: Date.now(),
+      },
+    };
+  } catch (err) {
+    logger.error("[admin] obedience snapshot failed", err);
+    return { error: "Snapshot failed." };
+  }
+}
+
+export async function adminSetStreakRaw(
+  author: Author,
+  value: number,
+): Promise<{ success?: boolean; error?: string }> {
+  const guard = await requireSir();
+  if (!guard.ok) return { error: guard.error };
+  if (author !== "T7SEN" && author !== "Besho") {
+    return { error: "Invalid author." };
+  }
+  const n = Math.max(0, Math.floor(Number(value)));
+  if (!Number.isFinite(n)) return { error: "Invalid streak value." };
+  try {
+    await setStreakRaw(author, n);
+    logger.interaction("[admin] streak override", {
+      by: guard.session.author,
+      author,
+      value: n,
+    });
+    revalidatePath("/admin/rewards");
+    revalidatePath("/rewards");
+    return { success: true };
+  } catch (err) {
+    logger.error("[admin] streak override failed", err);
+    return { error: "Override failed." };
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Manual obedience adjustment — Sir grants ad-hoc points or penalty.
+// Lands as a `manual_adjust` event with the supplied points value.
+// ──────────────────────────────────────────────────────────────────
+
+export interface AdjustScoreArgs {
+  author: Author;
+  points: number;
+  reason: string;
+  /** Optional override; defaults to the current week. */
+  weekKey?: string;
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Deploy info — version, commit, branch, env, server time.
+// Vercel injects VERCEL_GIT_* env vars at build; local dev gets nulls.
+// ──────────────────────────────────────────────────────────────────
+
+export interface DeployInfo {
+  version: string;
+  commitSha: string | null;
+  /** Short SHA — first 7 chars of `commitSha`, or null. */
+  commitShaShort: string | null;
+  branch: string | null;
+  env: string;
+  deployId: string | null;
+  serverTime: number;
+}
+
+export async function getDeployInfo(): Promise<{
+  info?: DeployInfo;
+  error?: string;
+}> {
+  const guard = await requireSir();
+  if (!guard.ok) return { error: guard.error };
+  // Imported lazily so a malformed package.json never blocks the bundle.
+  const pkg = (await import("../../../package.json")) as {
+    version?: string;
+  };
+  const sha = process.env.VERCEL_GIT_COMMIT_SHA ?? null;
+  return {
+    info: {
+      version: pkg.version ?? "0.0.0",
+      commitSha: sha,
+      commitShaShort: sha ? sha.slice(0, 7) : null,
+      branch: process.env.VERCEL_GIT_COMMIT_REF ?? null,
+      env:
+        process.env.VERCEL_ENV ??
+        process.env.NODE_ENV ??
+        "unknown",
+      deployId: process.env.VERCEL_DEPLOYMENT_ID ?? null,
+      serverTime: Date.now(),
+    },
+  };
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Redis key inspector — read-only probe by exact key.
+// ──────────────────────────────────────────────────────────────────
+
+export type RedisKeyType =
+  | "string"
+  | "list"
+  | "set"
+  | "zset"
+  | "hash"
+  | "none";
+
+export interface RedisInspectResult {
+  key?: string;
+  type?: RedisKeyType;
+  exists?: boolean;
+  /** Seconds; -1 = no TTL, -2 = key missing, ≥0 = remaining seconds. */
+  ttl?: number;
+  /** Length for collections, character length for strings. */
+  size?: number;
+  /** Truncation flag — `preview` may be a partial view of a large value. */
+  truncated?: boolean;
+  /** Type-specific preview shape. */
+  stringValue?: string;
+  listMembers?: string[];
+  setMembers?: string[];
+  zsetMembers?: { member: string; score: number }[];
+  hashEntries?: Record<string, string>;
+  error?: string;
+}
+
+const REDIS_INSPECT_PREVIEW_LIMIT = 200;
+const REDIS_INSPECT_STRING_LIMIT = 4000;
+
+export async function inspectRedisKey(
+  key: string,
+): Promise<RedisInspectResult> {
+  const guard = await requireSir();
+  if (!guard.ok) return { error: guard.error };
+  const trimmed = (key ?? "").trim();
+  if (!trimmed) return { error: "Key is required." };
+  if (trimmed.length > 500) return { error: "Key too long." };
+
+  try {
+    const [type, ttl] = await Promise.all([
+      redis.type(trimmed) as Promise<RedisKeyType>,
+      redis.ttl(trimmed) as Promise<number>,
+    ]);
+    if (type === "none") {
+      return {
+        key: trimmed,
+        type,
+        exists: false,
+        ttl: typeof ttl === "number" ? ttl : -2,
+      };
+    }
+    const base: RedisInspectResult = {
+      key: trimmed,
+      type,
+      exists: true,
+      ttl: typeof ttl === "number" ? ttl : -1,
+    };
+
+    if (type === "string") {
+      const v = await redis.get<unknown>(trimmed);
+      const s =
+        v == null
+          ? ""
+          : typeof v === "string"
+            ? v
+            : JSON.stringify(v);
+      const truncated = s.length > REDIS_INSPECT_STRING_LIMIT;
+      return {
+        ...base,
+        size: s.length,
+        truncated,
+        stringValue: truncated ? s.slice(0, REDIS_INSPECT_STRING_LIMIT) : s,
+      };
+    }
+    if (type === "list") {
+      const len = (await redis.llen(trimmed)) ?? 0;
+      const members =
+        ((await redis.lrange<string>(
+          trimmed,
+          0,
+          REDIS_INSPECT_PREVIEW_LIMIT - 1,
+        )) ?? []).map((v) =>
+          typeof v === "string" ? v : JSON.stringify(v),
+        );
+      return {
+        ...base,
+        size: len,
+        truncated: len > members.length,
+        listMembers: members,
+      };
+    }
+    if (type === "set") {
+      const all = (await redis.smembers(trimmed)) ?? [];
+      const truncated = all.length > REDIS_INSPECT_PREVIEW_LIMIT;
+      return {
+        ...base,
+        size: all.length,
+        truncated,
+        setMembers: (truncated
+          ? all.slice(0, REDIS_INSPECT_PREVIEW_LIMIT)
+          : all
+        ).map(String),
+      };
+    }
+    if (type === "zset") {
+      const len = (await redis.zcard(trimmed)) ?? 0;
+      const raw =
+        ((await redis.zrange<(string | number)[]>(
+          trimmed,
+          0,
+          REDIS_INSPECT_PREVIEW_LIMIT - 1,
+          { rev: true, withScores: true },
+        )) as (string | number)[]) ?? [];
+      const members: { member: string; score: number }[] = [];
+      for (let i = 0; i < raw.length; i += 2) {
+        members.push({
+          member: String(raw[i]),
+          score: Number(raw[i + 1]) || 0,
+        });
+      }
+      return {
+        ...base,
+        size: len,
+        truncated: len > members.length,
+        zsetMembers: members,
+      };
+    }
+    if (type === "hash") {
+      const all = (await redis.hgetall<Record<string, unknown>>(trimmed)) ?? {};
+      const keys = Object.keys(all);
+      const truncated = keys.length > REDIS_INSPECT_PREVIEW_LIMIT;
+      const slice = truncated
+        ? keys.slice(0, REDIS_INSPECT_PREVIEW_LIMIT)
+        : keys;
+      const entries: Record<string, string> = {};
+      for (const k of slice) {
+        const v = all[k];
+        entries[k] = typeof v === "string" ? v : JSON.stringify(v);
+      }
+      return {
+        ...base,
+        size: keys.length,
+        truncated,
+        hashEntries: entries,
+      };
+    }
+    return { ...base, error: "Unsupported key type." };
+  } catch (err) {
+    logger.error("[admin] redis inspect failed", err, { key: trimmed });
+    return { error: "Inspect failed." };
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Obedience event log — Sir-only audit per (author, weekKey).
+// ──────────────────────────────────────────────────────────────────
+
+export interface ObedienceEventLogResult {
+  entries?: ObedienceAuditEntry[];
+  weekKey?: string;
+  author?: Author;
+  error?: string;
+}
+
+export async function getObedienceEventLog(
+  author: Author,
+  weekKey?: string,
+  limit: number = 200,
+): Promise<ObedienceEventLogResult> {
+  const guard = await requireSir();
+  if (!guard.ok) return { error: guard.error };
+  if (author !== "T7SEN" && author !== "Besho") {
+    return { error: "Invalid author." };
+  }
+  const targetWeek = weekKey?.trim() || currentWeekKey();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(targetWeek)) {
+    return { error: "Invalid week key." };
+  }
+  try {
+    const entries = await getEventLog(author, targetWeek, limit);
+    return { entries, weekKey: targetWeek, author };
+  } catch (err) {
+    logger.error("[admin] event log read failed", err);
+    return { error: "Read failed." };
+  }
+}
+
+export async function adminAdjustScore(
+  args: AdjustScoreArgs,
+): Promise<{ success?: boolean; error?: string; eventId?: string }> {
+  const guard = await requireSir();
+  if (!guard.ok) return { error: guard.error };
+  if (args.author !== "T7SEN" && args.author !== "Besho") {
+    return { error: "Invalid author." };
+  }
+  if (
+    !Number.isFinite(args.points) ||
+    args.points < MANUAL_ADJUST_MIN ||
+    args.points > MANUAL_ADJUST_MAX
+  ) {
+    return {
+      error: `Points must be ${MANUAL_ADJUST_MIN}..${MANUAL_ADJUST_MAX}.`,
+    };
+  }
+  const rounded = Math.round(args.points);
+  if (rounded === 0) return { error: "Adjustment cannot be zero." };
+  const reason = (args.reason ?? "").trim();
+  if (!reason) return { error: "Reason is required." };
+  if (reason.length > MANUAL_ADJUST_REASON_MAX) {
+    return {
+      error: `Reason too long (max ${MANUAL_ADJUST_REASON_MAX}).`,
+    };
+  }
+  if (
+    args.weekKey !== undefined &&
+    !/^\d{4}-\d{2}-\d{2}$/.test(args.weekKey)
+  ) {
+    return { error: "Invalid week key." };
+  }
+  try {
+    const ts = Date.now();
+    const eventId = crypto.randomUUID();
+    if (args.weekKey) {
+      await recordObedienceEventForWeek(
+        args.author,
+        "manual_adjust",
+        eventId,
+        args.weekKey,
+        rounded,
+      );
+    } else {
+      await recordObedienceEvent(
+        args.author,
+        "manual_adjust",
+        eventId,
+        ts,
+        rounded,
+      );
+    }
+    logger.interaction("[admin] manual obedience adjust", {
+      by: guard.session.author,
+      author: args.author,
+      points: rounded,
+      reason,
+      weekKey: args.weekKey ?? "current",
+      eventId,
+    });
+    revalidatePath("/admin/rewards");
+    revalidatePath("/rewards");
+    return { success: true, eventId };
+  } catch (err) {
+    logger.error("[admin] manual adjust failed", err);
+    return { error: "Adjust failed." };
+  }
+}
+
