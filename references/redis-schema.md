@@ -411,7 +411,7 @@ Score-based reward system on top of `/ledger` (which stays as Sir's manual log).
 2. Bumps `obedience:streak:{author}` if displayed ≥ threshold; resets to 0 otherwise.
 3. Stores `obedience:multiplier:{author}:{weekKey}` (frozen).
 4. Sets `obedience:finalized:{author}:{weekKey}` sentinel.
-5. Fires a recap FCM to **both authors** (`📊 Week wrapped — {label}`, body carries score + tier + multiplier + streak fragment). Best-effort — FCM failure does not roll back the finalize.
+5. Fires a recap FCM to **both authors** (`📊 Week wrapped — {label}`, body carries score + tier + multiplier + streak fragment). Best-effort — FCM failure does not roll back the finalize. **Two gates**: (a) only fires when the finalized week is the immediately prior week (`shiftWeekKey(currentWeekKey(), -1)`); older weeks caught up after a deploy or long absence finalize silently, since their claim window has already lapsed; (b) empty weeks (zero events) stay silent even when they ARE the immediately prior week.
 
 Driven by `/api/cron/obedience-sweep` daily, with `catchUpFinalizations` (4-week walk-back) as a robustness fallback when reading `/rewards` finds an unfinalized prior week.
 

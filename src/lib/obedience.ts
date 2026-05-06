@@ -508,6 +508,25 @@ async function notifyWeekClosed(
   score: ObedienceWeekScore,
   newStreak: number,
 ): Promise<void> {
+  // Two gates that BOTH must pass to fire the recap:
+  //
+  // 1. Only the immediately prior week notifies. Older weeks (caught
+  //    up after a deploy or a long absence) finalize silently — the
+  //    claim window for those has already lapsed (`claimReward` only
+  //    allows the immediately prior week), so a recap for week-3
+  //    would be unactionable noise.
+  //
+  // 2. Empty weeks (zero events) stay silent even when they're the
+  //    immediately prior week. "0 pts • no tier" for a week neither
+  //    author engaged with is also noise.
+  //
+  // The sentinel from `finalizeWeek` already prevents repeat
+  // finalizations per week, so these checks run at most once per
+  // (author, weekKey) lifetime regardless of how many times
+  // `/rewards` is loaded.
+  const immediatelyPriorKey = shiftWeekKey(currentWeekKey(), -1);
+  if (weekKey !== immediatelyPriorKey) return;
+  if (score.breakdown.length === 0 && score.rawScore === 0) return;
   const tiers = await getTiers();
   const tier = unlockedTierFor(score.displayedScore, tiers);
   const label = formatWeekLabel(weekKey);
