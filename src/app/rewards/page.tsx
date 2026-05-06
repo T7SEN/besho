@@ -36,10 +36,14 @@ import { cn } from "@/lib/utils";
 
 function buildHeaderStat(bundle: RewardsBundle | null): string {
   if (!bundle) return "—";
-  const score = bundle.besho.displayedScore;
+  // Clamp at zero for the headline. The underlying penalty state is
+  // surfaced separately in the score card so a negative week reads as
+  // "0 pts · in the hole" rather than a startling negative number in
+  // the page header.
+  const displayed = Math.max(0, bundle.besho.displayedScore);
   const tier = bundle.besho.unlockedTier;
   const tierLabel = tier ? `· ${tier.name}` : "· no tier";
-  return `${score} pts ${tierLabel}`;
+  return `${displayed} pts ${tierLabel}`;
 }
 
 function formatWeekRange(weekKey: string): string {
@@ -232,6 +236,17 @@ function ScoreCard({
   const showMultiplier = weekState.multiplier !== 1;
   const maxMultiplier = multipliers[multipliers.length - 1] ?? 1;
 
+  // Clamp the headline at zero. When displayed is negative, the actual
+  // negative magnitude is shown alongside as a "penalty" chip so the
+  // information isn't lost — it just isn't the headline. Tier math
+  // already treats negatives as no-tier-earned, so clamping the
+  // display doesn't change reachability.
+  const headlineDisplayed = Math.max(0, weekState.displayedScore);
+  const isPenalized = weekState.displayedScore < 0;
+  const penaltyMagnitude = isPenalized ? Math.abs(weekState.displayedScore) : 0;
+  const showRawHint =
+    !isPenalized && weekState.rawScore !== weekState.displayedScore;
+
   return (
     <section className="rounded-2xl border border-border/40 bg-card p-5 backdrop-blur-md shadow-xl shadow-black/30">
       <div className="flex items-baseline justify-between gap-3">
@@ -251,12 +266,25 @@ function ScoreCard({
       </div>
 
       <div className="mt-4 flex items-end gap-3">
-        <span className="text-5xl font-bold tracking-tight tabular-nums">
-          {weekState.displayedScore}
+        <span
+          className={cn(
+            "text-5xl font-bold tracking-tight tabular-nums",
+            isPenalized && "text-muted-foreground/60",
+          )}
+        >
+          {headlineDisplayed}
         </span>
-        {weekState.rawScore !== weekState.displayedScore && (
+        {showRawHint && (
           <span className="text-xs text-muted-foreground">
             ({weekState.rawScore} raw)
+          </span>
+        )}
+        {isPenalized && (
+          <span
+            className="rounded-full border border-rose-500/40 bg-rose-500/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-rose-400"
+            title="Net penalty for the week. Earn points to climb back to zero before any tier becomes reachable."
+          >
+            −{penaltyMagnitude} penalty
           </span>
         )}
       </div>
@@ -426,6 +454,8 @@ function PriorWeekSection({
   }
 
   if (!tier) {
+    const headline = Math.max(0, priorBesho.displayedScore);
+    const penalized = priorBesho.displayedScore < 0;
     return (
       <section className="rounded-2xl border border-border/40 bg-card p-5 backdrop-blur-md shadow-xl shadow-black/30">
         <h2 className="mb-2 flex items-center gap-2 text-sm font-semibold">
@@ -433,8 +463,16 @@ function PriorWeekSection({
           Last week — {formatWeekRange(priorBesho.weekKey)}
         </h2>
         <p className="text-xs text-muted-foreground">
-          {priorBesho.displayedScore} pts. No tier reached — no reward this
-          week.
+          {headline} pts
+          {penalized && (
+            <>
+              {" "}
+              <span className="text-rose-400">
+                (−{Math.abs(priorBesho.displayedScore)} penalty)
+              </span>
+            </>
+          )}
+          . No tier reached — no reward this week.
         </p>
       </section>
     );
@@ -449,8 +487,8 @@ function PriorWeekSection({
           Last week — {formatWeekRange(priorBesho.weekKey)}
         </h2>
         <p className="text-xs text-muted-foreground">
-          {priorBesho.displayedScore} pts • Unlocked {tier.name}. Awaiting her
-          claim.
+          {Math.max(0, priorBesho.displayedScore)} pts • Unlocked {tier.name}.
+          Awaiting her claim.
         </p>
       </section>
     );
@@ -855,6 +893,8 @@ function HistoryRow({ entry }: { entry: RewardsHistoryEntry }) {
         denied: "text-rose-400",
       }[claim.status]
     : null;
+  const historyHeadline = Math.max(0, entry.displayedScore);
+  const historyPenalized = entry.displayedScore < 0;
   return (
     <li className="rounded-lg border border-border/40 bg-card/50 p-3">
       <div className="flex items-center justify-between gap-2">
@@ -862,9 +902,19 @@ function HistoryRow({ entry }: { entry: RewardsHistoryEntry }) {
           {formatWeekRange(entry.weekKey)}
         </span>
         <span className="flex items-center gap-2 text-xs">
-          <span className="tabular-nums font-semibold">
-            {entry.displayedScore} pts
+          <span
+            className={cn(
+              "tabular-nums font-semibold",
+              historyPenalized && "text-muted-foreground/60",
+            )}
+          >
+            {historyHeadline} pts
           </span>
+          {historyPenalized && (
+            <span className="rounded-full border border-rose-500/30 bg-rose-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-widest text-rose-400">
+              −{Math.abs(entry.displayedScore)}
+            </span>
+          )}
           {entry.multiplier !== 1 && (
             <span className="rounded-full border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-widest text-primary">
               ×{entry.multiplier.toFixed(1)}
