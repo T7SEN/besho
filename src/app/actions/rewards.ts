@@ -10,7 +10,6 @@ import { logger } from "@/lib/logger";
 import { assertWriteAllowed } from "@/lib/restraint";
 import type { Author } from "@/lib/constants";
 import {
-  catchUpFinalizations,
   currentWeekKey,
   getStreakThreshold,
   getWeekState,
@@ -73,10 +72,13 @@ export async function getRewardsBundle(): Promise<{
   if (!session?.author) return { error: "Not authenticated." };
 
   try {
-    // Lazy catch-up — if cron hasn't fired or the user has been gone,
-    // walk back up to 4 weeks and finalize anything unfinalized.
-    await catchUpFinalizations("Besho", 4);
-
+    // Finalization is cron-only. Page reads must NEVER finalize a week —
+    // that fires recap FCMs as a side-effect, and on a fresh deploy or
+    // long absence catchUpFinalizations would push 4×2=8 notifications
+    // on a single /rewards visit. The obedience-sweep cron at
+    // `/api/cron/obedience-sweep` (daily) is the sole finalize trigger.
+    // Until the cron runs, prior weeks read unfinalized — `computeWeekScore`
+    // handles that path correctly (live multiplier from stored streak).
     const current = currentWeekKey();
     const prior = shiftWeekKey(current, -1);
 

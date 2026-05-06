@@ -43,6 +43,12 @@ import {
 import type { Author } from "@/lib/constants";
 import { vibrate } from "@/lib/haptic";
 import { cn } from "@/lib/utils";
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@/components/ui/tabs";
 
 export default function AdminRewardsPage() {
   const [snapshot, setSnapshot] = useState<ObedienceAdminSnapshot | null>(null);
@@ -102,8 +108,9 @@ export default function AdminRewardsPage() {
 
       <h1 className="text-2xl font-bold tracking-tight">Rewards & obedience</h1>
       <p className="mt-1 mb-6 text-sm text-muted-foreground">
-        Tier catalog, score weights, streak threshold + multipliers. Changes
-        take effect at the next read (5s cache).
+        Status, manual adjustments, and audit live on the Status tab. Tier
+        catalog, score weights, and streak settings each have their own tab.
+        Changes take effect at the next read (5s cache).
       </p>
 
       {error && (
@@ -115,29 +122,47 @@ export default function AdminRewardsPage() {
       {!snapshot ? (
         <Skeleton />
       ) : (
-        <div className="space-y-6">
-          <CurrentScoreSection
-            snapshot={snapshot}
-            onRefresh={fetchSnapshot}
-          />
-          <ManualAdjustEditor onSaved={fetchSnapshot} />
-          <TierCatalogEditor
-            initialTiers={snapshot.tiers}
-            onSaved={fetchSnapshot}
-          />
-          <WeightsEditor
-            initialWeights={snapshot.weights}
-            onSaved={fetchSnapshot}
-          />
-          <StreakSettingsEditor
-            initialThreshold={snapshot.streakThreshold}
-            initialMultipliers={snapshot.multipliers}
-            onSaved={fetchSnapshot}
-          />
-          <EventLogViewer
-            initialWeekKey={snapshot.besho.currentWeek.weekKey}
-          />
-        </div>
+        <Tabs defaultValue="status">
+          <TabsList className="flex flex-wrap">
+            <TabsTrigger value="status">Status</TabsTrigger>
+            <TabsTrigger value="tiers">Tiers</TabsTrigger>
+            <TabsTrigger value="weights">Weights</TabsTrigger>
+            <TabsTrigger value="streak">Streak</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="status" className="space-y-6">
+            <CurrentScoreSection
+              snapshot={snapshot}
+              onRefresh={fetchSnapshot}
+            />
+            <ManualAdjustEditor onSaved={fetchSnapshot} />
+            <EventLogViewer
+              initialWeekKey={snapshot.besho.currentWeek.weekKey}
+            />
+          </TabsContent>
+
+          <TabsContent value="tiers" className="space-y-6">
+            <TierCatalogEditor
+              initialTiers={snapshot.tiers}
+              onSaved={fetchSnapshot}
+            />
+          </TabsContent>
+
+          <TabsContent value="weights" className="space-y-6">
+            <WeightsEditor
+              initialWeights={snapshot.weights}
+              onSaved={fetchSnapshot}
+            />
+          </TabsContent>
+
+          <TabsContent value="streak" className="space-y-6">
+            <StreakSettingsEditor
+              initialThreshold={snapshot.streakThreshold}
+              initialMultipliers={snapshot.multipliers}
+              onSaved={fetchSnapshot}
+            />
+          </TabsContent>
+        </Tabs>
       )}
     </main>
   );

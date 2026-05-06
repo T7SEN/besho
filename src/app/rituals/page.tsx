@@ -62,7 +62,7 @@ import {
   nextPrescribedDateKey,
   type RitualTodayState,
 } from "@/lib/rituals";
-import { dateKeyInTz, tzWallClockToUtcMs } from "@/lib/cairo-time";
+import { dateKeyInTz } from "@/lib/cairo-time";
 import { usePresence } from "@/hooks/use-presence";
 import { useRefreshListener } from "@/hooks/use-refresh-listener";
 import { vibrate } from "@/lib/haptic";
@@ -73,7 +73,6 @@ import { RichTextEditor } from "@/components/ui/rich-text-editor";
 import { MarkdownRenderer } from "@/components/ui/markdown-renderer";
 import { useKeyboardHeight } from "@/hooks/use-keyboard";
 import {
-  idToNumeric,
   NOTIF_ID,
   useLocalNotifications,
 } from "@/hooks/use-local-notifications";
@@ -216,7 +215,7 @@ export default function RitualsPage() {
   const scheduledRemindersRef = useRef<Set<number>>(new Set());
   const firstReconcileRef = useRef(true);
 
-  const { schedule, cancel } = useLocalNotifications();
+  const { cancel } = useLocalNotifications();
 
   usePresence("/rituals", !!currentAuthor);
 
@@ -258,142 +257,39 @@ export default function RitualsPage() {
     return () => clearInterval(id);
   }, [handleRefresh]);
 
-  // ── Phase 2 / 2.5: Local-notification reminder reconciliation ─────────────
-  // For every ritual the current user owns, schedule a local notification at
-  // each upcoming window-open instant for the next N prescribed-and-not-
-  // skipped occurrences. Re-runs on any `rituals` change (poll, create,
-  // submit, pause, delete) and diff-cancels / diff-schedules so the device
-  // stays in sync without thrashing.
-  //
-  // Cadence-aware: the cursor walks via `nextPrescribedDateKey`, so weekly
-  // and every-N-days rituals only get reminders on prescribed days.
-  //
-  // Skip-aware (Phase 2.5): if Sir granted a future skip-day, that
-  // occurrence is filtered out. The walk continues forward to compensate so
-  // the horizon stays at REMINDER_HORIZON_OCCURRENCES actual reminders even
-  // when skips are dense. Hard-bounded at MAX_PRESCRIBED_WALK to prevent a
-  // runaway loop in degenerate cases (e.g. 30 future skips on a daily
-  // ritual).
-  //
-  // First run blanket-cancels the entire ritual ID band [3000, 3895] to clear
-  // any stale reminders left by previous sessions before installing the
-  // current desired set.
+  // Local-notification scheduling for rituals was removed. The
+  // `/api/cron/ritual-windows` endpoint now fires the window-open FCM
+  // server-side; running on-device LocalNotifications in parallel was
+  // delivering a second buzz for every window, which the user
+  // experienced as "double FCM." This effect now only blanket-cancels
+  // the ritual reminder ID band [3000, 3895] once on mount to clear
+  // any stale reminders persisted by previous app versions.
   useEffect(() => {
     if (!currentAuthor) return;
-
+    if (!firstReconcileRef.current) return;
     let cancelled = false;
-    const REMINDER_HORIZON_OCCURRENCES = 7;
-    const MAX_PRESCRIBED_WALK = 21;
-
     void (async () => {
-      const desired: {
-        id: number;
-        title: string;
-        body: string;
-        atMs: number;
-        url: string;
-      }[] = [];
-
-      const nowMs = Date.now();
-
-      for (const r of rituals) {
-        if (r.owner !== currentAuthor) continue;
-        if (!r.active) continue;
-        if (r.pausedUntil && nowMs < r.pausedUntil) continue;
-
-        // Compose suffix with windowStart AND updatedAt so any edit
-        // (time, title, description, owner, cadence) rotates the
-        // reminder ID. Diff path then cancels the stale reminder and
-        // schedules a new one with the current title/body.
-        const numericId = idToNumeric(
-          `${r.id}:${r.windowStart}:${r.updatedAt ?? r.createdAt}`,
-        );
-        const cadenceConfig = {
-          cadence: r.cadence,
-          weekdays: r.weekdays,
-          everyNDays: r.everyNDays,
-          anchorDateKey: r.anchorDateKey,
-        };
-        const skipSet = new Set(r.upcomingSkipDateKeys);
-
-        // Start cursor at owningDateKey if it's prescribed (the case for
-        // active rituals), otherwise advance to the next prescribed day.
-        let cursor = r.owningDateKey;
-        if (!isPrescribedDay(cadenceConfig, cursor)) {
-          cursor = nextPrescribedDateKey(cadenceConfig, cursor);
-        }
-
-        let scheduled = 0;
-        let walked = 0;
-        while (
-          scheduled < REMINDER_HORIZON_OCCURRENCES &&
-          walked < MAX_PRESCRIBED_WALK
-        ) {
-          walked += 1;
-
-          const isSkipped = skipSet.has(cursor);
-          const isOwningDateToday = cursor === r.owningDateKey;
-          const alreadyHandledToday =
-            isOwningDateToday && r.todaySubmission !== null;
-          const opensAtMs = tzWallClockToUtcMs(cursor, r.windowStart);
-          const isPast = opensAtMs <= nowMs;
-
-          if (!isSkipped && !alreadyHandledToday && !isPast) {
-            const daysSinceEpoch = Math.floor(opensAtMs / 86_400_000);
-            desired.push({
-              id: NOTIF_ID.ritualReminder(numericId, daysSinceEpoch),
-              title: "🕯️ Ritual",
-              body: `Time for: ${r.title}`,
-              atMs: opensAtMs,
-              url: "/rituals",
-            });
-            scheduled += 1;
-          }
-
-          cursor = nextPrescribedDateKey(cadenceConfig, cursor);
-        }
-      }
-
-      const desiredIds = new Set(desired.map((d) => d.id));
-
-      if (firstReconcileRef.current) {
-        const bandSize =
-          NOTIF_ID.RITUAL_BAND_END - NOTIF_ID.RITUAL_BAND_START + 1;
-        const bandIds = Array.from(
-          { length: bandSize },
-          (_, i) => NOTIF_ID.RITUAL_BAND_START + i,
-        );
+      const bandSize =
+        NOTIF_ID.RITUAL_BAND_END - NOTIF_ID.RITUAL_BAND_START + 1;
+      const bandIds = Array.from(
+        { length: bandSize },
+        (_, i) => NOTIF_ID.RITUAL_BAND_START + i,
+      );
+      try {
         await cancel(bandIds);
-        if (cancelled) return;
-        for (const d of desired) {
-          if (cancelled) return;
-          await schedule(d);
-        }
-        firstReconcileRef.current = false;
-      } else {
-        const toCancel = Array.from(scheduledRemindersRef.current).filter(
-          (id) => !desiredIds.has(id),
-        );
-        const toSchedule = desired.filter(
-          (d) => !scheduledRemindersRef.current.has(d.id),
-        );
-        if (toCancel.length > 0) await cancel(toCancel);
-        if (cancelled) return;
-        for (const d of toSchedule) {
-          if (cancelled) return;
-          await schedule(d);
-        }
+      } catch {
+        // Best-effort. A failed cancel just leaves a stale local
+        // reminder in place; it'll fire once and then go away.
       }
-
       if (!cancelled) {
-        scheduledRemindersRef.current = desiredIds;
+        firstReconcileRef.current = false;
+        scheduledRemindersRef.current = new Set();
       }
     })();
-
     return () => {
       cancelled = true;
     };
-  }, [rituals, currentAuthor, schedule, cancel]);
+  }, [currentAuthor, cancel]);
 
   // Form success handler for both create and edit. The RitualForm
   // component manages its own dispatch + pending state internally; this

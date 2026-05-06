@@ -370,6 +370,7 @@ Score-based reward system on top of `/ledger` (which stays as Sir's manual log).
 | `obedience:finalized:{author}:{weekKey}`     | "1"    | none | Sentinel — set by `finalizeWeek` to make idempotent                                  |
 | `obedience:tier-notified:{author}:{weekKey}` | INT    | none | Highest tier-threshold already FCM'd this week — prevents repeat unlock notifications |
 | `obedience:audit:{author}:{weekKey}`         | ZSET   | none | Per-emit audit. Score = ms ts; member = `{type}:{eventId}` (matches the events ZSET so a join recovers points). Updated to latest ts on retry |
+| `review:fcm:opener:{weekDate}`               | "1"    | 25h  | Dedup sentinel for the Saturday review-window-open FCM. Set by `/api/cron/review-window-open` via `SET NX EX`                              |
 | `rewards:tiers`                              | JSON   | none | Sir-authored tier catalog — fixed 5 entries, ascending thresholds                    |
 | `reward:claim:{id}`                          | JSON   | none | One claim record (one per Besho-week)                                                |
 | `rewards:claims:by-author:{author}`          | ZSET   | none | Claim ids scored by `requestedAt` — own history                                      |
@@ -393,6 +394,7 @@ Score-based reward system on top of `/ledger` (which stays as Sir's manual log).
 | −1             | `permission_reasked` — `denied-hashes` hit       | `permissions.createPermission`, fired per attempt                   |
 | +1             | `mood_checkin` — once per day, Besho only        | `mood.submitMood`. State submission is intentionally NOT scored.    |
 | −10            | `restraint_engaged` — off → on transition only   | `admin.setRestraintState`                                           |
+| −10            | `ledger_punishment` — fires per `/ledger` punishment entry | `ledger.createLedgerEntry` (reward type does NOT emit)        |
 | variable       | `manual_adjust` — Sir-supplied points + reason   | `admin.adminAdjustScore` (Sir-only, both authors target)            |
 
 `recordObedienceEvent` is best-effort — failures never break the calling write path. Member `{type}:{eventId}` makes retries idempotent (ZADD overwrites the score).
@@ -413,7 +415,7 @@ Score-based reward system on top of `/ledger` (which stays as Sir's manual log).
 4. Sets `obedience:finalized:{author}:{weekKey}` sentinel.
 5. Fires a recap FCM to **both authors** (`📊 Week wrapped — {label}`, body carries score + tier + multiplier + streak fragment). Best-effort — FCM failure does not roll back the finalize. **Two gates**: (a) only fires when the finalized week is the immediately prior week (`shiftWeekKey(currentWeekKey(), -1)`); older weeks caught up after a deploy or long absence finalize silently, since their claim window has already lapsed; (b) empty weeks (zero events) stay silent even when they ARE the immediately prior week.
 
-Driven by `/api/cron/obedience-sweep` daily, with `catchUpFinalizations` (4-week walk-back) as a robustness fallback when reading `/rewards` finds an unfinalized prior week.
+**Cron-only.** Finalization runs exclusively from `/api/cron/obedience-sweep` (daily). Page reads (`getRewardsBundle`) **must NEVER** call `finalizeWeek` or `catchUpFinalizations` directly — doing so fires recap FCMs as a side-effect, and on a fresh deploy or after a long absence the catch-up walk-back would push 4×2=8 notifications on a single `/rewards` visit. `catchUpFinalizations` remains exported for the cron's use only.
 
 ### Tier-unlock notifications
 

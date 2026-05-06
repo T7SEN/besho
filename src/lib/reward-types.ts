@@ -18,6 +18,7 @@ export type ObedienceEventType =
   | "permission_reasked"
   | "mood_checkin"
   | "restraint_engaged"
+  | "ledger_punishment"
   | "manual_adjust";
 
 export const OBEDIENCE_EVENT_TYPES: readonly ObedienceEventType[] = [
@@ -32,6 +33,7 @@ export const OBEDIENCE_EVENT_TYPES: readonly ObedienceEventType[] = [
   "permission_reasked",
   "mood_checkin",
   "restraint_engaged",
+  "ledger_punishment",
   "manual_adjust",
 ] as const;
 
@@ -121,6 +123,8 @@ export const DEFAULT_OBEDIENCE_WEIGHTS: ObedienceWeights = {
   permission_reasked: -1,
   mood_checkin: 1,
   restraint_engaged: -10,
+  /** Auto-deducted on every new ledger punishment entry. */
+  ledger_punishment: -10,
   /** Manual adjustments always supply their own points value at emit
    *  time. The default of 0 here is a placeholder so the type is
    *  satisfied; never used as a fallback. */
@@ -188,6 +192,7 @@ export const OBEDIENCE_EVENT_LABELS: Record<ObedienceEventType, string> = {
   permission_reasked: "Re-asked denied permission",
   mood_checkin: "Mood check-in",
   restraint_engaged: "Restraint engaged",
+  ledger_punishment: "Ledger punishment",
   manual_adjust: "Manual adjustment",
 };
 

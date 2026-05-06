@@ -12,6 +12,7 @@ import {
 } from "@/lib/ledger-constants";
 import { logger } from "@/lib/logger";
 import { moveToTrash, moveManyToTrash } from "@/lib/trash";
+import { recordObedienceEvent } from "@/lib/obedience";
 
 export interface LedgerEntry {
   id: string;
@@ -100,6 +101,20 @@ export async function createLedgerEntry(
     pipeline.set(entryKey(entry.id), entry);
     pipeline.zadd(INDEX_KEY, { score: timestamp, member: entry.id });
     await pipeline.exec();
+
+    // Obedience hit on punishments only — rewards in the ledger are
+    // Sir's manual log and do NOT grant obedience points (the rewards
+    // system at /rewards is the score-driven path). Default weight is
+    // -10; Sir can tune via /admin/rewards. Member-key dedup uses the
+    // entry id, so re-creates of the same entry id are idempotent.
+    if (type === "punishment") {
+      void recordObedienceEvent(
+        "Besho",
+        "ledger_punishment",
+        entry.id,
+        timestamp,
+      );
+    }
 
     await sendNotification("Besho", {
       title:
