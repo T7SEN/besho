@@ -65,12 +65,12 @@ Surfaces under `/admin`:
 | `/admin/permissions`        | Tabbed: Bulk decide / Auto-rules JSON / Quotas JSON                                           | `getPermissionsAdminBundle`, `adminSaveAutoRulesJson`, `adminSaveQuotasJson`, `bulkApprovePendingOlderThan`, `bulkDenyPendingByCategory` |
 | `/admin/notifications`      | Forward-only outbound notification audit (separate from drawer LISTs)                         | `getOutboundNotificationAudit`, `resendNotification`                                                      |
 | `/admin/restraint-history`  | Engage/lift transitions log (capped 200)                                                      | `getRestraintHistory`                                                                                     |
-| `/admin/timezone`           | Cairo ↔ Tabuk converter (input-driven, pure UI)                                               | (none — pure client `Intl.DateTimeFormat`)                                                                |
 | `/admin/redis`              | Read-only key inspector                                                                       | `inspectRedisKey`                                                                                         |
 
-**Two consolidations landed mid-development**:
+**Three consolidations landed mid-development**:
 1. Inspector merged into Devices — `/admin/inspector` deleted; its presence + FCM token cards moved to a "Right now" section atop `/admin/devices`.
 2. Cooldowns + System time merged into Health — `/admin/cooldowns` and `/admin/time` deleted; both became tabs alongside Health on `/admin/health` (renamed "Diagnostics" in TOOLS).
+3. Timezone converter merged into Health → Time tab — `/admin/timezone` deleted; the input-driven Cairo↔Tabuk converter now sits below the live time snapshot in the Time tab (`<TimeSnapshot>` + `<TimezoneConverter>` co-render). The two were related enough that splitting "live read-only" from "input-driven" was needless friction; the merged tab is now the single Cairo/Tabuk surface.
 
 The landing page itself (`/admin`) hosts a single action button — `<SummonButton>` — which calls `summonKitten()`. This is the sole Sir → Besho push that mirrors the safeword delivery shape: `bypassPresence: true` + Android `channelId: "safeword"` + `priority: "max"` + `sound: "default"`. The message is intentionally possessive and dominant; it is not configurable from the UI and lives directly in the action body. No cooldown — the two-step confirm is the only guard against an accidental tap.
 

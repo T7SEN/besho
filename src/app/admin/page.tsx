@@ -6,7 +6,6 @@ import {
   BarChart3,
   Bell,
   CalendarHeart,
-  Clock,
   Database,
   Download,
   HeartPulse,
@@ -115,12 +114,6 @@ const TOOLS = [
     title: "Restraint history",
     description: "Engage / lift transitions with timestamps + reasons.",
     Icon: Lock,
-  },
-  {
-    href: "/admin/timezone",
-    title: "Timezone converter",
-    description: "Cairo ↔ Tabuk picker for visit planning.",
-    Icon: Clock,
   },
   {
     href: "/admin/redis",

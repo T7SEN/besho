@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import {
   ArrowLeft,
+  ArrowRightLeft,
   CheckCircle2,
   Clock,
   Hash,
@@ -862,6 +863,15 @@ function formatWeekLabelLocal(weekDate: string): string {
 }
 
 function TimeTabBody({ now }: { now: number }) {
+  return (
+    <>
+      <TimeSnapshot now={now} />
+      <TimezoneConverter now={now} />
+    </>
+  );
+}
+
+function TimeSnapshot({ now }: { now: number }) {
   const computed = useMemo(() => {
     const cairo = formatInZone(ZONES.cairo.id, now);
     const tabuk = formatInZone(ZONES.tabuk.id, now);
@@ -963,6 +973,230 @@ function TimeTabBody({ now }: { now: number }) {
         at 00:00 Cairo on the next Sunday.
       </p>
     </section>
+  );
+}
+
+// ── Timezone converter (Cairo ↔ Tabuk) ────────────────────────────────
+
+type ZoneKey = keyof typeof ZONES;
+
+function formatHHMM(utcMs: number, zone: string): string {
+  const f = formatInZone(zone, utcMs);
+  return f.time.slice(0, 5); // strip seconds
+}
+
+function dateInZone(utcMs: number, zone: string): string {
+  return formatInZone(zone, utcMs).date;
+}
+
+function formatDelta(
+  minutes: number,
+  sourceLabel: string,
+  targetLabel: string,
+): string {
+  if (minutes === 0) return `${targetLabel} matches ${sourceLabel}`;
+  const abs = Math.abs(minutes);
+  const h = Math.floor(abs / 60);
+  const m = abs % 60;
+  const span =
+    h > 0 ? (m > 0 ? `${h}h ${m}m` : `${h}h`) : `${m}m`;
+  return minutes > 0
+    ? `${targetLabel} is ${span} ahead of ${sourceLabel}`
+    : `${targetLabel} is ${span} behind ${sourceLabel}`;
+}
+
+function TimezoneConverter({ now }: { now: number }) {
+  const [source, setSource] = useState<ZoneKey>("cairo");
+  const [date, setDate] = useState(() => dateInZone(now, ZONES.cairo.id));
+  const [time, setTime] = useState(() => formatHHMM(now, ZONES.cairo.id));
+
+  const target: ZoneKey = source === "cairo" ? "tabuk" : "cairo";
+  const sourceZone = ZONES[source];
+  const targetZone = ZONES[target];
+
+  const { sourceFmt, targetFmt, deltaMinutes } = useMemo(() => {
+    const utcMs = tzWallClockToUtcMs(sourceZone.id, date, time);
+    const sFmt = formatInZone(sourceZone.id, utcMs);
+    const tFmt = formatInZone(targetZone.id, utcMs);
+    const sOff = tzOffsetMinutes(sourceZone.id, utcMs);
+    const tOff = tzOffsetMinutes(targetZone.id, utcMs);
+    return {
+      sourceFmt: sFmt,
+      targetFmt: tFmt,
+      deltaMinutes: tOff - sOff,
+    };
+  }, [sourceZone, targetZone, date, time]);
+
+  const liveSourceDate = dateInZone(now, sourceZone.id);
+  const liveSourceTime = formatHHMM(now, sourceZone.id);
+  const liveTargetDate = dateInZone(now, targetZone.id);
+  const liveTargetTime = formatHHMM(now, targetZone.id);
+  const liveDeltaMin =
+    tzOffsetMinutes(targetZone.id, now) -
+    tzOffsetMinutes(sourceZone.id, now);
+
+  const swap = () => {
+    void vibrate(20, "light");
+    setSource(target);
+  };
+
+  const useNow = () => {
+    void vibrate(20, "light");
+    setDate(dateInZone(Date.now(), sourceZone.id));
+    setTime(formatHHMM(Date.now(), sourceZone.id));
+  };
+
+  return (
+    <section className="rounded-2xl border border-border/40 bg-card p-5">
+      <h2 className="mb-1 text-sm font-semibold">Converter</h2>
+      <p className="mb-4 text-xs text-muted-foreground">
+        Pick a wall-clock instant in the source zone; the target equivalent
+        is computed live. Visit-planning utility — no state stored.
+      </p>
+
+      <div className="grid grid-cols-[1fr_auto_1fr] items-end gap-3">
+        <ConverterField label="From">
+          <select
+            value={source}
+            onChange={(e) => setSource(e.target.value as ZoneKey)}
+            className="w-full rounded border border-border/60 bg-input/40 px-2 py-1.5 text-sm focus:border-primary focus:outline-none"
+          >
+            <option value="cairo">{ZONES.cairo.label}</option>
+            <option value="tabuk">{ZONES.tabuk.label}</option>
+          </select>
+        </ConverterField>
+        <button
+          type="button"
+          onClick={swap}
+          aria-label="Swap zones"
+          className="flex h-9 w-9 items-center justify-center rounded-full border border-border/40 text-muted-foreground transition-colors hover:border-primary/40 hover:text-primary active:scale-95"
+        >
+          <ArrowRightLeft className="h-4 w-4" />
+        </button>
+        <ConverterField label="To">
+          <input
+            type="text"
+            value={targetZone.label}
+            readOnly
+            className="w-full rounded border border-border/40 bg-card/30 px-2 py-1.5 text-sm text-muted-foreground"
+          />
+        </ConverterField>
+      </div>
+
+      <div className="mt-4 grid gap-3 md:grid-cols-2">
+        <ConverterField label={`Date (${sourceZone.label})`}>
+          <input
+            type="date"
+            value={date}
+            onChange={(e) => setDate(e.target.value)}
+            className="w-full rounded border border-border/60 bg-input/40 px-2 py-1.5 text-sm tabular-nums focus:border-primary focus:outline-none"
+          />
+        </ConverterField>
+        <ConverterField label={`Time (${sourceZone.label})`}>
+          <input
+            type="time"
+            value={time}
+            onChange={(e) => setTime(e.target.value)}
+            className="w-full rounded border border-border/60 bg-input/40 px-2 py-1.5 text-sm tabular-nums focus:border-primary focus:outline-none"
+          />
+        </ConverterField>
+      </div>
+
+      <button
+        type="button"
+        onClick={useNow}
+        className="mt-3 flex items-center gap-1.5 rounded-full border border-border/40 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground active:scale-95"
+      >
+        <Clock className="h-3 w-3" />
+        Use now
+      </button>
+
+      <div className="mt-5 grid gap-3 md:grid-cols-2">
+        <ConverterZoneCard
+          label={sourceZone.label}
+          full={sourceFmt.full}
+          offset={sourceFmt.offset}
+          isSource
+        />
+        <ConverterZoneCard
+          label={targetZone.label}
+          full={targetFmt.full}
+          offset={targetFmt.offset}
+        />
+      </div>
+
+      <p className="mt-3 text-xs text-muted-foreground">
+        Delta:{" "}
+        <span className="font-bold text-foreground tabular-nums">
+          {formatDelta(deltaMinutes, sourceZone.label, targetZone.label)}
+        </span>
+      </p>
+
+      <div className="mt-3 rounded-lg border border-border/30 bg-card/40 p-3 text-xs text-muted-foreground">
+        <p className="mb-1 font-bold uppercase tracking-wider">Currently</p>
+        <p className="tabular-nums">
+          {sourceZone.label}: {liveSourceDate} {liveSourceTime} ·{" "}
+          {targetZone.label}: {liveTargetDate} {liveTargetTime}
+        </p>
+        <p className="mt-1">
+          {liveDeltaMin === 0
+            ? "Both zones are at the same wall-clock time right now."
+            : formatDelta(
+                liveDeltaMin,
+                sourceZone.label,
+                targetZone.label,
+              ) + " right now."}
+        </p>
+      </div>
+    </section>
+  );
+}
+
+function ConverterField({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <label className="block">
+      <span className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+        {label}
+      </span>
+      {children}
+    </label>
+  );
+}
+
+function ConverterZoneCard({
+  label,
+  full,
+  offset,
+  isSource,
+}: {
+  label: string;
+  full: string;
+  offset: string;
+  isSource?: boolean;
+}) {
+  return (
+    <div
+      className={cn(
+        "rounded-lg border p-3",
+        isSource
+          ? "border-primary/40 bg-primary/5"
+          : "border-emerald-500/40 bg-emerald-500/5",
+      )}
+    >
+      <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+        {label}
+      </p>
+      <p className="mt-1 font-mono text-sm tabular-nums">{full}</p>
+      <p className="mt-0.5 font-mono text-[10px] text-muted-foreground/70">
+        {offset}
+      </p>
+    </div>
   );
 }
 
