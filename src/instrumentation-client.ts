@@ -5,80 +5,57 @@
 import * as Sentry from "@sentry/nextjs";
 
 /**
- * Errors raised from inside Next's server-action client
- * (`fetchServerAction`) that are universally non-actionable. Two
- * families, both narrowed by the same stack-frame check so unrelated
- * errors with the same message still surface.
+ * Sentry-side filtering for two non-actionable error families.
  *
- * Family 1 — Network-layer `TypeError`:
- *   `Failed to fetch` (Chrome/Edge), `network error` (Capacitor WebView
- *   / older Chromium), `Load failed` (Safari). Caused by WiFi →
- *   cellular handoffs, WebView pauses on app background, TLS
- *   resumption hiccups, cellular signal drops. Multiple successful
- *   POSTs always precede the failure; a retry moments later succeeds.
+ * Family 1 — Network-layer fetch failures:
+ *   `TypeError: Failed to fetch` (Chrome/Edge),
+ *   `TypeError: network error` (Capacitor WebView / older Chromium),
+ *   `TypeError: Load failed` (Safari),
+ *   `TypeError: NetworkError when attempting to fetch resource.` (Firefox).
+ *   Caused by WiFi → cellular handoffs, WebView pauses on app
+ *   background, TLS resumption hiccups, cellular signal drops.
+ *   Multiple successful POSTs always precede the failure; a retry
+ *   moments later succeeds.
  *
- * Family 2 — Generic non-text/plain response `Error`:
- *   `"An unexpected response was received from the server."` Next
- *   throws this when the server-action POST gets a response with a
- *   content-type other than text/plain — i.e. an HTML 404 or
- *   non-server-action error page. Real server-action 5xx errors
- *   return text/plain with the actual error string and never trigger
- *   this fallback. The universe of cases producing this message is
- *   "the URL didn't match a server-action handler" — bad URL, route
- *   moved, or a passive component (DeviceTracker, refresh listener)
- *   firing on a 404 page.
+ * Family 2 — Server-action client's content-type fallback:
+ *   `Error: An unexpected response was received from the server.`
+ *   Next throws this when the server-action POST gets a non-text/plain
+ *   response — i.e. an HTML 404 or non-server-action error page. Real
+ *   server-action 5xx errors return text/plain with the actual error
+ *   string and never trigger this fallback. The universe of cases
+ *   producing this message is "the URL didn't match a server-action
+ *   handler" — bad URL, route moved, or a passive component
+ *   (DeviceTracker, refresh listener) firing on a 404 page.
+ *
+ * `ignoreErrors` matches against the exception message string and is
+ * invariant under minification — works the same in dev and prod. The
+ * earlier `beforeSend`-with-stack-frame-check approach silently failed
+ * in production: Turbopack-minified frames don't contain the literal
+ * string `fetchServerAction`, and `beforeSend` runs before Sentry's
+ * server-side source-map resolution.
+ *
+ * Trade-off: `ignoreErrors` drops the entire `TypeError: Failed to
+ * fetch` family regardless of fetch target. At our scale (two users,
+ * all client-side fetches go to our own domain) this is safe. If a
+ * future feature adds a third-party client-side fetch with potential
+ * CORS issues, we'd want a different observability path.
  */
-const NETWORK_FETCH_MESSAGES = [
-  /^failed to fetch$/i,
-  /^network error$/i,
-  /^load failed$/i, // Safari's flavor
-];
-
-const SERVER_ACTION_ROUTE_MISMATCH_MESSAGE =
-  "An unexpected response was received from the server.";
-
-function hasServerActionFrame(
-  exception: NonNullable<Sentry.ErrorEvent["exception"]>["values"] extends
-    | (infer V)[]
-    | undefined
-    ? V
-    : never,
-): boolean {
-  const frames = exception?.stacktrace?.frames ?? [];
-  return frames.some((f) => {
-    const fn = f.function ?? "";
-    const file = f.filename ?? "";
-    return (
-      fn.includes("fetchServerAction") ||
-      file.includes("server-action-reducer")
-    );
-  });
-}
-
-function isServerActionNetworkError(event: Sentry.ErrorEvent): boolean {
-  const exception = event.exception?.values?.[0];
-  if (!exception) return false;
-  if (exception.type !== "TypeError") return false;
-  const value = (exception.value ?? "").trim();
-  if (!NETWORK_FETCH_MESSAGES.some((re) => re.test(value))) return false;
-  return hasServerActionFrame(exception);
-}
-
-function isServerActionRouteMismatch(event: Sentry.ErrorEvent): boolean {
-  const exception = event.exception?.values?.[0];
-  if (!exception) return false;
-  if (exception.type !== "Error") return false;
-  if ((exception.value ?? "").trim() !== SERVER_ACTION_ROUTE_MISMATCH_MESSAGE) {
-    return false;
-  }
-  return hasServerActionFrame(exception);
-}
-
 Sentry.init({
   dsn: process.env.NEXT_PUBLIC_SENTRY_DSN,
 
   // Add optional integrations for additional features
   integrations: [Sentry.replayIntegration()],
+
+  // Drop the two non-actionable families before transmission. Matches
+  // against `event.exception.values[*].value` (the message string).
+  // Source-map-independent — works in production minified bundles.
+  ignoreErrors: [
+    /^Failed to fetch$/i,
+    /^network error$/i,
+    /^Load failed$/i,
+    /^NetworkError when attempting to fetch resource\.?$/i,
+    "An unexpected response was received from the server.",
+  ],
 
   // Define how likely traces are sampled. Adjust this value in production, or use tracesSampler for greater control.
   tracesSampleRate: process.env.NODE_ENV === "development" ? 1.0 : 0.1,
@@ -96,12 +73,6 @@ Sentry.init({
   // Enable sending user PII (Personally Identifiable Information)
   // https://docs.sentry.io/platforms/javascript/guides/nextjs/configuration/options/#sendDefaultPii
   sendDefaultPii: true,
-
-  beforeSend(event) {
-    if (isServerActionNetworkError(event)) return null;
-    if (isServerActionRouteMismatch(event)) return null;
-    return event;
-  },
 });
 
 export const onRouterTransitionStart = Sentry.captureRouterTransitionStart;
