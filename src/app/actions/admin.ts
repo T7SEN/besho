@@ -1,14 +1,8 @@
 // src/app/actions/admin.ts
 "use server";
 
-import { Redis } from "@upstash/redis";
-import { cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
-import {
-  decrypt,
-  readAllSessionEpochs,
-  type SessionPayload,
-} from "@/lib/auth-utils";
+import { readAllSessionEpochs } from "@/lib/auth-utils";
 import { logger } from "@/lib/logger";
 import { getActivity, clearActivity, type ActivityRecord } from "@/lib/activity";
 import {
@@ -29,28 +23,7 @@ import { todayKeyCairo } from "@/lib/cairo-time";
 import type { AuthFailureRecord } from "./auth";
 import type { PermissionRequest } from "./permissions";
 import { readAllCronTelemetry } from "@/lib/cron-telemetry";
-
-const redis = new Redis({
-  url: process.env.KV_REST_API_URL!,
-  token: process.env.KV_REST_API_TOKEN!,
-});
-
-async function getSession(): Promise<SessionPayload | null> {
-  const cookieStore = await cookies();
-  const value = cookieStore.get("session")?.value;
-  if (!value) return null;
-  return decrypt(value);
-}
-
-async function requireSir(): Promise<
-  | { ok: true; session: SessionPayload }
-  | { ok: false; error: string }
-> {
-  const session = await getSession();
-  if (!session?.author) return { ok: false, error: "Not authenticated." };
-  if (session.author !== "T7SEN") return { ok: false, error: "Forbidden." };
-  return { ok: true, session };
-}
+import { redis, requireSir } from "./admin/_shared";
 
 // Local copies of the permissions key constants — used by
 // `getAdminLandingSummary` to count pending requests on the landing

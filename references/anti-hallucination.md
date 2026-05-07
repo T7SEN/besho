@@ -141,7 +141,7 @@ These are not removed — they exist and are wired up. Listed because their exis
   - `admin/health.ts` — cooldowns, health snapshot, repair indexes, cron telemetry, drift repair, bucket-shift migration, deploy info, redis inspector
   - `admin/notifications.ts` — summon, test push, outbound audit, resend
   - `admin/devices.ts` — inspector, sessions, devices, restraint state + history
-  - `admin/_shared.ts` — non-`'use server'` module exporting the Upstash `redis` client singleton, `PRESENCE_FRESH_MS`, `getSession()`, `requireSir()`. Has `import "server-only"` so it never ships client-side. Bucket files import helpers from here.
+  - `admin/_shared.ts` — non-`'use server'` module exporting the Upstash `redis` client singleton, `PRESENCE_FRESH_MS`, `getSession()`, `requireSir()`. Has `import "server-only"` so it never ships client-side. Bucket files AND admin.ts itself import helpers from here — there is exactly ONE `new Redis(...)` instantiation across the whole admin surface (in `_shared.ts`).
   All external callers continue to import from `@/app/actions/admin` — admin.ts re-exports every bucket symbol. Don't add new admin actions to the slimmed admin.ts; pick the right bucket. The orchestration core retains: activity feed, JSON export, cross-feature search, auth-failures, dates, mood/state overrides, stats + heatmap, trash, landing summary widgets.
 - **Re-exporting server actions across `'use server'` files uses one-line wrapper functions, NOT `export { foo } from "./bar"`.** Turbopack rejects `export { ... } from` and `export * from` in `'use server'` files at the syntactic check ("Only async functions are allowed to be exported"); `tsc` accepts them but the build fails. The pattern in admin.ts is:
   ```ts
