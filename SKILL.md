@@ -91,6 +91,10 @@ These were removed or never existed. Do not import them, reference them, or writ
 | `VoiceNote` type, `voiceNote` field, `MediaRecorder` + `RECORD_AUDIO` permission for `/permissions`                                           | None — voice notes prototyped on permissions and explicitly removed                        |
 | TZ primitives in `@/lib/rituals` (`dateKeyInTz`, `todayKeyCairo`, `tzWallClockToUtcMs`, `previousDateKey`, `nextDateKey`, `weekdayOfDateKey`) | `@/lib/cairo-time` — the migration relocated all TZ math; importing from rituals will fail |
 | Inline `todayInCairo()`, `secondsUntilMidnight()`, or per-callsite `Intl.DateTimeFormat` date-key helpers                                     | `@/lib/cairo-time` exports the canonical versions — never reinvent                         |
+| Standalone routes `/admin/inspector`, `/admin/cooldowns`, `/admin/time`                                                                       | `/admin/devices` ("Right now" section) for inspector; `/admin/health` (Cooldowns + Time tabs) for the other two |
+| `currentReviewWeekDate` for rewards bucketing                                                                                                  | `currentWeekKey` in `@/lib/obedience` (containing-week semantic, NOT just-completed)       |
+| `beforeSend` with stack-frame string check (`fetchServerAction` / `server-action-reducer`)                                                    | `ignoreErrors` in `Sentry.init` — message-based, invariant under Turbopack minification    |
+| `void pingDevice(...)` (or any `void asyncCall()`) for unhandled-rejection-safe fetch                                                          | `someAsync(...).catch(() => {})` — `void` discards the return value but does NOT catch rejections |
 
 If a search result, training memory, or autocomplete suggests one of these — it is wrong for this codebase. This table is also mirrored in `references/anti-hallucination.md` for tools that load reference files but not this one.
 

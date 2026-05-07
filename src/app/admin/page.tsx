@@ -9,7 +9,6 @@ import {
   Clock,
   Database,
   Download,
-  Eye,
   HeartPulse,
   KeyRound,
   Lock,
@@ -18,7 +17,6 @@ import {
   ShieldCheck,
   Smartphone,
   Smile,
-  Timer,
   Trash2,
 } from "lucide-react";
 import { SummonButton } from "@/components/admin/summon-button";
@@ -36,8 +34,8 @@ const TOOLS = [
   },
   {
     href: "/admin/health",
-    title: "Health & repair",
-    description: "Diagnostics + index reseed.",
+    title: "Diagnostics",
+    description: "Health, cooldowns, and live system time.",
     Icon: HeartPulse,
   },
   {
@@ -53,15 +51,9 @@ const TOOLS = [
     Icon: Download,
   },
   {
-    href: "/admin/inspector",
-    title: "Inspector",
-    description: "Live presence + FCM token state.",
-    Icon: Eye,
-  },
-  {
     href: "/admin/devices",
-    title: "Devices",
-    description: "Sessions, fingerprints, last-known location.",
+    title: "Devices & sessions",
+    description: "Live presence + FCM tokens + per-install device records.",
     Icon: Smartphone,
   },
   {
@@ -129,18 +121,6 @@ const TOOLS = [
     title: "Timezone converter",
     description: "Cairo ↔ Tabuk picker for visit planning.",
     Icon: Clock,
-  },
-  {
-    href: "/admin/time",
-    title: "System time",
-    description: "Cairo / Tabuk / weekKey / next midnight + rollover.",
-    Icon: Clock,
-  },
-  {
-    href: "/admin/cooldowns",
-    title: "Cooldowns & rate-limits",
-    description: "Active reask blocks, safeword cooldowns, denied-hash count.",
-    Icon: Timer,
   },
   {
     href: "/admin/redis",

@@ -253,7 +253,7 @@ Run this after every non-trivial deploy:
 - [ ] APK install replaces existing app without resetting biometric enrollment (only relevant when bumping `versionCode`)
 - [ ] Sentry receives at least one event from the new release (check the Sentry dashboard)
 - [ ] `/admin` redirects to `/` when logged in as Besho (verify the layout guard fires)
-- [ ] `/admin/inspector` polls every 5s and shows live presence + masked FCM token preview
+- [ ] `/admin/devices` "Right now" section polls every 5s and shows live presence + masked FCM token preview (was the standalone `/admin/inspector` page; merged in)
 - [ ] `/admin/push-test` form sends a custom FCM and the kitten device receives it (bypasses presence)
 - [ ] `/admin/activity` shows at least the most recent `[admin]` interaction event from the test push
 - [ ] Soft-delete: delete a throwaway note → confirm it appears in `/admin/trash` → restore → it's back at its original list position

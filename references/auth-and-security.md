@@ -46,22 +46,31 @@ The Sir-only revoke surface is `forceLogoutAuthor()` in `src/app/actions/admin.t
 1. **Layout guard** (`src/app/admin/layout.tsx`) — `redirect("/")` when `decrypt(cookieStore.get("session")?.value)?.author !== "T7SEN"`. Convenience only.
 2. **Action guard** (`requireSir()` in `src/app/actions/admin.ts`) — every server action duplicates the role check. **This** is the boundary; the layout exists so non-Sir don't see broken-looking pages.
 
-Six surfaces under `/admin`:
+Surfaces under `/admin`:
 
-| Route               | Surface                              | Server action(s)                                                       |
-| ------------------- | ------------------------------------ | ---------------------------------------------------------------------- |
-| `/admin/trash`      | List / restore / forget / purge      | `getTrashList`, `restoreTrashEntryAction`, `deleteTrashEntryAction`, `purgeTrashAction` |
-| `/admin/export`     | JSON snapshot download               | `exportSnapshot`                                                       |
-| `/admin/inspector`  | Live presence + FCM token state     | `getInspectorSnapshot` (5s polling client-side)                         |
-| `/admin/push-test`  | Send custom FCM (bypasses presence)  | `sendTestPushAction` (form-bound via `useActionState`)                  |
-| `/admin/activity`   | Last 500 logged events               | `getActivityFeed`, `clearActivityFeed`                                  |
-| `/admin/sessions`   | Per-author force-logout              | `getSessionEpochs`, `forceLogoutAuthor`                                 |
-| `/admin/devices`    | Per-device fingerprint / location / online state | `listDevices`, `forgetDevice`                                            |
-| `/admin/stats`      | Counts, ratios, 30-day heatmap                   | `getStats`, `getActivityHeatmap`                                          |
-| `/admin/health`     | Diagnostics + index reseed                       | `getHealthSnapshot`, `repairIndexes`                                     |
-| `/admin/auth-log`   | Failed-login attempts                            | `getAuthFailures`, `clearAuthFailures`                                   |
-| `/admin/mood`       | Sir-only mood + state override                   | `adminSetMoodForAuthor`, `adminClearMoodForAuthor`, `adminSetStateForAuthor`, `adminClearStateForAuthor` |
-| `/admin/dates`      | Anniversary + per-author birthday editor         | `getRelationshipDates`, `setRelationshipDates`                            |
+| Route                       | Surface                                                                                       | Server action(s)                                                                                          |
+| --------------------------- | --------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `/admin/trash`              | List / restore / forget / purge                                                               | `getTrashList`, `restoreTrashEntryAction`, `deleteTrashEntryAction`, `purgeTrashAction`                   |
+| `/admin/export`             | JSON snapshot download                                                                        | `exportSnapshot`                                                                                          |
+| `/admin/devices`            | "Right now" (presence + FCM tokens) + per-install device list (fingerprint / location / online) | `getInspectorSnapshot`, `listDevices`, `forgetDevice` (5s parallel poll)                                  |
+| `/admin/push-test`          | Send custom FCM (bypasses presence)                                                           | `sendTestPushAction` (form-bound via `useActionState`)                                                    |
+| `/admin/activity`           | Last 500 logged events                                                                        | `getActivityFeed`, `clearActivityFeed`                                                                    |
+| `/admin/sessions`           | Per-author force-logout                                                                       | `getSessionEpochs`, `forceLogoutAuthor`                                                                   |
+| `/admin/stats`              | Counts, ratios, 30-day heatmap                                                                | `getStats`, `getActivityHeatmap`                                                                          |
+| `/admin/health`             | Tabbed: Health (Redis/FCM/cron/repair) · Cooldowns · Time                                     | `getHealthSnapshot`, `getCronTelemetry`, `getCooldownState`, `repairIndexes`, `repairObedienceDrift`, `migrateObedienceBucketShift` |
+| `/admin/auth-log`           | Failed-login attempts                                                                         | `getAuthFailures`, `clearAuthFailures`                                                                    |
+| `/admin/mood`               | Sir-only mood + state override                                                                | `adminSetMoodForAuthor`, `adminClearMoodForAuthor`, `adminSetStateForAuthor`, `adminClearStateForAuthor`  |
+| `/admin/dates`              | Anniversary + per-author birthday editor                                                      | `getRelationshipDates`, `setRelationshipDates`                                                            |
+| `/admin/rewards`            | Tabbed: Tiers / Weights / Streak / Status / Event log                                         | `getObedienceAdminSnapshot`, `setRewardTiers`, `setObedienceWeights`, `setStreakSettings`, `adminSetStreakRaw`, `getObedienceEventLog`, `adminAdjustScore`, `adminDeleteObedienceEvent`, `setTestModeState`, `adminPurgeTestClaims`, `recomputeWeek` |
+| `/admin/permissions`        | Tabbed: Bulk decide / Auto-rules JSON / Quotas JSON                                           | `getPermissionsAdminBundle`, `adminSaveAutoRulesJson`, `adminSaveQuotasJson`, `bulkApprovePendingOlderThan`, `bulkDenyPendingByCategory` |
+| `/admin/notifications`      | Forward-only outbound notification audit (separate from drawer LISTs)                         | `getOutboundNotificationAudit`, `resendNotification`                                                      |
+| `/admin/restraint-history`  | Engage/lift transitions log (capped 200)                                                      | `getRestraintHistory`                                                                                     |
+| `/admin/timezone`           | Cairo ↔ Tabuk converter (input-driven, pure UI)                                               | (none — pure client `Intl.DateTimeFormat`)                                                                |
+| `/admin/redis`              | Read-only key inspector                                                                       | `inspectRedisKey`                                                                                         |
+
+**Two consolidations landed mid-development**:
+1. Inspector merged into Devices — `/admin/inspector` deleted; its presence + FCM token cards moved to a "Right now" section atop `/admin/devices`.
+2. Cooldowns + System time merged into Health — `/admin/cooldowns` and `/admin/time` deleted; both became tabs alongside Health on `/admin/health` (renamed "Diagnostics" in TOOLS).
 
 The landing page itself (`/admin`) hosts a single action button — `<SummonButton>` — which calls `summonKitten()`. This is the sole Sir → Besho push that mirrors the safeword delivery shape: `bypassPresence: true` + Android `channelId: "safeword"` + `priority: "max"` + `sound: "default"`. The message is intentionally possessive and dominant; it is not configurable from the UI and lives directly in the action body. No cooldown — the two-step confirm is the only guard against an accidental tap.
 

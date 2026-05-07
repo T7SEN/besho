@@ -5,7 +5,10 @@ import Link from "next/link";
 import {
   ArrowLeft,
   Award,
+  CalendarDays,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Loader2,
   Plus,
   RefreshCw,
@@ -53,6 +56,12 @@ import {
   type RewardTier,
 } from "@/lib/reward-types";
 import type { Author } from "@/lib/constants";
+import {
+  addDaysCairo,
+  todayKeyCairo,
+  weekdayOfDateKey,
+} from "@/lib/cairo-time";
+import { formatWeekLabel } from "@/lib/review-utils";
 import { vibrate } from "@/lib/haptic";
 import { cn } from "@/lib/utils";
 import { useRefreshListener } from "@/hooks/use-refresh-listener";
@@ -1284,6 +1293,19 @@ const SIGN_FILTERS = [
 type SignFilter = (typeof SIGN_FILTERS)[number]["value"];
 type TypeFilter = ObedienceEventType | "all";
 
+/** Snap any YYYY-MM-DD to the Sunday of its containing week (Cairo). */
+function snapToContainingSunday(dateKey: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) return dateKey;
+  const dow = weekdayOfDateKey(dateKey); // 0=Sun..6=Sat
+  return addDaysCairo(dateKey, -dow);
+}
+
+/** Sunday of the week containing today, Cairo. Computed lazily once. */
+function computeCurrentSunday(): string {
+  const today = todayKeyCairo();
+  return snapToContainingSunday(today);
+}
+
 function EventLogViewer({ initialWeekKey }: { initialWeekKey: string }) {
   const [author, setAuthor] = useState<Author>("Besho");
   const [weekKey, setWeekKey] = useState<string>(initialWeekKey);
@@ -1295,6 +1317,34 @@ function EventLogViewer({ initialWeekKey }: { initialWeekKey: string }) {
   const [now] = useState(() => Date.now());
   const [signFilter, setSignFilter] = useState<SignFilter>("all");
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
+  // Snapshot the current week's Sunday once on mount so we can disable
+  // "Next →" at the boundary (no point fetching weeks in the future).
+  const [currentSunday] = useState(() => computeCurrentSunday());
+
+  const handlePrevWeek = () => {
+    void vibrate(15, "light");
+    setWeekKey((wk) => addDaysCairo(wk, -7));
+  };
+  const handleNextWeek = () => {
+    if (weekKey >= currentSunday) return;
+    void vibrate(15, "light");
+    setWeekKey((wk) => addDaysCairo(wk, 7));
+  };
+  const handleThisWeek = () => {
+    if (weekKey === currentSunday) return;
+    void vibrate(15, "light");
+    setWeekKey(currentSunday);
+  };
+  const handleDatePick = (picked: string) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(picked)) return;
+    const sunday = snapToContainingSunday(picked);
+    if (sunday === weekKey) return;
+    void vibrate(20, "light");
+    setWeekKey(sunday);
+  };
+
+  const isAtCurrentWeek = weekKey === currentSunday;
+  const isAtFutureWeek = weekKey > currentSunday;
 
   const fetchLog = useCallback(async () => {
     setBusy(true);
@@ -1374,7 +1424,7 @@ function EventLogViewer({ initialWeekKey }: { initialWeekKey: string }) {
         Reasons for <code>manual_adjust</code> + restraint notes live in
         <code className="mx-1">/admin/activity</code>, not here.
       </p>
-      <div className="grid gap-3 md:grid-cols-[1fr_1fr_auto]">
+      <div className="grid gap-3 md:grid-cols-[auto_1fr_auto]">
         <Field label="Author">
           <select
             value={author}
@@ -1385,27 +1435,74 @@ function EventLogViewer({ initialWeekKey }: { initialWeekKey: string }) {
             <option value="T7SEN">T7SEN</option>
           </select>
         </Field>
-        <Field label="Week (Sunday YYYY-MM-DD)">
-          <input
-            type="text"
-            value={weekKey}
-            onChange={(e) => setWeekKey(e.target.value)}
-            className="w-full rounded border border-border/60 bg-input/40 px-2 py-1 text-sm tabular-nums focus:border-primary focus:outline-none"
-          />
+        <Field label="Week">
+          <div className="flex items-stretch gap-1">
+            <button
+              type="button"
+              onClick={handlePrevWeek}
+              aria-label="Previous week"
+              className="flex items-center justify-center rounded border border-border/60 bg-input/40 px-2 text-muted-foreground transition-colors hover:border-primary/40 hover:text-primary active:scale-95"
+            >
+              <ChevronLeft className="h-3.5 w-3.5" />
+            </button>
+            <div
+              className={cn(
+                "flex flex-1 items-center justify-center gap-1.5 rounded border bg-input/40 px-2 py-1 text-sm tabular-nums",
+                isAtCurrentWeek
+                  ? "border-primary/50 text-foreground"
+                  : isAtFutureWeek
+                    ? "border-rose-500/40 text-rose-400"
+                    : "border-border/60 text-muted-foreground",
+              )}
+              title={weekKey}
+            >
+              <CalendarDays className="h-3.5 w-3.5 opacity-60" />
+              <span className="font-medium">{formatWeekLabel(weekKey)}</span>
+              {isAtCurrentWeek && (
+                <span className="text-[9px] font-bold uppercase tracking-wider text-primary">
+                  this wk
+                </span>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={handleNextWeek}
+              disabled={isAtCurrentWeek || isAtFutureWeek}
+              aria-label="Next week"
+              className="flex items-center justify-center rounded border border-border/60 bg-input/40 px-2 text-muted-foreground transition-colors hover:border-primary/40 hover:text-primary active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <ChevronRight className="h-3.5 w-3.5" />
+            </button>
+          </div>
         </Field>
-        <div className="flex items-end">
+        <div className="flex items-end gap-1">
+          <input
+            type="date"
+            aria-label="Pick any date in the target week"
+            value={weekKey}
+            onChange={(e) => handleDatePick(e.target.value)}
+            className="rounded border border-border/60 bg-input/40 px-2 py-1.5 text-xs tabular-nums focus:border-primary focus:outline-none"
+          />
+          <button
+            type="button"
+            onClick={handleThisWeek}
+            disabled={isAtCurrentWeek}
+            className="rounded-full border border-border/60 px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground active:scale-95 disabled:opacity-40"
+          >
+            Today
+          </button>
           <button
             type="button"
             onClick={() => void fetchLog()}
             disabled={busy}
-            className="flex items-center gap-1.5 rounded-full border border-border/60 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground active:scale-95 disabled:opacity-50"
+            aria-label="Reload"
+            className="flex items-center justify-center rounded-full border border-border/60 px-2.5 py-1.5 text-muted-foreground transition-colors hover:text-foreground active:scale-95 disabled:opacity-50"
           >
             {busy ? (
               <Loader2 className="h-3 w-3 animate-spin" />
             ) : (
               <RefreshCw className="h-3 w-3" />
             )}
-            Reload
           </button>
         </div>
       </div>

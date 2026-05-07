@@ -193,7 +193,7 @@ src/
 │   ├── rituals/                # Recurring obligations + LocalNotifications reminders
 │   ├── review/                 # Weekly retrospective — independent reflections, atomic reveal
 │   ├── rewards/                # Obedience score + tier ladder + claim/deliver flow (Besho score, Sir delivers)
-│   ├── admin/                  # Sir-only sub-tree (layout redirects non-Sir): trash, export, inspector, push-test, activity, sessions, devices, stats, health, auth-log, mood, dates, rewards, redis
+│   ├── admin/                  # Sir-only sub-tree (layout redirects non-Sir): trash, export, push-test, activity, sessions, devices (presence + FCM tokens + per-install records — old /admin/inspector merged in), stats, health (tabbed: Health / Cooldowns / Time — old /admin/cooldowns + /admin/time merged in), auth-log, mood, dates, rewards, permissions, notifications, restraint-history, timezone, redis
 │   ├── actions/                # Server actions ('use server')
 │   │   ├── admin.ts            # Inspector, test push, activity feed reader, session epochs + force-logout, JSON export, trash list/restore/purge, device list, restraint toggle, auth-log reader, dates editor, mood override, stats, health + repair, heatmap, reward tiers/weights/streak editor, recompute week
 │   │   ├── rewards.ts          # Both-author bundle, claim/deliver/deny, claim history
