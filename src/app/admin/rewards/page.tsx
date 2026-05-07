@@ -5,6 +5,7 @@ import Link from "next/link";
 import {
   ArrowLeft,
   Award,
+  ChevronDown,
   Loader2,
   Plus,
   RefreshCw,
@@ -16,6 +17,7 @@ import {
   adminAdjustScore,
   adminDeleteObedienceEvent,
   adminPurgeTestClaims,
+  adminSetStreakRaw,
   getObedienceAdminSnapshot,
   getObedienceEventLog,
   getTestModeState,
@@ -26,12 +28,17 @@ import {
   setTestModeState,
   type ObedienceAdminSnapshot,
 } from "@/app/actions/admin";
+import {
+  bulkDeliverPending,
+  bulkDenyOlderThan,
+} from "@/app/actions/rewards";
 import type { ObedienceAuditEntry } from "@/lib/obedience";
 import {
   MANUAL_ADJUST_MAX,
   MANUAL_ADJUST_MIN,
   MANUAL_ADJUST_REASON_MAX,
   OBEDIENCE_EVENT_LABELS,
+  OBEDIENCE_EVENT_TYPES,
   REWARD_BODY_MAX,
   REWARD_EMOJI_MAX,
   REWARD_LABEL_MAX,
@@ -48,6 +55,7 @@ import {
 import type { Author } from "@/lib/constants";
 import { vibrate } from "@/lib/haptic";
 import { cn } from "@/lib/utils";
+import { useRefreshListener } from "@/hooks/use-refresh-listener";
 import {
   Tabs,
   TabsContent,
@@ -82,6 +90,8 @@ export default function AdminRewardsPage() {
     }, 0);
     return () => clearTimeout(t);
   }, [fetchSnapshot]);
+
+  useRefreshListener(fetchSnapshot);
 
   return (
     <main className="mx-auto max-w-3xl p-4 pb-28 md:p-12 md:pb-32">
@@ -142,6 +152,7 @@ export default function AdminRewardsPage() {
             />
             <TestModeToggle />
             <ManualAdjustEditor onSaved={fetchSnapshot} />
+            <BulkClaimOpsEditor onSaved={fetchSnapshot} />
             <EventLogViewer
               initialWeekKey={snapshot.besho.currentWeek.weekKey}
             />
@@ -165,6 +176,11 @@ export default function AdminRewardsPage() {
             <StreakSettingsEditor
               initialThreshold={snapshot.streakThreshold}
               initialMultipliers={snapshot.multipliers}
+              initialRiskMinDeficit={snapshot.streakRiskMinDeficit}
+              onSaved={fetchSnapshot}
+            />
+            <StreakOverrideEditor
+              initialBeshoStreak={snapshot.besho.streak}
               onSaved={fetchSnapshot}
             />
           </TabsContent>
@@ -878,16 +894,20 @@ function WeightsEditor({
 function StreakSettingsEditor({
   initialThreshold,
   initialMultipliers,
+  initialRiskMinDeficit,
   onSaved,
 }: {
   initialThreshold: number;
   initialMultipliers: readonly number[];
+  initialRiskMinDeficit: number;
   onSaved: () => Promise<void>;
 }) {
   const [threshold, setThreshold] = useState<number>(initialThreshold);
   const [multipliersText, setMultipliersText] = useState<string>(
     initialMultipliers.join(", "),
   );
+  const [riskMinDeficit, setRiskMinDeficit] =
+    useState<number>(initialRiskMinDeficit);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -895,6 +915,7 @@ function StreakSettingsEditor({
   const handleReset = () => {
     setThreshold(initialThreshold);
     setMultipliersText(initialMultipliers.join(", "));
+    setRiskMinDeficit(initialRiskMinDeficit);
     setErr(null);
     setMsg(null);
   };
@@ -908,11 +929,22 @@ function StreakSettingsEditor({
       setErr("Multipliers required.");
       return;
     }
+    if (
+      !Number.isFinite(riskMinDeficit) ||
+      riskMinDeficit < 1
+    ) {
+      setErr("Streak-risk min deficit must be ≥ 1.");
+      return;
+    }
     setBusy(true);
     setErr(null);
     setMsg(null);
     void vibrate(40, "medium");
-    const result = await setStreakSettings(threshold, mults);
+    const result = await setStreakSettings(
+      threshold,
+      mults,
+      Math.round(riskMinDeficit),
+    );
     setBusy(false);
     if (result.error) {
       setErr(result.error);
@@ -929,8 +961,11 @@ function StreakSettingsEditor({
         High-score weeks (displayed score ≥ threshold) accumulate a streak.
         The Nth entry of the multiplier ladder applies on the (N)th
         consecutive prior high-score week — index 0 = no streak (×1.0).
+        Streak-risk min deficit suppresses the Friday-evening
+        &quot;streak at risk&quot; FCM unless kitten is at least N pts
+        below the threshold.
       </p>
-      <div className="grid gap-3 md:grid-cols-2">
+      <div className="grid gap-3 md:grid-cols-3">
         <Field label="Threshold">
           <input
             type="number"
@@ -951,6 +986,16 @@ function StreakSettingsEditor({
             placeholder="1.0, 1.1, 1.2, 1.3"
           />
         </Field>
+        <Field label="Streak-risk min deficit">
+          <input
+            type="number"
+            inputMode="numeric"
+            value={riskMinDeficit}
+            min={1}
+            onChange={(e) => setRiskMinDeficit(Number(e.target.value) || 1)}
+            className="w-full rounded border border-border/60 bg-input/40 px-2 py-1 text-sm tabular-nums focus:border-primary focus:outline-none"
+          />
+        </Field>
       </div>
       <SaveBar
         busy={busy}
@@ -963,26 +1008,305 @@ function StreakSettingsEditor({
   );
 }
 
+// ── Streak override (admin-only direct write) ────────────────────────────
+
+function StreakOverrideEditor({
+  initialBeshoStreak,
+  onSaved,
+}: {
+  initialBeshoStreak: number;
+  onSaved: () => Promise<void>;
+}) {
+  const [author, setAuthor] = useState<Author>("Besho");
+  const [valueText, setValueText] = useState<string>(
+    String(initialBeshoStreak),
+  );
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  const handleSave = async () => {
+    const n = Number(valueText);
+    if (!Number.isFinite(n) || n < 0) {
+      setErr("Value must be ≥ 0.");
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    setMsg(null);
+    void vibrate(40, "medium");
+    const result = await adminSetStreakRaw(author, Math.floor(n));
+    setBusy(false);
+    if (result.error) {
+      setErr(result.error);
+      return;
+    }
+    setMsg(`Set ${author}'s streak counter to ${Math.floor(n)}.`);
+    void onSaved();
+  };
+
+  return (
+    <section className="rounded-2xl border border-border/40 bg-card p-5">
+      <h2 className="mb-3 text-sm font-semibold">Override streak</h2>
+      <p className="mb-4 text-sm text-muted-foreground">
+        Direct write to <code>obedience:streak:{author}</code>. Useful when
+        a finalize bumped the wrong way and the displayed multiplier needs
+        manual correction. Setting to 0 deletes the key (no streak).
+      </p>
+      <div className="grid gap-3 md:grid-cols-[1fr_1fr_auto]">
+        <Field label="Author">
+          <select
+            value={author}
+            onChange={(e) => setAuthor(e.target.value as Author)}
+            className="w-full rounded border border-border/60 bg-input/40 px-2 py-1 text-sm focus:border-primary focus:outline-none"
+          >
+            <option value="Besho">Besho</option>
+            <option value="T7SEN">T7SEN</option>
+          </select>
+        </Field>
+        <Field label="Streak value">
+          <input
+            type="number"
+            inputMode="numeric"
+            value={valueText}
+            min={0}
+            onChange={(e) => setValueText(e.target.value)}
+            className="w-full rounded border border-border/60 bg-input/40 px-2 py-1 text-sm tabular-nums focus:border-primary focus:outline-none"
+          />
+        </Field>
+        <div className="flex items-end">
+          <button
+            type="button"
+            onClick={() => void handleSave()}
+            disabled={busy}
+            className="flex items-center gap-1.5 rounded-full bg-primary px-4 py-2 text-xs font-bold uppercase tracking-wider text-primary-foreground transition-opacity active:scale-95 disabled:opacity-60"
+          >
+            {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+            Set
+          </button>
+        </div>
+      </div>
+      {msg && <p className="mt-2 text-sm text-emerald-400">{msg}</p>}
+      {err && <p className="mt-2 text-sm text-destructive">{err}</p>}
+    </section>
+  );
+}
+
+// ── Bulk claim ops ───────────────────────────────────────────────────────
+
+function BulkClaimOpsEditor({
+  onSaved,
+}: {
+  onSaved: () => Promise<void>;
+}) {
+  const [deliverNote, setDeliverNote] = useState("");
+  const [denyDays, setDenyDays] = useState("7");
+  const [denyReason, setDenyReason] = useState("");
+  const [busy, setBusy] = useState<"deliver" | "deny" | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState<"deliver" | "deny" | null>(null);
+
+  useEffect(() => {
+    if (!confirming) return;
+    const t = setTimeout(() => setConfirming(null), 5_000);
+    return () => clearTimeout(t);
+  }, [confirming]);
+
+  const handleDeliver = async () => {
+    if (confirming !== "deliver") {
+      setConfirming("deliver");
+      setErr(null);
+      setMsg(null);
+      void vibrate(40, "medium");
+      return;
+    }
+    setBusy("deliver");
+    setErr(null);
+    setMsg(null);
+    void vibrate([100, 40, 80], "heavy");
+    const result = await bulkDeliverPending(deliverNote || undefined);
+    setBusy(null);
+    setConfirming(null);
+    if (result.error) {
+      setErr(result.error);
+      return;
+    }
+    setMsg(
+      `Delivered ${result.delivered ?? 0} pending ${
+        result.delivered === 1 ? "claim" : "claims"
+      }.`,
+    );
+    setDeliverNote("");
+    void onSaved();
+  };
+
+  const handleDeny = async () => {
+    const days = Number(denyDays);
+    if (!Number.isFinite(days) || days < 1) {
+      setErr("Days must be ≥ 1.");
+      return;
+    }
+    if (confirming !== "deny") {
+      setConfirming("deny");
+      setErr(null);
+      setMsg(null);
+      void vibrate(40, "medium");
+      return;
+    }
+    setBusy("deny");
+    setErr(null);
+    setMsg(null);
+    void vibrate([100, 40, 80], "heavy");
+    const result = await bulkDenyOlderThan(
+      Math.floor(days),
+      denyReason || undefined,
+    );
+    setBusy(null);
+    setConfirming(null);
+    if (result.error) {
+      setErr(result.error);
+      return;
+    }
+    setMsg(
+      `Denied ${result.denied ?? 0} pending ${
+        result.denied === 1 ? "claim" : "claims"
+      } older than ${Math.floor(days)} day${days === 1 ? "" : "s"}.`,
+    );
+    setDenyReason("");
+    void onSaved();
+  };
+
+  return (
+    <section className="rounded-2xl border border-border/40 bg-card p-5">
+      <h2 className="mb-3 text-sm font-semibold">Bulk claim ops</h2>
+      <p className="mb-4 text-sm text-muted-foreground">
+        Sweep all pending claims in one action. One summary FCM per
+        recipient (not per claim). Each action is two-tap to confirm.
+      </p>
+
+      <div className="space-y-4">
+        <div className="rounded-lg border border-border/40 bg-card/50 p-3">
+          <p className="text-xs font-bold uppercase tracking-wider text-emerald-400">
+            Deliver all pending
+          </p>
+          <input
+            type="text"
+            value={deliverNote}
+            onChange={(e) => setDeliverNote(e.target.value)}
+            maxLength={500}
+            dir="auto"
+            placeholder="Optional note (kitten will see)"
+            className="mt-2 w-full rounded border border-border/60 bg-input/40 px-2 py-1 text-sm focus:border-primary focus:outline-none"
+          />
+          <button
+            type="button"
+            onClick={() => void handleDeliver()}
+            disabled={busy !== null}
+            className={cn(
+              "mt-2 flex w-full items-center justify-center gap-1.5 rounded-full px-3 py-2 text-[10px] font-bold uppercase tracking-wider transition-opacity active:scale-95 disabled:opacity-60",
+              confirming === "deliver"
+                ? "bg-rose-500/80 text-white"
+                : "bg-emerald-500/80 text-white",
+            )}
+          >
+            {busy === "deliver" ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : null}
+            {confirming === "deliver"
+              ? "Confirm deliver-all"
+              : "Deliver all pending"}
+          </button>
+        </div>
+
+        <div className="rounded-lg border border-border/40 bg-card/50 p-3">
+          <p className="text-xs font-bold uppercase tracking-wider text-rose-400">
+            Deny pending older than N days
+          </p>
+          <div className="mt-2 grid gap-2 md:grid-cols-[auto_1fr]">
+            <Field label="Days">
+              <input
+                type="number"
+                inputMode="numeric"
+                min={1}
+                value={denyDays}
+                onChange={(e) => setDenyDays(e.target.value)}
+                className="w-20 rounded border border-border/60 bg-input/40 px-2 py-1 text-sm tabular-nums focus:border-primary focus:outline-none"
+              />
+            </Field>
+            <Field label="Reason (optional)">
+              <input
+                type="text"
+                value={denyReason}
+                onChange={(e) => setDenyReason(e.target.value)}
+                maxLength={500}
+                dir="auto"
+                placeholder="Why these are denied"
+                className="w-full rounded border border-border/60 bg-input/40 px-2 py-1 text-sm focus:border-primary focus:outline-none"
+              />
+            </Field>
+          </div>
+          <button
+            type="button"
+            onClick={() => void handleDeny()}
+            disabled={busy !== null}
+            className={cn(
+              "mt-2 flex w-full items-center justify-center gap-1.5 rounded-full px-3 py-2 text-[10px] font-bold uppercase tracking-wider transition-opacity active:scale-95 disabled:opacity-60",
+              confirming === "deny"
+                ? "bg-rose-600 text-white"
+                : "bg-rose-500/80 text-white",
+            )}
+          >
+            {busy === "deny" ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : null}
+            {confirming === "deny"
+              ? `Confirm deny ≥ ${denyDays} days`
+              : "Deny stale pending"}
+          </button>
+        </div>
+      </div>
+      {msg && <p className="mt-3 text-sm text-emerald-400">{msg}</p>}
+      {err && <p className="mt-3 text-sm text-destructive">{err}</p>}
+    </section>
+  );
+}
+
 // ── Event log viewer ─────────────────────────────────────────────────────
+
+const PAGE_SIZE = 200;
+const SIGN_FILTERS = [
+  { value: "all" as const, label: "All" },
+  { value: "positive" as const, label: "+ only" },
+  { value: "negative" as const, label: "− only" },
+];
+
+type SignFilter = (typeof SIGN_FILTERS)[number]["value"];
+type TypeFilter = ObedienceEventType | "all";
 
 function EventLogViewer({ initialWeekKey }: { initialWeekKey: string }) {
   const [author, setAuthor] = useState<Author>("Besho");
   const [weekKey, setWeekKey] = useState<string>(initialWeekKey);
   const [entries, setEntries] = useState<ObedienceAuditEntry[] | null>(null);
+  const [total, setTotal] = useState(0);
   const [busy, setBusy] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [now] = useState(() => Date.now());
+  const [signFilter, setSignFilter] = useState<SignFilter>("all");
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
 
   const fetchLog = useCallback(async () => {
     setBusy(true);
     setErr(null);
-    const result = await getObedienceEventLog(author, weekKey, 200);
+    const result = await getObedienceEventLog(author, weekKey, PAGE_SIZE, 0);
     setBusy(false);
     if (result.error) {
       setErr(result.error);
       return;
     }
     setEntries(result.entries ?? []);
+    setTotal(result.total ?? 0);
   }, [author, weekKey]);
 
   useEffect(() => {
@@ -992,6 +1316,54 @@ function EventLogViewer({ initialWeekKey }: { initialWeekKey: string }) {
     return () => clearTimeout(t);
   }, [fetchLog]);
 
+  const handleLoadMore = async () => {
+    if (!entries) return;
+    setLoadingMore(true);
+    setErr(null);
+    void vibrate(20, "light");
+    const result = await getObedienceEventLog(
+      author,
+      weekKey,
+      PAGE_SIZE,
+      entries.length,
+    );
+    setLoadingMore(false);
+    if (result.error) {
+      setErr(result.error);
+      return;
+    }
+    const more = result.entries ?? [];
+    if (more.length === 0) {
+      setTotal(result.total ?? entries.length);
+      return;
+    }
+    setEntries((prev) => {
+      if (!prev) return more;
+      const seen = new Set(prev.map((e) => `${e.type}:${e.eventId}`));
+      const merged = [...prev];
+      for (const e of more) {
+        const k = `${e.type}:${e.eventId}`;
+        if (!seen.has(k)) {
+          merged.push(e);
+          seen.add(k);
+        }
+      }
+      return merged;
+    });
+    setTotal(result.total ?? total);
+  };
+
+  const filtered = (entries ?? []).filter((e) => {
+    if (signFilter === "positive" && e.points < 0) return false;
+    if (signFilter === "negative" && e.points >= 0) return false;
+    if (typeFilter !== "all" && e.type !== typeFilter) return false;
+    return true;
+  });
+
+  const loadedCount = entries?.length ?? 0;
+  const hasMore = total > loadedCount;
+  const isFiltering = signFilter !== "all" || typeFilter !== "all";
+
   return (
     <section className="rounded-2xl border border-border/40 bg-card p-5">
       <h2 className="mb-3 text-sm font-semibold">Event log</h2>
@@ -999,7 +1371,7 @@ function EventLogViewer({ initialWeekKey }: { initialWeekKey: string }) {
         Per-week audit of every obedience emit, joined from
         <code className="mx-1">obedience:events:*</code> +
         <code className="mx-1">obedience:audit:*</code>. Newest first.
-        Reasons for <code>manual_adjust</code> live in
+        Reasons for <code>manual_adjust</code> + restraint notes live in
         <code className="mx-1">/admin/activity</code>, not here.
       </p>
       <div className="grid gap-3 md:grid-cols-[1fr_1fr_auto]">
@@ -1038,6 +1410,47 @@ function EventLogViewer({ initialWeekKey }: { initialWeekKey: string }) {
         </div>
       </div>
 
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        {SIGN_FILTERS.map((f) => (
+          <button
+            key={f.value}
+            type="button"
+            onClick={() => {
+              void vibrate(15, "light");
+              setSignFilter(f.value);
+            }}
+            className={cn(
+              "rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider transition-colors active:scale-95",
+              signFilter === f.value
+                ? "border-primary/60 bg-primary/15 text-primary"
+                : "border-border/40 text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {f.label}
+          </button>
+        ))}
+        <div className="relative">
+          <select
+            value={typeFilter}
+            onChange={(e) => setTypeFilter(e.target.value as TypeFilter)}
+            className="appearance-none rounded-full border border-border/40 bg-card pr-7 pl-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-muted-foreground focus:border-primary focus:outline-none"
+          >
+            <option value="all">All types</option>
+            {OBEDIENCE_EVENT_TYPES.map((t) => (
+              <option key={t} value={t}>
+                {OBEDIENCE_EVENT_LABELS[t]}
+              </option>
+            ))}
+          </select>
+          <ChevronDown className="pointer-events-none absolute right-1.5 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
+        </div>
+        <span className="ml-auto text-[10px] tabular-nums text-muted-foreground">
+          {isFiltering
+            ? `${filtered.length} match · ${loadedCount} of ${total} loaded`
+            : `Showing ${loadedCount} of ${total}`}
+        </span>
+      </div>
+
       {err && (
         <div className="mt-3 rounded-lg border border-destructive/40 bg-destructive/10 p-2 text-xs text-destructive">
           {err}
@@ -1050,9 +1463,15 @@ function EventLogViewer({ initialWeekKey }: { initialWeekKey: string }) {
         </p>
       )}
 
-      {entries && entries.length > 0 && (
+      {entries && entries.length > 0 && filtered.length === 0 && !err && (
+        <p className="mt-3 text-xs text-muted-foreground">
+          No matches for this filter.
+        </p>
+      )}
+
+      {filtered.length > 0 && (
         <ul className="mt-4 space-y-1">
-          {entries.map((e) => (
+          {filtered.map((e) => (
             <EventRow
               key={`${e.type}:${e.eventId}`}
               entry={e}
@@ -1068,10 +1487,27 @@ function EventLogViewer({ initialWeekKey }: { initialWeekKey: string }) {
                       )
                     : prev,
                 );
+                setTotal((t) => Math.max(0, t - 1));
               }}
             />
           ))}
         </ul>
+      )}
+
+      {hasMore && (
+        <div className="mt-3 flex justify-center">
+          <button
+            type="button"
+            onClick={() => void handleLoadMore()}
+            disabled={loadingMore}
+            className="flex items-center gap-1.5 rounded-full border border-border/60 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground active:scale-95 disabled:opacity-50"
+          >
+            {loadingMore ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : null}
+            Load more ({total - loadedCount} remaining)
+          </button>
+        </div>
       )}
     </section>
   );

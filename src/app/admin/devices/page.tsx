@@ -21,6 +21,7 @@ import { forgetDevice } from "@/app/actions/devices";
 import { TITLE_BY_AUTHOR, type Author } from "@/lib/constants";
 import { vibrate } from "@/lib/haptic";
 import { cn } from "@/lib/utils";
+import { useRefreshListener } from "@/hooks/use-refresh-listener";
 
 const POLL_MS = 10_000;
 const CONFIRM_TIMEOUT_MS = 5_000;
@@ -71,6 +72,8 @@ export default function DevicesPage() {
     const id = setInterval(() => void fetchDevices(), POLL_MS);
     return () => clearInterval(id);
   }, [fetchDevices]);
+
+  useRefreshListener(fetchDevices);
 
   useEffect(() => {
     const id = setInterval(() => setTick(Date.now()), 1_000);

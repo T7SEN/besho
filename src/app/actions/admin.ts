@@ -42,6 +42,8 @@ import {
   setWeightsRaw,
   getStreakThreshold as readStreakThreshold,
   setStreakThresholdRaw,
+  getStreakRiskMinDeficit as readStreakRiskMinDeficit,
+  setStreakRiskMinDeficitRaw,
   getMultipliers as readMultipliers,
   setMultipliersRaw,
   getStreak,
@@ -53,8 +55,14 @@ import {
   deleteObedienceEvent,
   getTestMode,
   setTestModeRaw,
+  repairAllObedienceZsetDrift,
   type ObedienceAuditEntry,
+  type ObedienceDriftRepairResult,
 } from "@/lib/obedience";
+import {
+  readAllCronTelemetry,
+  type CronTelemetrySnapshot,
+} from "@/lib/cron-telemetry";
 import {
   type RewardTier,
   type RewardItem,
@@ -71,9 +79,11 @@ import {
   MAX_REWARDS_PER_TIER,
   MAX_TIER_THRESHOLD,
   MAX_MULTIPLIER,
+  MAX_STREAK_RISK_MIN_DEFICIT,
   MANUAL_ADJUST_MIN,
   MANUAL_ADJUST_MAX,
   MANUAL_ADJUST_REASON_MAX,
+  OBEDIENCE_NOTE_MAX,
 } from "@/lib/reward-types";
 
 const redis = new Redis({
@@ -579,9 +589,12 @@ export async function getRestraintState(): Promise<RestraintStateResult> {
 
 export async function setRestraintState(
   on: boolean,
+  note?: string,
 ): Promise<{ success?: boolean; error?: string; on?: boolean }> {
   const guard = await requireSir();
   if (!guard.ok) return { error: guard.error };
+  const trimmedNote =
+    typeof note === "string" ? note.trim().slice(0, OBEDIENCE_NOTE_MAX) : "";
   try {
     const previous = await readRestraintRaw();
     await setRestraintRaw(on);
@@ -589,18 +602,23 @@ export async function setRestraintState(
     // Obedience: -10 per restraint engagement (off → on transition).
     // Lifting (on → off) does NOT credit — that's not earned. Each
     // engagement gets a unique eventId so re-engagements within the
-    // same week stack the penalty.
+    // same week stack the penalty. Optional note rides into the
+    // activity log only — never onto the ZSET member.
     if (on && !previous) {
       void recordObedienceEvent(
         "Besho",
         "restraint_engaged",
         crypto.randomUUID(),
+        Date.now(),
+        undefined,
+        trimmedNote || undefined,
       );
     }
 
     logger.interaction("[admin] restraint toggled", {
       on,
       by: guard.session.author,
+      ...(trimmedNote ? { note: trimmedNote } : {}),
     });
     revalidatePath("/admin");
     return { success: true, on };
@@ -1506,6 +1524,76 @@ export async function repairIndexes(): Promise<RepairResult> {
 }
 
 // ──────────────────────────────────────────────────────────────────
+// Cron telemetry — Sir-only read of `cron:last-run:{name}` for the
+// three cron-job.org-driven routes. Closes the visibility hole that
+// made the earlier FCM-spam debug feel blind.
+// ──────────────────────────────────────────────────────────────────
+
+export interface CronTelemetryResult {
+  snapshots?: CronTelemetrySnapshot[];
+  generatedAt?: number;
+  error?: string;
+}
+
+export async function getCronTelemetry(): Promise<CronTelemetryResult> {
+  const guard = await requireSir();
+  if (!guard.ok) return { error: guard.error };
+  try {
+    const snapshots = await readAllCronTelemetry();
+    return { snapshots, generatedAt: Date.now() };
+  } catch (err) {
+    logger.error("[admin] cron telemetry read failed", err);
+    return { error: "Failed to read cron telemetry." };
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Obedience ZSET drift repair — events vs audit reconciliation.
+// Parallel to `repairIndexes` for notes. Sweeps both authors over the
+// current week + the prior 4 weeks. Cheap insurance against half-
+// failed `recordObedienceEvent` writes (one ZADD landed, the other
+// didn't).
+// ──────────────────────────────────────────────────────────────────
+
+export interface ObedienceDriftRepairSummary {
+  totals: {
+    eventsToAuditAdded: number;
+    auditOrphansRemoved: number;
+    weeksScanned: number;
+  };
+  perWeek: Array<
+    { author: Author; weekKey: string } & ObedienceDriftRepairResult
+  >;
+}
+
+export interface RepairObedienceDriftResult {
+  success?: boolean;
+  error?: string;
+  summary?: ObedienceDriftRepairSummary;
+}
+
+export async function repairObedienceDrift(): Promise<RepairObedienceDriftResult> {
+  const guard = await requireSir();
+  if (!guard.ok) return { error: guard.error };
+  try {
+    const summary = await repairAllObedienceZsetDrift(4);
+    logger.interaction("[admin] obedience drift repaired", {
+      by: guard.session.author,
+      eventsToAuditAdded: summary.totals.eventsToAuditAdded,
+      auditOrphansRemoved: summary.totals.auditOrphansRemoved,
+      weeksScanned: summary.totals.weeksScanned,
+    });
+    revalidatePath("/admin/rewards");
+    revalidatePath("/admin/health");
+    revalidatePath("/rewards");
+    return { success: true, summary };
+  } catch (err) {
+    logger.error("[admin] obedience drift repair failed", err);
+    return { error: "Repair failed." };
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────
 // Devices — Sir-only enumeration of registered devices per author.
 // ──────────────────────────────────────────────────────────────────
 
@@ -1915,6 +2003,7 @@ export async function getStreakSettings(): Promise<StreakSettingsResult> {
 export async function setStreakSettings(
   threshold: number,
   multipliers: number[],
+  streakRiskMinDeficit?: number,
 ): Promise<{ success?: boolean; error?: string }> {
   const guard = await requireSir();
   if (!guard.ok) return { error: guard.error };
@@ -1936,15 +2025,35 @@ export async function setStreakSettings(
       return { error: `Each multiplier must be 0-${MAX_MULTIPLIER}.` };
     }
   }
+  let normalizedDeficit: number | undefined;
+  if (streakRiskMinDeficit !== undefined) {
+    if (
+      !Number.isFinite(streakRiskMinDeficit) ||
+      streakRiskMinDeficit < 1 ||
+      streakRiskMinDeficit > MAX_STREAK_RISK_MIN_DEFICIT
+    ) {
+      return {
+        error: `Streak-risk min deficit must be 1-${MAX_STREAK_RISK_MIN_DEFICIT}.`,
+      };
+    }
+    normalizedDeficit = Math.round(streakRiskMinDeficit);
+  }
   try {
-    await Promise.all([
+    const writes: Promise<unknown>[] = [
       setStreakThresholdRaw(Math.round(threshold)),
       setMultipliersRaw(multipliers.map((m) => Number(m.toFixed(2)))),
-    ]);
+    ];
+    if (normalizedDeficit !== undefined) {
+      writes.push(setStreakRiskMinDeficitRaw(normalizedDeficit));
+    }
+    await Promise.all(writes);
     logger.interaction("[admin] streak settings updated", {
       by: guard.session.author,
       threshold,
       multipliers,
+      ...(normalizedDeficit !== undefined
+        ? { streakRiskMinDeficit: normalizedDeficit }
+        : {}),
     });
     revalidatePath("/admin/rewards");
     return { success: true };
@@ -1999,6 +2108,9 @@ export interface ObedienceAdminSnapshot {
   weights: ObedienceWeights;
   tiers: RewardTier[];
   streakThreshold: number;
+  /** Minimum displayed-pts deficit before the Friday streak-at-risk
+   *  FCM fires. Default 1; raise to suppress trivial nudges. */
+  streakRiskMinDeficit: number;
   multipliers: readonly number[];
   generatedAt: number;
 }
@@ -2010,13 +2122,15 @@ export async function getObedienceAdminSnapshot(): Promise<{
   const guard = await requireSir();
   if (!guard.ok) return { error: guard.error };
   try {
-    const [tiers, weights, threshold, mults, streak] = await Promise.all([
-      readTiers(),
-      readObedienceWeights(),
-      readStreakThreshold(),
-      readMultipliers(),
-      getStreak("Besho"),
-    ]);
+    const [tiers, weights, threshold, mults, streak, streakRiskMinDeficit] =
+      await Promise.all([
+        readTiers(),
+        readObedienceWeights(),
+        readStreakThreshold(),
+        readMultipliers(),
+        getStreak("Besho"),
+        readStreakRiskMinDeficit(),
+      ]);
     const weekKey = currentWeekKey();
     const score = await computeWeekScore("Besho", weekKey);
     return {
@@ -2032,6 +2146,7 @@ export async function getObedienceAdminSnapshot(): Promise<{
         weights,
         tiers,
         streakThreshold: threshold,
+        streakRiskMinDeficit,
         multipliers: mults,
         generatedAt: Date.now(),
       },
@@ -2289,6 +2404,12 @@ export async function inspectRedisKey(
 
 export interface ObedienceEventLogResult {
   entries?: ObedienceAuditEntry[];
+  /** Total members in the audit ZSET for this (author, weekKey).
+   *  Lets the UI render "showing N of M" + load-more affordance. */
+  total?: number;
+  /** Echo of the offset applied — useful to detect drift between the
+   *  client's accumulated buffer and the server's slice. */
+  offset?: number;
   weekKey?: string;
   author?: Author;
   error?: string;
@@ -2425,6 +2546,7 @@ export async function getObedienceEventLog(
   author: Author,
   weekKey?: string,
   limit: number = 200,
+  offset: number = 0,
 ): Promise<ObedienceEventLogResult> {
   const guard = await requireSir();
   if (!guard.ok) return { error: guard.error };
@@ -2435,9 +2557,17 @@ export async function getObedienceEventLog(
   if (!/^\d{4}-\d{2}-\d{2}$/.test(targetWeek)) {
     return { error: "Invalid week key." };
   }
+  const safeLimit = Math.max(1, Math.min(1000, Math.floor(Number(limit) || 0)));
+  const safeOffset = Math.max(0, Math.floor(Number(offset) || 0));
   try {
-    const entries = await getEventLog(author, targetWeek, limit);
-    return { entries, weekKey: targetWeek, author };
+    const page = await getEventLog(author, targetWeek, safeLimit, safeOffset);
+    return {
+      entries: page.entries,
+      total: page.total,
+      offset: safeOffset,
+      weekKey: targetWeek,
+      author,
+    };
   } catch (err) {
     logger.error("[admin] event log read failed", err);
     return { error: "Read failed." };

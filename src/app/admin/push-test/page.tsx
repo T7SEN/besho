@@ -7,6 +7,8 @@ import { sendTestPushAction } from "@/app/actions/admin";
 import { TITLE_BY_AUTHOR } from "@/lib/constants";
 import { vibrate } from "@/lib/haptic";
 import { hideKeyboard } from "@/lib/keyboard";
+import { useRefreshListener } from "@/hooks/use-refresh-listener";
+import { useRouter } from "next/navigation";
 
 export default function PushTestPage() {
   const [state, action, pending] = useActionState(sendTestPushAction, {
@@ -15,6 +17,8 @@ export default function PushTestPage() {
   });
   const formRef = useRef<HTMLFormElement>(null);
   const [flash, setFlash] = useState<string | null>(null);
+  const router = useRouter();
+  useRefreshListener(() => router.refresh());
 
   useEffect(() => {
     if (state.success) {

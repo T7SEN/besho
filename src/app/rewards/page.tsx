@@ -4,9 +4,12 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import {
   AnimatePresence,
+  animate,
   motion,
+  useMotionValue,
   useReducedMotion,
 } from "motion/react";
+import { useRef } from "react";
 import {
   ArrowLeft,
   Award,
@@ -23,16 +26,26 @@ import {
   X,
 } from "lucide-react";
 import {
+  acknowledgeClaim,
   claimReward,
   denyClaim,
   deliverClaim,
+  getClaimAudit,
+  getLifetimeStats,
   getRewardsBundle,
   getRewardsHistory,
+  listAllClaims,
+  revokeClaim,
+  type LifetimeStats,
   type RewardsBundle,
   type RewardsHistoryEntry,
 } from "@/app/actions/rewards";
 import {
+  ACKNOWLEDGE_NOTE_MAX,
   OBEDIENCE_EVENT_LABELS,
+  REVOKE_REASON_MAX,
+  type ClaimAuditEntry,
+  type ClaimStatus,
   type ObedienceWeekState,
   type RewardClaim,
   type RewardItem,
@@ -41,6 +54,7 @@ import {
 import { TITLE_BY_AUTHOR } from "@/lib/constants";
 import { vibrate } from "@/lib/haptic";
 import { cn } from "@/lib/utils";
+import { useRefreshListener } from "@/hooks/use-refresh-listener";
 
 function buildHeaderStat(bundle: RewardsBundle | null): string {
   if (!bundle) return "—";
@@ -75,18 +89,271 @@ function formatRelative(ts: number, now: number): string {
   return `${Math.round(diff / 86_400_000)}d ago`;
 }
 
+const CLAIM_STATUS_LABEL: Record<ClaimStatus, string> = {
+  pending: "Awaiting Sir",
+  delivered: "Delivered",
+  denied: "Denied",
+  revoked: "Revoked",
+};
+
+const CLAIM_STATUS_TEXT_CLASS: Record<ClaimStatus, string> = {
+  pending: "text-amber-400",
+  delivered: "text-emerald-400",
+  denied: "text-rose-400",
+  revoked: "text-rose-500",
+};
+
+// ── Visual helpers ───────────────────────────────────────────────────────
+
+/** Animates a number towards `value` by mutating the rendered span's
+ *  `textContent` directly. Bypasses React state for the per-frame
+ *  update — the recommended motion/react pattern for animating text
+ *  values without thrashing setState. */
+function AnimatedNumber({
+  value,
+  className,
+}: {
+  value: number;
+  className?: string;
+}) {
+  const ref = useRef<HTMLSpanElement>(null);
+  const mv = useMotionValue(value);
+  const reduced = useReducedMotion();
+
+  useEffect(() => {
+    if (reduced) {
+      if (ref.current) ref.current.textContent = String(Math.round(value));
+      return;
+    }
+    const unsub = mv.on("change", (latest) => {
+      if (ref.current) ref.current.textContent = String(Math.round(latest));
+    });
+    const controls = animate(mv, value, {
+      duration: 0.6,
+      ease: [0.22, 1, 0.36, 1],
+    });
+    return () => {
+      controls.stop();
+      unsub();
+    };
+  }, [mv, value, reduced]);
+
+  return (
+    <span ref={ref} className={className}>
+      {Math.round(value)}
+    </span>
+  );
+}
+
+/** Per-tier color identity. Spread across the hue wheel so each tier
+ *  reads unmistakably distinct on the dark theme:
+ *    Tier I (🥉)   — orange-600 (deep bronze; warm, deeper than gold)
+ *    Tier II (🥈)  — zinc-300 (silver)
+ *    Tier III (🥇) — yellow-300 (bright gold; brighter and yellower than bronze)
+ *    Tier IV (🏆)  — emerald-400 (precious gem; cool, not warm — clearly distinct from Tier I)
+ *    Tier V (👑)   — violet-400 (royal)
+ *  Earlier palette had Tier I = amber, Tier IV = orange, which read as
+ *  the same warm color on dark theme. Tier III's yellow-400 also blurred
+ *  into Tier I's amber. The current spread guarantees pairwise distinction. */
+const TIER_COLORS: ReadonlyArray<{
+  text: string;
+  bg: string;
+  bgSoft: string;
+  border: string;
+  ring: string;
+}> = [
+  {
+    text: "text-orange-600",
+    bg: "bg-orange-600/30",
+    bgSoft: "bg-orange-600/10",
+    border: "border-orange-600/50",
+    ring: "ring-orange-600/30",
+  },
+  {
+    text: "text-zinc-300",
+    bg: "bg-zinc-300/30",
+    bgSoft: "bg-zinc-300/10",
+    border: "border-zinc-300/50",
+    ring: "ring-zinc-300/30",
+  },
+  {
+    text: "text-yellow-300",
+    bg: "bg-yellow-300/30",
+    bgSoft: "bg-yellow-300/10",
+    border: "border-yellow-300/50",
+    ring: "ring-yellow-300/30",
+  },
+  {
+    text: "text-emerald-400",
+    bg: "bg-emerald-400/30",
+    bgSoft: "bg-emerald-400/10",
+    border: "border-emerald-400/50",
+    ring: "ring-emerald-400/30",
+  },
+  {
+    text: "text-violet-400",
+    bg: "bg-violet-400/30",
+    bgSoft: "bg-violet-400/10",
+    border: "border-violet-400/50",
+    ring: "ring-violet-400/30",
+  },
+];
+
+function tierColorOf(index: number): (typeof TIER_COLORS)[number] {
+  return (
+    TIER_COLORS[Math.max(0, Math.min(TIER_COLORS.length - 1, index))] ?? {
+      text: "text-primary",
+      bg: "bg-primary/30",
+      bgSoft: "bg-primary/10",
+      border: "border-primary/50",
+      ring: "ring-primary/30",
+    }
+  );
+}
+
+/** Compact streak indicator. Renders one cell per multiplier-ladder
+ *  step (excluding ×1.0). Filled cells = consecutive prior high-score
+ *  weeks contributing to the multiplier. */
+function StreakDots({
+  streak,
+  cells,
+}: {
+  streak: number;
+  cells: number;
+}) {
+  if (cells <= 0) return null;
+  const filled = Math.min(streak, cells);
+  return (
+    <div className="flex items-center gap-1" aria-label={`${filled} of ${cells} streak weeks`}>
+      {Array.from({ length: cells }).map((_, i) => {
+        const isOn = i < filled;
+        return (
+          <span
+            key={i}
+            className={cn(
+              "h-2.5 w-2.5 rounded-full transition-colors",
+              isOn ? "bg-primary" : "bg-muted/40",
+            )}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+/** Linear progress bar from current tier's threshold (or 0 if none
+ *  reached) to next tier's threshold. Animated fill width. Hidden at
+ *  top-tier-reached. */
+function TierProgressBar({ weekState }: { weekState: ObedienceWeekState }) {
+  const reduced = useReducedMotion();
+  const score = Math.max(0, weekState.displayedScore);
+  const tiers = weekState.tiers;
+  const reachedIdx = tiers.reduce(
+    (best, t, i) => (score >= t.threshold ? i : best),
+    -1,
+  );
+  const nextTier =
+    reachedIdx + 1 < tiers.length ? tiers[reachedIdx + 1] : null;
+  if (!nextTier) return null;
+
+  const floor =
+    reachedIdx >= 0 ? tiers[reachedIdx].threshold : 0;
+  const ceiling = nextTier.threshold;
+  const span = Math.max(1, ceiling - floor);
+  const progress = Math.max(
+    0,
+    Math.min(1, (score - floor) / span),
+  );
+  const colorIdx = reachedIdx >= 0 ? reachedIdx : 0;
+  const color = tierColorOf(colorIdx);
+  const nextColor = tierColorOf(reachedIdx + 1);
+
+  return (
+    <div className="mt-4">
+      <div className="mb-1.5 flex items-center justify-between text-xs">
+        <span className={cn("font-semibold", color.text)}>
+          {reachedIdx >= 0
+            ? `${tiers[reachedIdx].emoji ?? ""} ${tiers[reachedIdx].name}`
+            : "Below Tier I"}
+        </span>
+        <span className={cn("font-semibold", nextColor.text)}>
+          {nextTier.emoji ?? ""} {nextTier.name}
+        </span>
+      </div>
+      <div className="relative h-2 w-full overflow-hidden rounded-full bg-muted/30">
+        <motion.div
+          className={cn("absolute inset-y-0 left-0 rounded-full", nextColor.bg)}
+          initial={reduced ? { width: `${progress * 100}%` } : { width: 0 }}
+          animate={{ width: `${progress * 100}%` }}
+          transition={{
+            duration: reduced ? 0 : 0.7,
+            ease: [0.22, 1, 0.36, 1],
+          }}
+        />
+      </div>
+      <p className="mt-1 text-xs text-muted-foreground">
+        <span className="font-semibold text-foreground">
+          {ceiling - score}
+        </span>{" "}
+        more pts to {nextTier.name}.
+      </p>
+    </div>
+  );
+}
+
+/** localStorage key for the mid-week tier-cross celebration sentinel.
+ *  Per-week so a new week resets eligibility; per-author would be
+ *  redundant since only Besho is scored. The value stored is the
+ *  threshold of the highest tier already celebrated. */
+const TIER_CELEBRATED_KEY = (weekKey: string) =>
+  `rewards:last-celebrated-tier:${weekKey}`;
+
+function readCelebratedThreshold(weekKey: string): number {
+  try {
+    const ls = (globalThis as unknown as { localStorage?: Storage })
+      .localStorage;
+    if (!ls) return 0;
+    const raw = ls.getItem(TIER_CELEBRATED_KEY(weekKey));
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function writeCelebratedThreshold(weekKey: string, threshold: number): void {
+  try {
+    const ls = (globalThis as unknown as { localStorage?: Storage })
+      .localStorage;
+    if (!ls) return;
+    ls.setItem(TIER_CELEBRATED_KEY(weekKey), String(threshold));
+  } catch {
+    // best-effort
+  }
+}
+
 export default function RewardsPage() {
   const [bundle, setBundle] = useState<RewardsBundle | null>(null);
   const [history, setHistory] = useState<RewardsHistoryEntry[] | null>(null);
+  const [lifetime, setLifetime] = useState<LifetimeStats | null>(null);
+  const [allClaims, setAllClaims] = useState<RewardClaim[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [tierCrossTier, setTierCrossTier] = useState<RewardTier | null>(null);
 
   const fetchBundle = useCallback(async () => {
     setRefreshing(true);
     try {
-      const [bundleResult, historyResult] = await Promise.all([
+      const [
+        bundleResult,
+        historyResult,
+        lifetimeResult,
+        allClaimsResult,
+      ] = await Promise.all([
         getRewardsBundle(),
         getRewardsHistory(12),
+        getLifetimeStats(),
+        listAllClaims(20),
       ]);
       if (bundleResult.error) {
         setError(bundleResult.error);
@@ -95,6 +362,27 @@ export default function RewardsPage() {
         setError(null);
       }
       if (historyResult.entries) setHistory(historyResult.entries);
+      if (lifetimeResult.stats) setLifetime(lifetimeResult.stats);
+      setAllClaims(allClaimsResult);
+
+      // Mid-week tier-cross detection. Compare the bundle's unlocked
+      // tier threshold to the highest threshold we've already
+      // celebrated this week (per-week localStorage sentinel). If
+      // higher, fire the small celebration overlay.
+      if (bundleResult.bundle) {
+        const b = bundleResult.bundle;
+        const newTier = b.besho.unlockedTier;
+        if (newTier) {
+          const lastCelebrated = readCelebratedThreshold(b.currentWeekKey);
+          if (newTier.threshold > lastCelebrated) {
+            writeCelebratedThreshold(
+              b.currentWeekKey,
+              newTier.threshold,
+            );
+            setTierCrossTier(newTier);
+          }
+        }
+      }
     } catch {
       setError("Failed to load rewards.");
     } finally {
@@ -108,6 +396,10 @@ export default function RewardsPage() {
     }, 0);
     return () => clearTimeout(t);
   }, [fetchBundle]);
+
+  // Pull-to-refresh — the global PullToRefresh in the root layout
+  // dispatches `ourspace:refresh`; this hook subscribes per-page.
+  useRefreshListener(fetchBundle);
 
   return (
     <div className="relative min-h-screen bg-background p-4 pb-28 md:p-12 md:pb-32">
@@ -164,11 +456,83 @@ export default function RewardsPage() {
           <RewardsView
             bundle={bundle}
             history={history}
+            lifetime={lifetime}
+            allClaims={allClaims}
             onRefresh={fetchBundle}
           />
         )}
       </div>
+
+      <AnimatePresence>
+        {tierCrossTier && (
+          <TierCrossCelebration
+            tier={tierCrossTier}
+            onDismiss={() => setTierCrossTier(null)}
+          />
+        )}
+      </AnimatePresence>
     </div>
+  );
+}
+
+/** Small mid-week tier-cross celebration. Lighter-weight than the full
+ *  RewardUnlockOverlay — confetti burst + short banner that auto-
+ *  dismisses after a few seconds. Fires once per (week, tier-threshold)
+ *  via a localStorage sentinel. */
+function TierCrossCelebration({
+  tier,
+  onDismiss,
+}: {
+  tier: RewardTier;
+  onDismiss: () => void;
+}) {
+  const reduced = useReducedMotion();
+
+  // Auto-dismiss after the celebration plays out.
+  useEffect(() => {
+    const t = setTimeout(onDismiss, reduced ? 1500 : 3500);
+    return () => clearTimeout(t);
+  }, [onDismiss, reduced]);
+
+  // Synced haptic.
+  useEffect(() => {
+    const t = setTimeout(() => void vibrate([60, 40, 80], "medium"), 0);
+    return () => clearTimeout(t);
+  }, []);
+
+  return (
+    <motion.div
+      key="tier-cross"
+      className="pointer-events-none fixed inset-0 z-55 flex items-center justify-center overflow-hidden px-6"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.25 }}
+    >
+      {!reduced && <ConfettiBurst delay={0.1} />}
+      <motion.div
+        initial={{ scale: reduced ? 1 : 0.6, opacity: 0, y: 10 }}
+        animate={{ scale: 1, opacity: 1, y: 0 }}
+        exit={{ opacity: 0, y: -10 }}
+        transition={{
+          type: "spring",
+          stiffness: 280,
+          damping: 18,
+        }}
+        className="rounded-2xl border border-primary/40 bg-card/95 px-5 py-4 shadow-xl shadow-black/60 will-change-transform"
+      >
+        <p className="text-center text-xs font-bold uppercase tracking-widest text-primary/80">
+          New tier reached
+        </p>
+        <p className="mt-1 text-center text-2xl font-bold">
+          {tier.emoji && <span className="mr-1">{tier.emoji}</span>}
+          {tier.name}
+        </p>
+        <p className="mt-1 text-center text-xs text-muted-foreground">
+          {tier.threshold} pts
+        </p>
+      </motion.div>
+    </motion.div>
   );
 }
 
@@ -177,10 +541,14 @@ export default function RewardsPage() {
 function RewardsView({
   bundle,
   history,
+  lifetime,
+  allClaims,
   onRefresh,
 }: {
   bundle: RewardsBundle;
   history: RewardsHistoryEntry[] | null;
+  lifetime: LifetimeStats | null;
+  allClaims: RewardClaim[] | null;
   onRefresh: () => Promise<void>;
 }) {
   const isSir = bundle.viewer === "T7SEN";
@@ -230,11 +598,100 @@ function RewardsView({
         />
       )}
 
+      {isSir && allClaims && allClaims.length > 0 && (
+        <SirRecentClaimsCard claims={allClaims} onRefresh={onRefresh} />
+      )}
+
       {bundle.viewer === "Besho" && bundle.myClaims.length > 0 && (
         <ClaimHistoryCard claims={bundle.myClaims} />
       )}
 
       {history && history.length > 0 && <HistorySection entries={history} />}
+
+      {lifetime && lifetime.weeksTracked > 0 && (
+        <LifetimeStatsCard stats={lifetime} viewer={bundle.viewer} />
+      )}
+    </div>
+  );
+}
+
+function LifetimeStatsCard({
+  stats,
+  viewer,
+}: {
+  stats: LifetimeStats;
+  viewer: "T7SEN" | "Besho";
+}) {
+  const ownerLabel =
+    viewer === "T7SEN" ? `${TITLE_BY_AUTHOR.Besho}'s` : "Your";
+  return (
+    <section className="rounded-2xl border border-border/40 bg-card p-5 backdrop-blur-md shadow-xl shadow-black/30">
+      <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold">
+        <Trophy className="h-4 w-4 text-primary/70" />
+        {ownerLabel} all-time stats
+      </h2>
+      <dl className="grid grid-cols-2 gap-x-4 gap-y-3 md:grid-cols-3">
+        <Stat label="Weeks tracked" value={String(stats.weeksTracked)} />
+        <Stat
+          label="Longest streak"
+          value={
+            stats.longestStreak > 0
+              ? `${stats.longestStreak} ${stats.longestStreak === 1 ? "week" : "weeks"}`
+              : "—"
+          }
+        />
+        <Stat
+          label="Current streak"
+          value={
+            stats.currentStreak > 0
+              ? `${stats.currentStreak} ${stats.currentStreak === 1 ? "week" : "weeks"}`
+              : "—"
+          }
+        />
+        <Stat
+          label="Best week"
+          value={
+            stats.bestWeek
+              ? `${stats.bestWeek.displayedScore} pts`
+              : "—"
+          }
+          hint={
+            stats.bestWeek ? formatWeekRange(stats.bestWeek.weekKey) : undefined
+          }
+        />
+        <Stat
+          label="Claims total"
+          value={String(stats.totalClaims)}
+        />
+        <Stat
+          label="Delivered"
+          value={String(stats.deliveredClaims)}
+        />
+      </dl>
+    </section>
+  );
+}
+
+function Stat({
+  label,
+  value,
+  hint,
+}: {
+  label: string;
+  value: string;
+  hint?: string;
+}) {
+  return (
+    <div className="min-w-0">
+      <dt className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground/70">
+        {label}
+      </dt>
+      <dd className="mt-0.5 truncate text-base font-bold tabular-nums">
+        {value}
+      </dd>
+      {hint && (
+        <dd className="text-xs text-muted-foreground/70">{hint}</dd>
+      )}
     </div>
   );
 }
@@ -272,7 +729,13 @@ function CurrentWeekClaimSection({
   const tier = besho.unlockedTier;
 
   if (currentClaim) {
-    return <ClaimStatusCard claim={currentClaim} />;
+    return (
+      <ClaimStatusCard
+        claim={currentClaim}
+        viewer={viewer}
+        onRefresh={onRefresh}
+      />
+    );
   }
   if (!tier) {
     return null; // Nothing to test — no tier reached yet this week.
@@ -353,14 +816,13 @@ function ScoreCard({
       </div>
 
       <div className="mt-4 flex items-end gap-3">
-        <span
+        <AnimatedNumber
+          value={headlineDisplayed}
           className={cn(
             "text-5xl font-bold tracking-tight tabular-nums",
             isPenalized && "text-muted-foreground/60",
           )}
-        >
-          {headlineDisplayed}
-        </span>
+        />
         {showRawHint && (
           <span className="text-xs text-muted-foreground">
             ({weekState.rawScore} raw)
@@ -376,26 +838,25 @@ function ScoreCard({
         )}
       </div>
 
-      <div className="mt-4 space-y-2 text-sm text-muted-foreground">
+      <TierProgressBar weekState={weekState} />
+
+      <div className="mt-4 space-y-3 text-sm text-muted-foreground">
         <div>
           High-score threshold:{" "}
           <span className="font-semibold text-foreground">
             {streakThreshold} pts
           </span>
         </div>
-        <div>
-          Streak entering this week:{" "}
-          <span className="font-semibold text-foreground">
-            {weekState.streakEntering}
-          </span>{" "}
-          {weekState.streakEntering === 1 ? "week" : "weeks"}
-        </div>
-        <div>
-          Max possible multiplier:{" "}
-          <span className="font-semibold text-foreground">
-            ×{maxMultiplier.toFixed(1)}
-          </span>{" "}
-          — after a {multipliers.length - 1}-week high-score streak
+        <div className="flex items-center gap-3">
+          <span>Streak:</span>
+          <StreakDots
+            streak={weekState.streakEntering}
+            cells={Math.max(0, multipliers.length - 1)}
+          />
+          <span className="text-xs text-muted-foreground/70">
+            {weekState.streakEntering}/{multipliers.length - 1} for ×
+            {maxMultiplier.toFixed(1)}
+          </span>
         </div>
       </div>
     </section>
@@ -408,10 +869,10 @@ function TierLadderCard({ weekState }: { weekState: ObedienceWeekState }) {
   const tiers = weekState.tiers;
   const score = weekState.displayedScore;
 
-  // Next-tier nudge — first tier whose threshold is strictly above the
-  // current displayed score. Null when she's already maxed out.
+  // Next-tier marker for the row highlight ("isNext" styling). The
+  // numeric "X more pts to next" call-out moved into TierProgressBar
+  // inside ScoreCard, so we only need the reference here, not the gap.
   const nextTier = tiers.find((t) => t.threshold > score) ?? null;
-  const gap = nextTier ? nextTier.threshold - score : 0;
 
   // Expanded tier IDs — tap a row to preview its rewards. Multi-expand
   // so she can compare what's at Tier IV vs Tier V at a glance.
@@ -433,7 +894,7 @@ function TierLadderCard({ weekState }: { weekState: ObedienceWeekState }) {
         Tier ladder
       </h2>
       <div className="space-y-2">
-        {tiers.map((tier) => {
+        {tiers.map((tier, idx) => {
           const reached = score >= tier.threshold;
           const isHighestReached =
             reached &&
@@ -447,15 +908,16 @@ function TierLadderCard({ weekState }: { weekState: ObedienceWeekState }) {
           const isNext = nextTier !== null && tier.id === nextTier.id;
           const isOpen = expanded.has(tier.id);
           const hasRewards = tier.rewards.length > 0;
+          const color = tierColorOf(idx);
           return (
             <div
               key={tier.id}
               className={cn(
                 "rounded-lg border transition-colors",
                 isHighestReached
-                  ? "border-primary/50 bg-primary/15"
+                  ? cn(color.border, color.bgSoft, "ring-2", color.ring)
                   : reached
-                    ? "border-primary/25 bg-primary/5"
+                    ? cn(color.border, color.bgSoft)
                     : isNext
                       ? "border-border/60 bg-card"
                       : "border-border/30 bg-card opacity-60",
@@ -472,7 +934,7 @@ function TierLadderCard({ weekState }: { weekState: ObedienceWeekState }) {
                   className={cn(
                     "flex h-7 w-7 items-center justify-center rounded-full text-[10px] font-bold",
                     reached
-                      ? "bg-primary/30 text-primary"
+                      ? cn(color.bg, color.text)
                       : "bg-muted/40 text-muted-foreground",
                   )}
                 >
@@ -556,24 +1018,24 @@ function TierLadderCard({ weekState }: { weekState: ObedienceWeekState }) {
           );
         })}
       </div>
-      {weekState.unlockedTier && (
-        <div className="mt-4 rounded-lg border border-primary/30 bg-primary/10 px-3 py-3">
-          <p className="text-base font-semibold text-primary">
-            {weekState.unlockedTier.emoji ?? "🎁"}{" "}
-            {weekState.unlockedTier.name} unlocked this week.
-          </p>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Claim opens once this week wraps (after Sat 23:59 Cairo). Push
-            higher before then if you can.
-          </p>
-        </div>
-      )}
-      {nextTier && (
-        <p className="mt-3 text-sm text-muted-foreground">
-          <span className="font-semibold text-foreground">{gap}</span> more pts
-          to {nextTier.name}.
-        </p>
-      )}
+      {weekState.unlockedTier && (() => {
+        const idx = tiers.findIndex(
+          (t) => t.id === weekState.unlockedTier?.id,
+        );
+        const c = tierColorOf(idx);
+        return (
+          <div className={cn("mt-4 rounded-lg border px-3 py-3", c.border, c.bgSoft)}>
+            <p className={cn("text-base font-semibold", c.text)}>
+              {weekState.unlockedTier.emoji ?? "🎁"}{" "}
+              {weekState.unlockedTier.name} unlocked this week.
+            </p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Claim opens once this week wraps (after Sat 23:59 Cairo). Push
+              higher before then if you can.
+            </p>
+          </div>
+        );
+      })()}
       {!nextTier && score > 0 && (
         <p className="mt-3 text-sm text-muted-foreground">
           Top tier reached. Hold the line.
@@ -644,7 +1106,13 @@ function PriorWeekSection({
   const tier = priorBesho.unlockedTier;
 
   if (priorClaim) {
-    return <ClaimStatusCard claim={priorClaim} />;
+    return (
+      <ClaimStatusCard
+        claim={priorClaim}
+        viewer={viewer}
+        onRefresh={onRefresh}
+      />
+    );
   }
 
   if (!tier) {
@@ -920,19 +1388,185 @@ function RewardOption({
   );
 }
 
+// ── Sir-side recent claims list (with revoke / quick actions) ───────────
+
+function SirRecentClaimsCard({
+  claims,
+  onRefresh,
+}: {
+  claims: RewardClaim[];
+  onRefresh: () => Promise<void>;
+}) {
+  return (
+    <section className="rounded-2xl border border-border/40 bg-card p-5 backdrop-blur-md shadow-xl shadow-black/30">
+      <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold">
+        <Award className="h-4 w-4 text-primary/70" />
+        Recent decisions
+      </h2>
+      <ul className="space-y-2">
+        {claims.map((c) => (
+          <SirClaimRow key={c.id} claim={c} onRefresh={onRefresh} />
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function SirClaimRow({
+  claim,
+  onRefresh,
+}: {
+  claim: RewardClaim;
+  onRefresh: () => Promise<void>;
+}) {
+  const [armRevoke, setArmRevoke] = useState(false);
+  const [revokeReason, setRevokeReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const statusClass = CLAIM_STATUS_TEXT_CLASS[claim.status];
+
+  const submitRevoke = async () => {
+    if (!revokeReason.trim()) {
+      setErr("Reason required.");
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    void vibrate([100, 40, 80], "heavy");
+    const result = await revokeClaim(claim.id, revokeReason.trim());
+    setBusy(false);
+    if (result.error) {
+      setErr(result.error);
+      return;
+    }
+    setArmRevoke(false);
+    setRevokeReason("");
+    void onRefresh();
+  };
+
+  const canRevoke =
+    claim.status === "delivered" || claim.status === "denied";
+
+  return (
+    <li className="rounded-lg border border-border/40 bg-card/50 p-3">
+      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+        <span>{formatWeekRange(claim.weekKey)}</span>
+        <span>•</span>
+        {claim.tierEmoji && <span>{claim.tierEmoji}</span>}
+        <span>{claim.tierName}</span>
+        <span
+          className={cn(
+            "ml-auto rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider",
+            statusClass,
+          )}
+        >
+          {CLAIM_STATUS_LABEL[claim.status]}
+        </span>
+      </div>
+      <div className="mt-1 flex items-center gap-2 text-sm font-semibold">
+        {claim.rewardEmoji && (
+          <span className="text-base leading-none">{claim.rewardEmoji}</span>
+        )}
+        <span dir="auto" className="truncate">
+          {claim.rewardLabel}
+        </span>
+      </div>
+      {claim.acknowledgedAt && claim.status === "delivered" && (
+        <p className="mt-1 text-xs text-emerald-400/80">
+          ✓ kitten confirmed receipt
+          {claim.acknowledgeNote && (
+            <>
+              {" — "}
+              <span dir="auto" className="text-muted-foreground">
+                {claim.acknowledgeNote}
+              </span>
+            </>
+          )}
+        </p>
+      )}
+      {claim.status === "revoked" && claim.revokeReason && (
+        <p className="mt-1 text-xs text-rose-400">
+          Revoked:{" "}
+          <span dir="auto" className="text-muted-foreground">
+            {claim.revokeReason}
+          </span>
+        </p>
+      )}
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <ClaimAuditChip claim={claim} />
+        {canRevoke && !armRevoke && (
+          <button
+            type="button"
+            onClick={() => {
+              void vibrate(40, "medium");
+              setArmRevoke(true);
+            }}
+            className="rounded-full border border-rose-500/40 bg-rose-500/10 px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-rose-400 transition-colors hover:bg-rose-500/20 active:scale-95"
+          >
+            Revoke
+          </button>
+        )}
+      </div>
+      {armRevoke && (
+        <div className="mt-2 rounded-lg border border-rose-500/30 bg-rose-500/5 p-2">
+          <textarea
+            value={revokeReason}
+            onChange={(e) => setRevokeReason(e.target.value)}
+            rows={2}
+            maxLength={REVOKE_REASON_MAX}
+            dir="auto"
+            placeholder="Why this is being revoked (kitten will see)"
+            className="w-full rounded border border-border/60 bg-input/40 px-2 py-1 text-sm focus:border-primary focus:outline-none"
+          />
+          {err && (
+            <p className="mt-1 text-xs text-destructive">{err}</p>
+          )}
+          <div className="mt-2 flex gap-2">
+            <button
+              type="button"
+              onClick={() => void submitRevoke()}
+              disabled={busy}
+              className="flex flex-1 items-center justify-center gap-1.5 rounded-full bg-rose-500/80 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-white transition-opacity active:scale-95 disabled:opacity-60"
+            >
+              {busy && <Loader2 className="h-3 w-3 animate-spin" />}
+              Confirm revoke
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setArmRevoke(false);
+                setRevokeReason("");
+                setErr(null);
+              }}
+              disabled={busy}
+              className="rounded-full border border-border/40 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground active:scale-95"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </li>
+  );
+}
+
 // ── Claim status ─────────────────────────────────────────────────────────
 
-function ClaimStatusCard({ claim }: { claim: RewardClaim }) {
-  const statusLabel = {
-    pending: "Awaiting Sir",
-    delivered: "Delivered",
-    denied: "Denied",
-  }[claim.status];
-  const statusClass = {
-    pending: "text-amber-400",
-    delivered: "text-emerald-400",
-    denied: "text-rose-400",
-  }[claim.status];
+function ClaimStatusCard({
+  claim,
+  viewer,
+  onRefresh,
+}: {
+  claim: RewardClaim;
+  viewer?: "T7SEN" | "Besho";
+  onRefresh?: () => Promise<void>;
+}) {
+  const statusLabel = CLAIM_STATUS_LABEL[claim.status];
+  const statusClass = CLAIM_STATUS_TEXT_CLASS[claim.status];
+  const canAck =
+    viewer === "Besho" &&
+    claim.status === "delivered" &&
+    !claim.acknowledgedAt;
   return (
     <section className="rounded-2xl border border-border/40 bg-card p-5 backdrop-blur-md shadow-xl shadow-black/30">
       <h2 className="mb-2 flex items-center gap-2 text-sm font-semibold">
@@ -958,18 +1592,170 @@ function ClaimStatusCard({ claim }: { claim: RewardClaim }) {
           {claim.rewardBody}
         </p>
       )}
-      <p className={cn("mt-3 text-xs font-bold uppercase tracking-wider", statusClass)}>
-        {statusLabel}
-      </p>
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <p
+          className={cn(
+            "text-xs font-bold uppercase tracking-wider",
+            statusClass,
+          )}
+        >
+          {statusLabel}
+        </p>
+        {claim.acknowledgedAt && claim.status === "delivered" && (
+          <p className="text-xs font-bold uppercase tracking-wider text-emerald-400/80">
+            ✓ Confirmed received
+          </p>
+        )}
+        <ClaimAuditChip claim={claim} />
+      </div>
       {claim.sirNote && (
-        <p className="mt-1 text-sm text-muted-foreground">
+        <p className="mt-2 text-sm text-muted-foreground">
           <span>Sir: </span>
           <span dir="auto" className="whitespace-pre-wrap">
             {claim.sirNote}
           </span>
         </p>
       )}
+      {claim.status === "revoked" && claim.revokeReason && (
+        <p className="mt-2 text-sm text-rose-400">
+          <span>Revoked: </span>
+          <span dir="auto" className="whitespace-pre-wrap">
+            {claim.revokeReason}
+          </span>
+        </p>
+      )}
+      {claim.acknowledgedAt && claim.acknowledgeNote && (
+        <p className="mt-2 text-sm text-muted-foreground">
+          <span>kitten: </span>
+          <span dir="auto" className="whitespace-pre-wrap">
+            {claim.acknowledgeNote}
+          </span>
+        </p>
+      )}
+      {canAck && onRefresh && (
+        <AcknowledgeForm claim={claim} onRefresh={onRefresh} />
+      )}
     </section>
+  );
+}
+
+function AcknowledgeForm({
+  claim,
+  onRefresh,
+}: {
+  claim: RewardClaim;
+  onRefresh: () => Promise<void>;
+}) {
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const submit = async () => {
+    setBusy(true);
+    setErr(null);
+    void vibrate(40, "medium");
+    const result = await acknowledgeClaim(claim.id, note || undefined);
+    setBusy(false);
+    if (result.error) {
+      setErr(result.error);
+      return;
+    }
+    setNote("");
+    void onRefresh();
+  };
+
+  return (
+    <div className="mt-4 rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3">
+      <p className="text-xs font-bold uppercase tracking-widest text-emerald-400">
+        Confirm receipt
+      </p>
+      <p className="mt-1 text-sm text-muted-foreground">
+        Tell Sir you got it. Optional note — a thank-you, a reaction.
+      </p>
+      <textarea
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+        rows={2}
+        maxLength={ACKNOWLEDGE_NOTE_MAX}
+        dir="auto"
+        placeholder="Optional note (Sir will see this)"
+        className="mt-2 w-full rounded-lg border border-border/60 bg-input/50 px-3 py-2 text-sm placeholder:text-muted-foreground/60 focus:border-primary focus:outline-none"
+      />
+      {err && (
+        <p className="mt-2 text-sm text-destructive">{err}</p>
+      )}
+      <button
+        type="button"
+        onClick={() => void submit()}
+        disabled={busy}
+        className="mt-3 flex w-full items-center justify-center gap-2 rounded-full bg-emerald-500/90 px-4 py-2 text-sm font-semibold text-white transition-opacity active:scale-95 disabled:opacity-60"
+      >
+        {busy && <Loader2 className="h-4 w-4 animate-spin" />}
+        Confirm received
+      </button>
+    </div>
+  );
+}
+
+function ClaimAuditChip({ claim }: { claim: RewardClaim }) {
+  const [open, setOpen] = useState(false);
+  const [entries, setEntries] = useState<ClaimAuditEntry[] | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  if (!claim.auditCount || claim.auditCount <= 0) return null;
+
+  const toggle = async () => {
+    if (open) {
+      setOpen(false);
+      return;
+    }
+    setBusy(true);
+    void vibrate(15, "light");
+    const list = await getClaimAudit(claim.id);
+    setEntries(list);
+    setBusy(false);
+    setOpen(true);
+  };
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => void toggle()}
+        className="rounded-full border border-violet-400/40 bg-violet-400/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-violet-400 transition-colors hover:bg-violet-400/20"
+        aria-expanded={open}
+      >
+        {busy ? "…" : `Changed ${claim.auditCount}×`}
+      </button>
+      {open && entries && entries.length > 0 && (
+        <ul className="mt-2 w-full space-y-1 rounded-lg border border-border/40 bg-card/40 p-2 text-xs">
+          {entries.map((e, i) => (
+            <li key={i} className="flex items-baseline justify-between gap-2">
+              <span
+                className={cn(
+                  "font-bold uppercase tracking-wider",
+                  CLAIM_STATUS_TEXT_CLASS[e.status],
+                )}
+              >
+                {CLAIM_STATUS_LABEL[e.status]}
+              </span>
+              <span className="text-muted-foreground/70">
+                {new Date(e.changedAt).toLocaleString()}
+              </span>
+              {e.note && (
+                <span
+                  dir="auto"
+                  className="block w-full truncate text-muted-foreground"
+                  title={e.note}
+                >
+                  {e.note}
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </>
   );
 }
 
@@ -1088,11 +1874,7 @@ function ClaimHistoryCard({ claims }: { claims: RewardClaim[] }) {
       </h2>
       <ul className="space-y-2">
         {claims.map((c) => {
-          const statusClass = {
-            pending: "text-amber-400",
-            delivered: "text-emerald-400",
-            denied: "text-rose-400",
-          }[c.status];
+          const statusClass = CLAIM_STATUS_TEXT_CLASS[c.status];
           return (
             <li
               key={c.id}
@@ -1161,13 +1943,7 @@ function HistorySection({ entries }: { entries: RewardsHistoryEntry[] }) {
 function HistoryRow({ entry }: { entry: RewardsHistoryEntry }) {
   const claim = entry.claim;
   const tier = entry.tier;
-  const claimStatusClass = claim
-    ? {
-        pending: "text-amber-400",
-        delivered: "text-emerald-400",
-        denied: "text-rose-400",
-      }[claim.status]
-    : null;
+  const claimStatusClass = claim ? CLAIM_STATUS_TEXT_CLASS[claim.status] : null;
   const historyHeadline = Math.max(0, entry.displayedScore);
   const historyPenalized = entry.displayedScore < 0;
   return (

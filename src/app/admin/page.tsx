@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { SummonButton } from "@/components/admin/summon-button";
 import { RestraintToggle } from "@/components/admin/restraint-toggle";
+import { RefreshListenerForServerPage } from "@/components/refresh-listener";
 import { getDeployInfo, type DeployInfo } from "@/app/actions/admin";
 
 const TOOLS = [
@@ -128,6 +129,7 @@ export default async function AdminLandingPage() {
   const info = deploy.info ?? null;
   return (
     <main className="mx-auto max-w-3xl p-4 pb-28 md:p-12 md:pb-32">
+      <RefreshListenerForServerPage />
       <header className="mb-6">
         <Link
           href="/"

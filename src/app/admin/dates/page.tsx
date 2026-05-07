@@ -10,6 +10,7 @@ import {
 import { TITLE_BY_AUTHOR } from "@/lib/constants";
 import { vibrate } from "@/lib/haptic";
 import { hideKeyboard } from "@/lib/keyboard";
+import { useRefreshListener } from "@/hooks/use-refresh-listener";
 
 interface Dates {
   relationshipStart: string | null;
@@ -42,8 +43,13 @@ export default function DatesPage() {
   }, []);
 
   useEffect(() => {
-    void refresh();
+    const t = setTimeout(() => {
+      void refresh();
+    }, 0);
+    return () => clearTimeout(t);
   }, [refresh]);
+
+  useRefreshListener(refresh);
 
   useEffect(() => {
     if (state.success) {

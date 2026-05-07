@@ -363,6 +363,7 @@ Score-based reward system on top of `/ledger` (which stays as Sir's manual log).
 | -------------------------------------------- | ------ | ---- | ------------------------------------------------------------------------------------ |
 | `obedience:weights`                          | JSON   | none | `Record<ObedienceEventType, number>` — Sir-tunable points per event. Defaults seeded |
 | `obedience:streak-threshold`                 | INT    | none | Displayed-score floor for "high-score week"; default 80                              |
+| `obedience:streak-risk-min-deficit`          | INT    | none | Minimum displayed-pts deficit before the Friday streak-at-risk FCM fires; default 1   |
 | `obedience:multipliers`                      | JSON   | none | Number array — index = consecutive prior high-score weeks; default `[1, 1.1, 1.2, 1.3]` |
 | `obedience:events:{author}:{weekKey}`        | ZSET   | none | Member `{eventType}:{eventId}`, score = points. Member dedup makes retries idempotent |
 | `obedience:streak:{author}`                  | INT    | none | Consecutive prior high-score weeks (entering current week)                           |
@@ -370,6 +371,9 @@ Score-based reward system on top of `/ledger` (which stays as Sir's manual log).
 | `obedience:finalized:{author}:{weekKey}`     | "1"    | none | Sentinel — set by `finalizeWeek` to make idempotent                                  |
 | `obedience:tier-notified:{author}:{weekKey}` | INT    | none | Highest tier-threshold already FCM'd this week — prevents repeat unlock notifications |
 | `obedience:audit:{author}:{weekKey}`         | ZSET   | none | Per-emit audit. Score = ms ts; member = `{type}:{eventId}` (matches the events ZSET so a join recovers points). Updated to latest ts on retry |
+| `obedience:best-week:{author}`               | JSON   | none | Lifetime record — `{weekKey, displayedScore}` of best single-week ever. Updated at finalize when surpassed                                  |
+| `obedience:longest-streak:{author}`          | INT    | none | Lifetime record — longest consecutive high-score streak ever. Updated at finalize when surpassed                                            |
+| `obedience:weeks-tracked:{author}`           | INT    | none | Counter — incremented once per finalize. Reflects how many weeks the score system has been observing                                       |
 | `obedience:test-mode`                        | "on"   | none | Sir-only flag. When present, `claimReward` accepts the current week (in addition to the immediately prior week) so the full claim → deliver flow can be exercised without ending the week |
 | `review:fcm:opener:{weekDate}`               | "1"    | 25h  | Dedup sentinel for the Saturday review-window-open FCM. Set by `/api/cron/review-window-open` via `SET NX EX`                              |
 | `rewards:tiers`                              | JSON   | none | Sir-authored tier catalog — fixed 5 entries, ascending thresholds                    |
@@ -377,6 +381,9 @@ Score-based reward system on top of `/ledger` (which stays as Sir's manual log).
 | `rewards:claims:by-author:{author}`          | ZSET   | none | Claim ids scored by `requestedAt` — own history                                      |
 | `rewards:claims:pending`                     | ZSET   | none | Pending claims awaiting Sir's deliver/deny                                           |
 | `rewards:claims:by-week:{author}:{weekKey}`  | STRING | none | Single claim id per (author, weekKey) — enforces 1-claim-per-week                    |
+| `reward:claim:audit:{id}`                    | LIST   | none | Per-claim state-change audit (capped 20 via LTRIM 0 19). Each entry is JSON `{status, changedAt, changedBy, note?}` capturing the prior state pre-mutation. Mirrors `permission:audit:{id}` |
+| `reward:claim:nudge-sent:{id}`               | "1"    | 30d  | Sentinel — once the obedience-sweep cron fires the >24h stale-pending nudge for this claim, it sets this with `SET NX EX`. One nudge per claim ever, then the TTL ages it out |
+| `streak-risk:fcm:sent:{author}:{weekKey}`    | "1"    | 30h  | Sentinel — once the Friday streak-at-risk FCM has fired for this (author, week), `SET NX EX 30h` is set. Covers the rest of Friday + all of Saturday so cron re-ticks are no-ops |
 
 `weekKey` is the Sunday `YYYY-MM-DD` from `currentReviewWeekDate(now)`; `/rewards` aligns with `/review` weeks.
 
@@ -455,6 +462,44 @@ Don't propose a per-author or per-author-and-week test mode — it's a single gl
 
 `admin.adminDeleteObedienceEvent({ author, weekKey, type, eventId })` is the Sir-only escape hatch for removing a single emit. Pipelines `ZREM` against both `obedience:events:*` and `obedience:audit:*` for the same member. Score recomputation is implicit — `computeWeekScore` reads the events ZSET fresh on every call, so deleting a `−10` event raises the displayed score by 10 (and vice versa for positive deletions). Idempotent. Surfaced in `/admin/rewards` → Status tab → Event log as a per-row trash button (two-tap confirm). **Caveat**: deleting events from a finalized past week does NOT roll back the streak counter or unfreeze the stored multiplier — those captured the at-finalize state and are immutable history. Removals are most meaningful for the current (unfinalized) week.
 
+### Optional event note
+
+`recordObedienceEvent` and `recordObedienceEventForWeek` accept an optional last-arg `note?: string`. When non-empty, the helper fires `logger.interaction("[obedience] event", { author, type, eventId, weekKey, points, note })` after the ZSET pipeline; the note **never** lands on the ZSET member, so dedup on `{type}:{eventId}` is unaffected. Currently used by `admin.setRestraintState(on, note?)` so Sir can leave context like *"engaged for ignoring rule X"* — surfaced in `/admin/activity`. Mirrors the `manual_adjust` reason pattern.
+
+### Streak-at-risk FCM (Friday only)
+
+`/api/cron/obedience-sweep` runs once per day. On any Cairo Friday (`weekdayOfDateKey(today) === 5`), it computes Besho's current-week score and fires a single nudge FCM to her if all of these hold:
+
+- `streak > 0` (she has something to lose)
+- `displayedScore < streakThreshold` (she's below the bar)
+- `streakThreshold - displayedScore >= streakRiskMinDeficit` (deficit large enough to be worth nudging)
+
+Body shape: `"You're {N} pts behind your streak. {D} days left."` where `D = 7 - weekdayCairo(today)` (Friday = 2 days remaining including today). Sentinel: `streak-risk:fcm:sent:{author}:{weekKey}` via `SET NX EX 30h` — atomic, so a re-tick on the same Friday is a no-op. The week itself is not mutated; this is purely a notification side-channel.
+
+`obedience:streak-risk-min-deficit` is the Sir-tunable knob (default 1, raised to suppress trivial nudges) — surfaced in the Streak tab on `/admin/rewards`. Rejecting min-deficit `< 1` is the only validation; there's no upper alert UI, just the constant `MAX_STREAK_RISK_MIN_DEFICIT` from `reward-types.ts`.
+
+### Stale pending claim nudge
+
+Same cron walks `rewards:claims:pending` ZSET with `byScore: 0..now-24h` and fires one nudge FCM to Sir per stale claim (`STALE_CLAIM_NUDGE_HOURS = 24`). Body: `"kitten's {tier} claim ({reward}) has been pending {N}h."` Sentinel: `reward:claim:nudge-sent:{claimId}` via `SET NX EX 30d` — one nudge per claim ever. Test-mode claims are skipped. Decided claims (status !== "pending") are also defensively skipped even though the pending ZSET should reflect status.
+
+Both nudges live in the existing `obedience-sweep` cron — no new cron-job.org entry. Counts surface in `cron:last-run:obedience-sweep` summary as `streakRiskFired` (0 or 1) and `staleClaimsNudged` (N).
+
+### Audit/events ZSET drift repair
+
+`obedience.repairObedienceZsetDrift(author, weekKey)` reconciles the events + audit ZSETs when a half-failed write left one populated and the other not. Members in `events:` but missing from `audit:` are re-added with score = now (best timestamp available). Members in `audit:` but missing from `events:` are removed (no points to recover, so the audit row would render as missing-points). Idempotent. The all-week sweep `repairAllObedienceZsetDrift(weeks=4)` walks both authors over current + prior 4 weeks. Sir-only via `admin.repairObedienceDrift()`, surfaced as a button in `/admin/health`.
+
+---
+
+## Cron telemetry
+
+| Key                    | Type   | TTL    | Description                                                                          |
+| ---------------------- | ------ | ------ | ------------------------------------------------------------------------------------ |
+| `cron:last-run:{name}` | JSON   | 7 days | `{ ts, ok, durationMs, summary?, error? }` written at the end of every cron tick     |
+
+`{name}` is one of `obedience-sweep` / `ritual-windows` / `review-window-open`. Written from `src/lib/cron-telemetry.ts::writeCronTelemetry(name, payload)` in BOTH the success and catch paths of each `/api/cron/*` route. Best-effort: telemetry never breaks the calling cron. The 7-day TTL means a cron that hasn't fired in over a week reads as "never run" rather than a stale snapshot — that's the alert signal.
+
+Sir reads via `admin.getCronTelemetry()`, surfaced on `/admin/health` as a "Cron last runs" section. Per-cron freshness thresholds (5 min for ritual-windows, 26h for the daily crons) drive the ok/error rendering. This closes the visibility hole that made the earlier FCM-spam debug feel blind.
+
 ---
 
 ## Trash retention
@@ -531,5 +576,5 @@ Add a sentinel for any back-fill. Idempotency matters because every cold-start c
 - `src/app/actions/admin.ts` — `getStats`, `getHealthSnapshot`, `repairIndexes`, `getActivityHeatmap`, `adminSetMoodForAuthor`, `adminClearMoodForAuthor`, `getRelationshipDates`, `setRelationshipDates`, `getAuthFailures`, `clearAuthFailures`, `getRestraintState`, `setRestraintState`, `getRewardTiers`, `setRewardTiers`, `getObedienceWeights`, `setObedienceWeights`, `getStreakSettings`, `setStreakSettings`, `recomputeWeek`, `getObedienceAdminSnapshot`, `adminSetStreakRaw`, `adminAdjustScore`, `getObedienceEventLog`, `adminDeleteObedienceEvent`, `getTestModeState`, `setTestModeState`, `adminPurgeTestClaims`, `inspectRedisKey`, `getDeployInfo`, `getTrashRetention`, `setTrashRetention`
 - `src/lib/obedience.ts` — `recordObedienceEvent`, `recordObedienceEventForWeek`, `getWeekState`, `computeWeekScore`, `currentWeekKey`, `finalizeWeek`, `catchUpFinalizations`, `getEventLog`, `deleteObedienceEvent`, weight/tier/streak/multiplier read+write helpers (5s in-process cache mirroring `restraint.ts`)
 - `src/lib/reward-types.ts` — `ObedienceEventType`, `RewardTier`, `RewardItem`, `RewardClaim`, `ObedienceWeights`, `ObedienceWeekState`, default seeds + validation bounds
-- `src/app/actions/rewards.ts` — `getRewardsBundle`, `getRewardsHistory`, `claimReward`, `deliverClaim`, `denyClaim`, `listPendingClaims`, `listClaimsForAuthor`, `previewMultiplierForStreak`, `purgeTestClaimsRaw`
+- `src/app/actions/rewards.ts` — `getRewardsBundle`, `getRewardsHistory`, `getLifetimeStats`, `claimReward`, `deliverClaim`, `denyClaim`, `revokeClaim`, `acknowledgeClaim`, `getClaimAudit`, `listAllClaims`, `listPendingClaims`, `listClaimsForAuthor`, `bulkDeliverPending`, `bulkDenyOlderThan`, `previewMultiplierForStreak`, `purgeTestClaimsRaw`
 - `src/app/api/cron/obedience-sweep/route.ts` — daily missed-event sweep + week finalization; bearer-auth, no `vercel.json`

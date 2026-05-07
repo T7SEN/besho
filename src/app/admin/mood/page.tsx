@@ -18,6 +18,8 @@ import {
 } from "@/lib/mood-constants";
 import { vibrate } from "@/lib/haptic";
 import { cn } from "@/lib/utils";
+import { useRefreshListener } from "@/hooks/use-refresh-listener";
+import { useRouter } from "next/navigation";
 
 type Field = "mood" | "state";
 
@@ -35,6 +37,10 @@ export default function MoodOverridePage() {
   const [busy, setBusy] = useState<string | null>(null);
   const [flash, setFlash] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const router = useRouter();
+  // Page is form-only with no displayed server state; refresh
+  // re-renders any Server-Component dependencies.
+  useRefreshListener(() => router.refresh());
 
   const showFlash = (msg: string) => {
     setFlash(msg);

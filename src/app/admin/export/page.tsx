@@ -5,6 +5,8 @@ import Link from "next/link";
 import { ArrowLeft, Download, Loader2 } from "lucide-react";
 import { exportSnapshot } from "@/app/actions/admin";
 import { vibrate } from "@/lib/haptic";
+import { useRefreshListener } from "@/hooks/use-refresh-listener";
+import { useRouter } from "next/navigation";
 
 function pad(n: number) {
   return n < 10 ? `0${n}` : String(n);
@@ -21,6 +23,10 @@ export default function ExportPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastSize, setLastSize] = useState<number | null>(null);
+  const router = useRouter();
+  // Page is button-only with no displayed server state; refresh
+  // re-renders any Server-Component dependencies.
+  useRefreshListener(() => router.refresh());
 
   const handleExport = async () => {
     void vibrate(50, "medium");

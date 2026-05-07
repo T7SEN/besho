@@ -5,25 +5,39 @@ import Link from "next/link";
 import {
   ArrowLeft,
   CheckCircle2,
+  Clock,
   Loader2,
   RefreshCw,
+  ShieldCheck,
   Wrench,
   XCircle,
 } from "lucide-react";
 import {
+  getCronTelemetry,
   getHealthSnapshot,
   repairIndexes,
+  repairObedienceDrift,
+  type CronTelemetryResult,
   type HealthSnapshot,
+  type ObedienceDriftRepairSummary,
   type RepairResult,
 } from "@/app/actions/admin";
+import type { CronTelemetrySnapshot } from "@/lib/cron-telemetry";
 import { TITLE_BY_AUTHOR } from "@/lib/constants";
 import { vibrate } from "@/lib/haptic";
 import { cn } from "@/lib/utils";
+import { useRefreshListener } from "@/hooks/use-refresh-listener";
 
 const CONFIRM_TIMEOUT_MS = 5_000;
+const CRON_FRESH_MS = {
+  "ritual-windows": 5 * 60_000, // 5 min — runs every minute
+  "obedience-sweep": 26 * 60 * 60_000, // 26h — runs daily
+  "review-window-open": 26 * 60 * 60_000, // 26h — runs daily
+} as const;
 
 export default function HealthPage() {
   const [health, setHealth] = useState<HealthSnapshot | null>(null);
+  const [cron, setCron] = useState<CronTelemetryResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -33,16 +47,28 @@ export default function HealthPage() {
     RepairResult["repaired"] | null
   >(null);
 
+  const [confirmingObedience, setConfirmingObedience] = useState(false);
+  const [obedienceRepairing, setObedienceRepairing] = useState(false);
+  const [obedienceResult, setObedienceResult] =
+    useState<ObedienceDriftRepairSummary | null>(null);
+
+  const [now, setNow] = useState(() => Date.now());
+
   const fetchHealth = useCallback(async () => {
     setRefreshing(true);
     try {
-      const result = await getHealthSnapshot();
-      if (result.error) {
-        setError(result.error);
-      } else if (result.health) {
-        setHealth(result.health);
+      const [healthResult, cronResult] = await Promise.all([
+        getHealthSnapshot(),
+        getCronTelemetry(),
+      ]);
+      if (healthResult.error) {
+        setError(healthResult.error);
+      } else if (healthResult.health) {
+        setHealth(healthResult.health);
         setError(null);
       }
+      setCron(cronResult);
+      setNow(Date.now());
     } catch {
       setError("Failed to read health.");
     } finally {
@@ -51,8 +77,13 @@ export default function HealthPage() {
   }, []);
 
   useEffect(() => {
-    void fetchHealth();
+    const t = setTimeout(() => {
+      void fetchHealth();
+    }, 0);
+    return () => clearTimeout(t);
   }, [fetchHealth]);
+
+  useRefreshListener(fetchHealth);
 
   useEffect(() => {
     if (!confirmingRepair) return;
@@ -62,6 +93,15 @@ export default function HealthPage() {
     );
     return () => clearTimeout(id);
   }, [confirmingRepair]);
+
+  useEffect(() => {
+    if (!confirmingObedience) return;
+    const id = setTimeout(
+      () => setConfirmingObedience(false),
+      CONFIRM_TIMEOUT_MS,
+    );
+    return () => clearTimeout(id);
+  }, [confirmingObedience]);
 
   const handleRepair = async () => {
     void vibrate([100, 50, 100], "heavy");
@@ -78,6 +118,24 @@ export default function HealthPage() {
       }
     } finally {
       setRepairing(false);
+    }
+  };
+
+  const handleObedienceRepair = async () => {
+    void vibrate([100, 50, 100], "heavy");
+    setObedienceRepairing(true);
+    setError(null);
+    try {
+      const result = await repairObedienceDrift();
+      if (result.error) {
+        setError(result.error);
+      } else {
+        setObedienceResult(result.summary ?? null);
+        setConfirmingObedience(false);
+        await fetchHealth();
+      }
+    } finally {
+      setObedienceRepairing(false);
     }
   };
 
@@ -183,6 +241,20 @@ export default function HealthPage() {
             />
           </Section>
 
+          <Section title="Cron last runs">
+            {cron?.snapshots && cron.snapshots.length > 0 ? (
+              cron.snapshots.map((snap) => (
+                <CronRow key={snap.name} snap={snap} now={now} />
+              ))
+            ) : (
+              <li className="text-xs text-muted-foreground">
+                No telemetry yet. The crons write here on each tick;
+                cron-job.org may not have fired since this feature
+                deployed.
+              </li>
+            )}
+          </Section>
+
           <Section title="Notes index integrity">
             <Diag
               label="Index size"
@@ -212,6 +284,25 @@ export default function HealthPage() {
             />
           </Section>
 
+          {obedienceResult && (
+            <div className="rounded-lg border border-emerald-400/40 bg-emerald-400/10 p-3 text-xs text-emerald-400">
+              Obedience drift repaired:
+              <ul className="mt-1 space-y-0.5">
+                <li>
+                  Events → audit re-added:{" "}
+                  {obedienceResult.totals.eventsToAuditAdded}
+                </li>
+                <li>
+                  Audit orphans removed:{" "}
+                  {obedienceResult.totals.auditOrphansRemoved}
+                </li>
+                <li>
+                  Weeks scanned: {obedienceResult.totals.weeksScanned}
+                </li>
+              </ul>
+            </div>
+          )}
+
           {repairResult && (
             <div className="rounded-lg border border-emerald-400/40 bg-emerald-400/10 p-3 text-xs text-emerald-400">
               Repaired:
@@ -231,7 +322,47 @@ export default function HealthPage() {
             </div>
           )}
 
-          <div className="flex items-center justify-end gap-2">
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            {confirmingObedience ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void vibrate(20, "light");
+                    setConfirmingObedience(false);
+                  }}
+                  disabled={obedienceRepairing}
+                  className="rounded-full border border-border/40 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground active:scale-95 disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleObedienceRepair()}
+                  disabled={obedienceRepairing}
+                  className="flex items-center gap-1.5 rounded-full bg-primary px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-primary-foreground transition-colors hover:bg-primary/90 active:scale-95 disabled:opacity-60"
+                >
+                  {obedienceRepairing ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <ShieldCheck className="h-3 w-3" />
+                  )}
+                  Confirm obedience repair
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  void vibrate(50, "medium");
+                  setConfirmingObedience(true);
+                }}
+                className="flex items-center gap-1.5 rounded-full border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-amber-400 transition-colors hover:bg-amber-500/20 active:scale-95"
+              >
+                <ShieldCheck className="h-3 w-3" />
+                Repair obedience drift
+              </button>
+            )}
             {confirmingRepair ? (
               <>
                 <button
@@ -277,6 +408,80 @@ export default function HealthPage() {
       )}
     </main>
   );
+}
+
+function CronRow({
+  snap,
+  now,
+}: {
+  snap: CronTelemetrySnapshot;
+  now: number;
+}) {
+  const last = snap.lastRun;
+  const expectedFreshMs = CRON_FRESH_MS[snap.name];
+  const ageMs = last ? now - last.ts : null;
+  const fresh = ageMs != null && ageMs <= expectedFreshMs;
+  const ok = !!last && last.ok && fresh;
+  return (
+    <li className="flex flex-col gap-1 rounded border border-border/30 bg-card/40 px-2.5 py-2 text-xs">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="flex items-center gap-2 truncate">
+          {ok ? (
+            <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
+          ) : (
+            <XCircle className="h-3.5 w-3.5 text-destructive" />
+          )}
+          <span className="truncate font-mono">{snap.name}</span>
+        </span>
+        <span
+          className={cn(
+            "flex items-center gap-1 font-mono text-[10px]",
+            ok ? "text-muted-foreground" : "text-destructive",
+          )}
+        >
+          <Clock className="h-3 w-3" />
+          {last ? formatAge(ageMs ?? 0) : "never"}
+        </span>
+      </div>
+      {last && (
+        <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 pl-5 text-[10px] text-muted-foreground/80">
+          <span className="font-bold uppercase tracking-wider">Status</span>
+          <span className={cn(last.ok ? "text-emerald-400" : "text-destructive")}>
+            {last.ok ? "ok" : last.error || "error"}
+          </span>
+          <span className="font-bold uppercase tracking-wider">Took</span>
+          <span className="tabular-nums">{last.durationMs}ms</span>
+          {last.summary && Object.keys(last.summary).length > 0 && (
+            <>
+              <span className="font-bold uppercase tracking-wider">
+                Summary
+              </span>
+              <span className="truncate font-mono">
+                {summarize(last.summary)}
+              </span>
+            </>
+          )}
+        </div>
+      )}
+    </li>
+  );
+}
+
+function formatAge(ms: number): string {
+  if (ms < 60_000) return `${Math.max(0, Math.round(ms / 1000))}s ago`;
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m ago`;
+  if (ms < 86_400_000) return `${Math.round(ms / 3_600_000)}h ago`;
+  return `${Math.round(ms / 86_400_000)}d ago`;
+}
+
+function summarize(summary: Record<string, unknown>): string {
+  const parts: string[] = [];
+  for (const [k, v] of Object.entries(summary)) {
+    if (v == null || v === "") continue;
+    if (typeof v === "object") parts.push(`${k}=${JSON.stringify(v)}`);
+    else parts.push(`${k}=${String(v)}`);
+  }
+  return parts.join(" · ") || "—";
 }
 
 function Section({

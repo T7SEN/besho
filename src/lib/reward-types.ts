@@ -88,7 +88,11 @@ export interface ObedienceWeekState extends ObedienceWeekScore {
   tiers: RewardTier[];
 }
 
-export type ClaimStatus = "pending" | "delivered" | "denied";
+export type ClaimStatus =
+  | "pending"
+  | "delivered"
+  | "denied"
+  | "revoked";
 
 export interface RewardClaim {
   id: string;
@@ -110,6 +114,16 @@ export interface RewardClaim {
   respondedAt?: number;
   respondedBy?: Author;
   sirNote?: string;
+  /** Set when Sir revokes a previously-decided claim. The reason
+   *  text is captured here verbatim. Status is "revoked"; revokedAt
+   *  carries the timestamp. Re-revoking is a no-op. */
+  revokedAt?: number;
+  revokeReason?: string;
+  /** Set when Besho confirms receipt of a delivered reward. Optional
+   *  thank-you note is captured. Status remains "delivered" — ack is
+   *  a parallel field, not a new state. */
+  acknowledgedAt?: number;
+  acknowledgeNote?: string;
   /** Audit snapshot — score + tier threshold at claim time. */
   claimedScore: number;
   claimedTierThreshold: number;
@@ -119,6 +133,25 @@ export interface RewardClaim {
    *  full flow (Sir delivery, status card) still works during the
    *  test cycle. Sir can wipe these via `adminPurgeTestClaims`. */
   testMode?: boolean;
+  /** Computed at fetch time, not persisted. Length of the
+   *  `reward:claim:audit:{id}` LIST. Surfaces in the UI as a
+   *  "Changed Nx" chip when > 0. */
+  auditCount?: number;
+}
+
+/** Snapshot of a previous claim state, captured before it gets
+ *  overwritten by a re-decide / revoke / ack. Stored in
+ *  `reward:claim:audit:{id}` LIST, capped at 20 entries. Mirrors the
+ *  `permission:audit:{id}` pattern. */
+export interface ClaimAuditEntry {
+  /** The prior status (the state being moved away from). */
+  status: ClaimStatus;
+  changedAt: number;
+  changedBy: Author;
+  /** Whichever note applied at that prior state — sirNote on a
+   *  delivered/denied entry, revokeReason on a revoked entry,
+   *  acknowledgeNote on an acknowledged entry. */
+  note?: string;
 }
 
 // ── Default tunables ─────────────────────────────────────────────────────
@@ -196,6 +229,14 @@ export const DEFAULT_STREAK_THRESHOLD = 80;
 export const DEFAULT_MULTIPLIERS: readonly number[] = [
   1.0, 1.1, 1.2, 1.3,
 ] as const;
+/** Minimum deficit (in displayed pts) required to fire the
+ *  Friday-evening "streak at risk" FCM. Default 1 means any deficit
+ *  triggers; raise to suppress trivial nudges. Sir-tunable from the
+ *  Streak tab on /admin/rewards. */
+export const DEFAULT_STREAK_RISK_MIN_DEFICIT = 1;
+/** Pending-claim age (hours) before the obedience-sweep cron fires a
+ *  one-shot nudge FCM to Sir. */
+export const STALE_CLAIM_NUDGE_HOURS = 24;
 
 export const OBEDIENCE_EVENT_LABELS: Record<ObedienceEventType, string> = {
   task_on_time: "Task on time",
@@ -222,8 +263,19 @@ export const TIER_EMOJI_MAX = 8;
 export const TIER_NAME_MAX = 32;
 export const MAX_REWARDS_PER_TIER = 12;
 export const MAX_TIER_THRESHOLD = 9999;
+/** Upper bound on `obedience:streak-risk-min-deficit`. Setting it
+ *  this high effectively disables the Friday FCM. */
+export const MAX_STREAK_RISK_MIN_DEFICIT = MAX_TIER_THRESHOLD;
 export const MAX_MULTIPLIER = 5.0;
 export const SIR_NOTE_MAX = 500;
 export const MANUAL_ADJUST_MIN = -100;
 export const MANUAL_ADJUST_MAX = 100;
 export const MANUAL_ADJUST_REASON_MAX = 200;
+export const REVOKE_REASON_MAX = 500;
+export const ACKNOWLEDGE_NOTE_MAX = 500;
+export const CLAIM_AUDIT_LIMIT = 20;
+export const BULK_DENY_MAX_DAYS = 365;
+/** Optional context note threaded through `recordObedienceEvent`'s
+ *  `note?` parameter. Lands in `/admin/activity` only — never the
+ *  ZSET member. Used currently by the restraint-engaged emit site. */
+export const OBEDIENCE_NOTE_MAX = 500;

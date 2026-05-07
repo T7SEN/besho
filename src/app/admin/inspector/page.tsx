@@ -11,6 +11,7 @@ import {
 import { TITLE_BY_AUTHOR, type Author } from "@/lib/constants";
 import { vibrate } from "@/lib/haptic";
 import { cn } from "@/lib/utils";
+import { useRefreshListener } from "@/hooks/use-refresh-listener";
 
 const POLL_MS = 5_000;
 
@@ -52,6 +53,8 @@ export default function InspectorPage() {
     const id = setInterval(() => void fetchSnapshot(), POLL_MS);
     return () => clearInterval(id);
   }, [fetchSnapshot]);
+
+  useRefreshListener(fetchSnapshot);
 
   useEffect(() => {
     const id = setInterval(() => setTick(Date.now()), 1_000);

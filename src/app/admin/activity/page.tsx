@@ -10,6 +10,7 @@ import {
 import type { ActivityRecord } from "@/lib/activity";
 import { cn } from "@/lib/utils";
 import { vibrate } from "@/lib/haptic";
+import { useRefreshListener } from "@/hooks/use-refresh-listener";
 
 const POLL_MS = 10_000;
 const LIMIT = 200;
@@ -60,6 +61,8 @@ export default function ActivityPage() {
     const id = setInterval(() => void fetchFeed(), POLL_MS);
     return () => clearInterval(id);
   }, [fetchFeed]);
+
+  useRefreshListener(fetchFeed);
 
   useEffect(() => {
     const id = setInterval(() => setTick(Date.now()), 30_000);

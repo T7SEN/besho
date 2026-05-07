@@ -22,7 +22,12 @@ import {
   type ObedienceWeekState,
   type RewardClaim,
   type ClaimStatus,
+  type ClaimAuditEntry,
   SIR_NOTE_MAX,
+  REVOKE_REASON_MAX,
+  ACKNOWLEDGE_NOTE_MAX,
+  CLAIM_AUDIT_LIMIT,
+  BULK_DENY_MAX_DAYS,
 } from "@/lib/reward-types";
 
 const redis = new Redis({
@@ -36,6 +41,11 @@ const claimsByAuthorKey = (author: Author) =>
 const CLAIMS_PENDING_KEY = "rewards:claims:pending";
 const claimByWeekKey = (author: Author, weekKey: string) =>
   `rewards:claims:by-week:${author}:${weekKey}`;
+/** Per-claim audit log. Capped via LTRIM 0 19 (20 entries). Mirrors
+ *  `permission:audit:{id}`. Each entry is a snapshot of the prior
+ *  state taken before the next mutation; the latest state is on the
+ *  claim record itself. */
+const claimAuditKey = (id: string) => `reward:claim:audit:${id}`;
 
 async function getSession() {
   const cookieStore = await cookies();
@@ -296,9 +306,12 @@ async function updateClaimDecision(
   try {
     const existing = await redis.get<RewardClaim>(claimKey(claimId));
     if (!existing) return { error: "Claim not found." };
-    if (existing.status !== "pending") {
-      return { error: "Claim already decided." };
+    if (existing.status === "revoked") {
+      return { error: "Revoked claims can't be re-decided." };
     }
+    // Re-decides allowed: pending → delivered/denied (initial),
+    // delivered → denied, denied → delivered (Sir changed his mind).
+    // Only revoked is terminal.
 
     const now = Date.now();
     const updated: RewardClaim = {
@@ -306,17 +319,40 @@ async function updateClaimDecision(
       status: decision,
       respondedAt: now,
       respondedBy: by,
-      ...(trimmed.length > 0 && { sirNote: trimmed }),
+      sirNote: trimmed.length > 0 ? trimmed : undefined,
+      // Re-deciding clears revoke fields (defensive — `revoked` is
+      // blocked above, but if a future state allows the flip clear
+      // here too).
+      revokedAt: undefined,
+      revokeReason: undefined,
     };
 
     const pipeline = redis.pipeline();
     pipeline.set(claimKey(claimId), updated);
     pipeline.zrem(CLAIMS_PENDING_KEY, claimId);
+    // Audit only when this is a re-decide (existing was already
+    // decided). First decisions skip the audit since there's no
+    // prior state worth preserving.
+    if (existing.status !== "pending") {
+      const entry: ClaimAuditEntry = {
+        status: existing.status,
+        changedAt: now,
+        changedBy: by,
+        ...(existing.sirNote && { note: existing.sirNote }),
+      };
+      pipeline.lpush(claimAuditKey(claimId), JSON.stringify(entry));
+      pipeline.ltrim(claimAuditKey(claimId), 0, CLAIM_AUDIT_LIMIT - 1);
+    }
     await pipeline.exec();
 
+    const isReDecide = existing.status !== "pending";
     const titleByDecision: Record<"delivered" | "denied", string> = {
-      delivered: "🎁 Reward delivered",
-      denied: "✗ Reward denied",
+      delivered: isReDecide
+        ? `🎁 Reward — now delivered`
+        : "🎁 Reward delivered",
+      denied: isReDecide
+        ? `✗ Reward — now denied`
+        : "✗ Reward denied",
     };
     const body = trimmed.length > 0
       ? trimmed
@@ -330,6 +366,7 @@ async function updateClaimDecision(
     logger.interaction("[rewards] claim decided", {
       claimId,
       decision,
+      prevStatus: existing.status,
       tier: existing.tierId,
       reward: existing.rewardId,
       by,
@@ -342,7 +379,189 @@ async function updateClaimDecision(
   }
 }
 
+// ── Revoke / acknowledge ─────────────────────────────────────────────────
+
+export async function revokeClaim(
+  claimId: string,
+  reasonRaw: string,
+): Promise<{ success?: boolean; error?: string }> {
+  const session = await getSession();
+  if (!session?.author) return { error: "Not authenticated." };
+  if (session.author !== "T7SEN") {
+    return { error: "Only Sir can revoke claims." };
+  }
+  const reason = (reasonRaw ?? "").trim();
+  if (!reason) return { error: "Reason is required." };
+  if (reason.length > REVOKE_REASON_MAX) {
+    return { error: `Reason too long (max ${REVOKE_REASON_MAX}).` };
+  }
+  try {
+    const existing = await redis.get<RewardClaim>(claimKey(claimId));
+    if (!existing) return { error: "Claim not found." };
+    if (existing.status === "revoked") {
+      return { error: "Already revoked." };
+    }
+    if (existing.status === "pending") {
+      return {
+        error:
+          "Pending claims aren't revoked — deny them instead.",
+      };
+    }
+
+    const now = Date.now();
+    const prevStatus = existing.status;
+    const updated: RewardClaim = {
+      ...existing,
+      status: "revoked",
+      revokedAt: now,
+      revokeReason: reason,
+      respondedAt: now,
+      respondedBy: session.author,
+    };
+
+    const pipeline = redis.pipeline();
+    pipeline.set(claimKey(claimId), updated);
+    pipeline.zrem(CLAIMS_PENDING_KEY, claimId);
+    const entry: ClaimAuditEntry = {
+      status: prevStatus,
+      changedAt: now,
+      changedBy: session.author,
+      ...(existing.sirNote && { note: existing.sirNote }),
+    };
+    pipeline.lpush(claimAuditKey(claimId), JSON.stringify(entry));
+    pipeline.ltrim(claimAuditKey(claimId), 0, CLAIM_AUDIT_LIMIT - 1);
+    await pipeline.exec();
+
+    await sendNotification(existing.author, {
+      title: "✗ Reward revoked",
+      body: `${existing.tierName}: ${existing.rewardLabel} — ${reason}`,
+      url: "/rewards",
+    });
+
+    logger.warn("[rewards] claim revoked", {
+      claimId,
+      prevStatus,
+      tier: existing.tierId,
+      reward: existing.rewardId,
+      reason,
+      by: session.author,
+    });
+    revalidatePath("/rewards");
+    return { success: true };
+  } catch (err) {
+    logger.error("[rewards] revoke failed", err);
+    return { error: "Revoke failed." };
+  }
+}
+
+export async function acknowledgeClaim(
+  claimId: string,
+  noteRaw?: string,
+): Promise<{ success?: boolean; error?: string }> {
+  const session = await getSession();
+  if (!session?.author) return { error: "Not authenticated." };
+  if (session.author !== "Besho") {
+    return { error: "Only kitten can confirm receipt." };
+  }
+  const block = await assertWriteAllowed(session.author);
+  if (block) return block;
+
+  const note = (noteRaw ?? "").trim();
+  if (note.length > ACKNOWLEDGE_NOTE_MAX) {
+    return { error: `Note too long (max ${ACKNOWLEDGE_NOTE_MAX}).` };
+  }
+  try {
+    const existing = await redis.get<RewardClaim>(claimKey(claimId));
+    if (!existing) return { error: "Claim not found." };
+    if (existing.author !== "Besho") {
+      return { error: "Not your claim." };
+    }
+    if (existing.status !== "delivered") {
+      return { error: "Only delivered claims can be acknowledged." };
+    }
+    if (existing.acknowledgedAt) {
+      return { error: "Already acknowledged." };
+    }
+
+    const now = Date.now();
+    const updated: RewardClaim = {
+      ...existing,
+      acknowledgedAt: now,
+      ...(note.length > 0 && { acknowledgeNote: note }),
+    };
+    await redis.set(claimKey(claimId), updated);
+
+    await sendNotification("T7SEN", {
+      title: "✓ Reward received",
+      body:
+        note.length > 0
+          ? `kitten — ${note}`
+          : `kitten received: ${existing.rewardLabel}`,
+      url: "/rewards",
+    });
+
+    logger.interaction("[rewards] claim acknowledged", {
+      claimId,
+      hasNote: note.length > 0,
+    });
+    revalidatePath("/rewards");
+    return { success: true };
+  } catch (err) {
+    logger.error("[rewards] ack failed", err);
+    return { error: "Ack failed." };
+  }
+}
+
+export async function getClaimAudit(
+  claimId: string,
+): Promise<ClaimAuditEntry[]> {
+  const session = await getSession();
+  if (!session?.author) return [];
+  try {
+    const raw = await redis.lrange<unknown>(
+      claimAuditKey(claimId),
+      0,
+      CLAIM_AUDIT_LIMIT - 1,
+    );
+    if (!raw) return [];
+    const out: ClaimAuditEntry[] = [];
+    for (const v of raw) {
+      try {
+        const parsed =
+          typeof v === "string" ? (JSON.parse(v) as ClaimAuditEntry) : (v as ClaimAuditEntry);
+        if (parsed && parsed.status) out.push(parsed);
+      } catch {
+        // skip malformed entries
+      }
+    }
+    return out;
+  } catch (err) {
+    logger.error("[rewards] audit read failed", err);
+    return [];
+  }
+}
+
 // ── List + read helpers ──────────────────────────────────────────────────
+
+/** Pipeline LLEN on each claim's audit key to surface `auditCount`
+ *  inline. Mirrors the permission-list pattern. Claims with zero
+ *  history skip the field. */
+async function decorateAuditCount(
+  claims: RewardClaim[],
+): Promise<RewardClaim[]> {
+  if (!claims.length) return claims;
+  try {
+    const pipeline = redis.pipeline();
+    for (const c of claims) pipeline.llen(claimAuditKey(c.id));
+    const lengths = ((await pipeline.exec()) as (number | null)[]) ?? [];
+    return claims.map((c, i) => {
+      const n = Number(lengths[i] ?? 0);
+      return n > 0 ? { ...c, auditCount: n } : c;
+    });
+  } catch {
+    return claims;
+  }
+}
 
 export async function listClaimsForAuthor(
   author: Author,
@@ -364,7 +583,7 @@ export async function listClaimsForAuthor(
     // exist (so deliver/deny works during the test cycle); they just
     // don't count as part of her permanent history.
     const current = currentWeekKey();
-    return records.filter((r): r is RewardClaim => {
+    const filtered = records.filter((r): r is RewardClaim => {
       if (!r) return false;
       if (r.testMode === true) return false;
       // Legacy fallback for claims created before `testMode` was a
@@ -374,6 +593,7 @@ export async function listClaimsForAuthor(
       if (r.weekKey >= current) return false;
       return true;
     });
+    return decorateAuditCount(filtered);
   } catch (err) {
     logger.error("[rewards] list failed", err);
     return [];
@@ -392,9 +612,52 @@ export async function listPendingClaims(): Promise<RewardClaim[]> {
     const records = (await redis.mget<RewardClaim[]>(
       ...ids.map((id) => claimKey(id)),
     )) ?? [];
-    return records.filter((r): r is RewardClaim => !!r);
+    return decorateAuditCount(records.filter((r): r is RewardClaim => !!r));
   } catch (err) {
     logger.error("[rewards] pending list failed", err);
+    return [];
+  }
+}
+
+/** Sir-only — returns the most-recent N claims across both authors,
+ *  any status, including delivered/denied/revoked. Powers the Sir-side
+ *  "Recent decisions" list with revoke buttons. Filters out test
+ *  claims by the same rule as `listClaimsForAuthor`. */
+export async function listAllClaims(
+  limit: number = 20,
+): Promise<RewardClaim[]> {
+  const session = await getSession();
+  if (session?.author !== "T7SEN") return [];
+  try {
+    const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+    const authors: Author[] = ["T7SEN", "Besho"];
+    const idLists = await Promise.all(
+      authors.map((a) =>
+        redis.zrange<unknown[]>(claimsByAuthorKey(a), 0, safeLimit - 1, {
+          rev: true,
+        }),
+      ),
+    );
+    const ids = Array.from(
+      new Set(idLists.flat().map((v) => String(v))),
+    );
+    if (!ids.length) return [];
+    const records =
+      (await redis.mget<RewardClaim[]>(...ids.map((id) => claimKey(id)))) ?? [];
+    const current = currentWeekKey();
+    const filtered = records.filter((r): r is RewardClaim => {
+      if (!r) return false;
+      if (r.testMode === true) return false;
+      if (r.weekKey >= current) return false;
+      return true;
+    });
+    filtered.sort(
+      (a, b) =>
+        (b.respondedAt ?? b.requestedAt) - (a.respondedAt ?? a.requestedAt),
+    );
+    return decorateAuditCount(filtered.slice(0, safeLimit));
+  } catch (err) {
+    logger.error("[rewards] listAll failed", err);
     return [];
   }
 }
@@ -434,6 +697,72 @@ export async function previewMultiplierForStreak(
 ): Promise<number> {
   const mults = await getMultipliers();
   return multiplierForStreak(streak, mults);
+}
+
+// ── Lifetime stats ───────────────────────────────────────────────────────
+
+export interface LifetimeStats {
+  /** Number of finalized weeks (incl. empty ones), from
+   *  `obedience:weeks-tracked:Besho` counter. */
+  weeksTracked: number;
+  /** Best-ever single-week displayed score, with the weekKey it was
+   *  achieved. Updated at finalize when surpassed. */
+  bestWeek: { weekKey: string; displayedScore: number } | null;
+  /** Longest consecutive high-score streak ever achieved. */
+  longestStreak: number;
+  /** Total non-test claims ever submitted. */
+  totalClaims: number;
+  /** Of those, how many Sir delivered. */
+  deliveredClaims: number;
+  /** Current consecutive high-score streak (streakEntering THIS week). */
+  currentStreak: number;
+}
+
+export async function getLifetimeStats(): Promise<{
+  stats?: LifetimeStats;
+  error?: string;
+}> {
+  const session = await getSession();
+  if (!session?.author) return { error: "Not authenticated." };
+
+  try {
+    const claims = await listClaimsForAuthor("Besho", 200);
+    const totalClaims = claims.length;
+    const deliveredClaims = claims.filter(
+      (c) => c.status === "delivered",
+    ).length;
+
+    const [bestWeek, longestStreakRaw, weeksTrackedRaw, currentStreakRaw] =
+      await Promise.all([
+        (async () => {
+          try {
+            return await redis.get<{
+              weekKey: string;
+              displayedScore: number;
+            }>("obedience:best-week:Besho");
+          } catch {
+            return null;
+          }
+        })(),
+        redis.get<number | string>("obedience:longest-streak:Besho"),
+        redis.get<number | string>("obedience:weeks-tracked:Besho"),
+        redis.get<number | string>("obedience:streak:Besho"),
+      ]);
+
+    return {
+      stats: {
+        weeksTracked: Number(weeksTrackedRaw) || 0,
+        bestWeek: bestWeek ?? null,
+        longestStreak: Number(longestStreakRaw) || 0,
+        totalClaims,
+        deliveredClaims,
+        currentStreak: Number(currentStreakRaw) || 0,
+      },
+    };
+  } catch (err) {
+    logger.error("[rewards] lifetime stats failed", err);
+    return { error: "Stats failed." };
+  }
 }
 
 // ── Test-claim cleanup (admin) ───────────────────────────────────────────
@@ -483,6 +812,7 @@ export async function purgeTestClaimsRaw(): Promise<{
     const pipeline = redis.pipeline();
     for (const { claim, id } of toDelete) {
       pipeline.del(claimKey(id));
+      pipeline.del(claimAuditKey(id));
       pipeline.zrem(claimsByAuthorKey(author), id);
       pipeline.zrem(CLAIMS_PENDING_KEY, id);
       pipeline.del(claimByWeekKey(author, claim.weekKey));
@@ -492,6 +822,158 @@ export async function purgeTestClaimsRaw(): Promise<{
   }
 
   return { removed };
+}
+
+// ── Bulk Sir-only ops ────────────────────────────────────────────────────
+
+export async function bulkDeliverPending(
+  noteRaw?: string,
+): Promise<{
+  success?: boolean;
+  error?: string;
+  delivered?: number;
+}> {
+  const session = await getSession();
+  if (!session?.author) return { error: "Not authenticated." };
+  if (session.author !== "T7SEN") {
+    return { error: "Only Sir can bulk-deliver." };
+  }
+  const note = (noteRaw ?? "").trim();
+  if (note.length > SIR_NOTE_MAX) {
+    return { error: `Note too long (max ${SIR_NOTE_MAX}).` };
+  }
+  try {
+    const ids =
+      ((await redis.zrange<unknown[]>(CLAIMS_PENDING_KEY, 0, -1)) ?? []).map(
+        String,
+      );
+    if (!ids.length) return { success: true, delivered: 0 };
+    const records =
+      (await redis.mget<RewardClaim[]>(...ids.map((id) => claimKey(id)))) ?? [];
+    const now = Date.now();
+    let delivered = 0;
+    const pipeline = redis.pipeline();
+    const recipients = new Set<Author>();
+    for (let i = 0; i < records.length; i++) {
+      const r = records[i];
+      if (!r || r.status !== "pending") continue;
+      const updated: RewardClaim = {
+        ...r,
+        status: "delivered",
+        respondedAt: now,
+        respondedBy: session.author,
+        sirNote: note.length > 0 ? note : undefined,
+      };
+      pipeline.set(claimKey(r.id), updated);
+      pipeline.zrem(CLAIMS_PENDING_KEY, r.id);
+      recipients.add(r.author);
+      delivered++;
+    }
+    if (delivered === 0) return { success: true, delivered: 0 };
+    await pipeline.exec();
+
+    // Single summary FCM per recipient — bulk action, not per-claim.
+    await Promise.all(
+      Array.from(recipients).map((a) =>
+        sendNotification(a, {
+          title: "🎁 Rewards delivered (bulk)",
+          body: `Sir delivered ${delivered} pending ${delivered === 1 ? "reward" : "rewards"}.`,
+          url: "/rewards",
+        }),
+      ),
+    );
+
+    logger.warn("[rewards] bulk delivered", {
+      by: session.author,
+      delivered,
+    });
+    revalidatePath("/rewards");
+    revalidatePath("/admin/rewards");
+    return { success: true, delivered };
+  } catch (err) {
+    logger.error("[rewards] bulk deliver failed", err);
+    return { error: "Bulk deliver failed." };
+  }
+}
+
+export async function bulkDenyOlderThan(
+  days: number,
+  reasonRaw?: string,
+): Promise<{
+  success?: boolean;
+  error?: string;
+  denied?: number;
+}> {
+  const session = await getSession();
+  if (!session?.author) return { error: "Not authenticated." };
+  if (session.author !== "T7SEN") {
+    return { error: "Only Sir can bulk-deny." };
+  }
+  if (
+    !Number.isFinite(days) ||
+    days < 1 ||
+    days > BULK_DENY_MAX_DAYS
+  ) {
+    return { error: `Days must be 1-${BULK_DENY_MAX_DAYS}.` };
+  }
+  const reason = (reasonRaw ?? "").trim();
+  if (reason.length > SIR_NOTE_MAX) {
+    return { error: `Reason too long (max ${SIR_NOTE_MAX}).` };
+  }
+  try {
+    const cutoff = Date.now() - Math.floor(days) * 86_400_000;
+    const ids =
+      ((await redis.zrange<unknown[]>(CLAIMS_PENDING_KEY, 0, -1)) ?? []).map(
+        String,
+      );
+    if (!ids.length) return { success: true, denied: 0 };
+    const records =
+      (await redis.mget<RewardClaim[]>(...ids.map((id) => claimKey(id)))) ?? [];
+    const now = Date.now();
+    let denied = 0;
+    const pipeline = redis.pipeline();
+    const recipients = new Set<Author>();
+    for (let i = 0; i < records.length; i++) {
+      const r = records[i];
+      if (!r || r.status !== "pending") continue;
+      if (r.requestedAt > cutoff) continue;
+      const updated: RewardClaim = {
+        ...r,
+        status: "denied",
+        respondedAt: now,
+        respondedBy: session.author,
+        sirNote: reason.length > 0 ? reason : undefined,
+      };
+      pipeline.set(claimKey(r.id), updated);
+      pipeline.zrem(CLAIMS_PENDING_KEY, r.id);
+      recipients.add(r.author);
+      denied++;
+    }
+    if (denied === 0) return { success: true, denied: 0 };
+    await pipeline.exec();
+
+    await Promise.all(
+      Array.from(recipients).map((a) =>
+        sendNotification(a, {
+          title: "✗ Stale claims denied (bulk)",
+          body: `Sir denied ${denied} ${denied === 1 ? "claim" : "claims"} older than ${days} ${days === 1 ? "day" : "days"}.`,
+          url: "/rewards",
+        }),
+      ),
+    );
+
+    logger.warn("[rewards] bulk denied", {
+      by: session.author,
+      denied,
+      days,
+    });
+    revalidatePath("/rewards");
+    revalidatePath("/admin/rewards");
+    return { success: true, denied };
+  } catch (err) {
+    logger.error("[rewards] bulk deny failed", err);
+    return { error: "Bulk deny failed." };
+  }
 }
 
 // ── Score history archive ────────────────────────────────────────────────

@@ -34,6 +34,7 @@ import {
   DEFAULT_REWARD_TIERS,
   DEFAULT_STREAK_THRESHOLD,
   DEFAULT_MULTIPLIERS,
+  DEFAULT_STREAK_RISK_MIN_DEFICIT,
   type ObedienceEventType,
   type ObedienceWeights,
   type RewardTier,
@@ -42,6 +43,7 @@ import {
   type ObedienceWeekState,
 } from "./reward-types";
 import { sendNotification } from "@/app/actions/notifications";
+import { logger } from "./logger";
 
 const redis = new Redis({
   url: process.env.KV_REST_API_URL!,
@@ -54,6 +56,10 @@ export const WEIGHTS_KEY = "obedience:weights";
 export const TIERS_KEY = "rewards:tiers";
 export const STREAK_THRESHOLD_KEY = "obedience:streak-threshold";
 export const MULTIPLIERS_KEY = "obedience:multipliers";
+/** Minimum deficit in displayed pts required to fire the Friday-evening
+ *  streak-at-risk FCM. Default 1 means any deficit triggers. Sir raises
+ *  it to suppress trivial nudges. */
+export const STREAK_RISK_MIN_DEFICIT_KEY = "obedience:streak-risk-min-deficit";
 /** Sir-only test-mode flag. When "on", `claimReward` accepts the
  *  current week (in addition to the immediately prior week), so the
  *  full claim → deliver → status flow can be exercised without ending
@@ -72,11 +78,31 @@ export const finalizedKey = (author: Author, weekKey: string) =>
  *  Per-week so tier crossings notify once per week, not once per repeat. */
 export const tierNotifiedKey = (author: Author, weekKey: string) =>
   `obedience:tier-notified:${author}:${weekKey}`;
+/** Sentinel — set NX EX 30h once the Friday streak-at-risk FCM has
+ *  fired for this (author, week). Per-week so each Friday gets at
+ *  most one nudge regardless of how many times the obedience-sweep
+ *  cron retries. */
+export const streakRiskNotifiedKey = (author: Author, weekKey: string) =>
+  `streak-risk:fcm:sent:${author}:${weekKey}`;
+/** Sentinel — set NX EX 30d once the stale-claim nudge has fired for
+ *  this claim id. One nudge per claim ever; if Sir lets a claim sit
+ *  past 24h, he gets exactly one prod, not a daily one. */
+export const staleClaimNudgeSentKey = (claimId: string) =>
+  `reward:claim:nudge-sent:${claimId}`;
 /** Audit ZSET — score = emit ts (ms), member = `{type}:{eventId}` (matches
  *  the events ZSET so a join recovers points). On retry the member is
  *  identical and the ZADD updates the score to the latest emit ts. */
 export const auditKey = (author: Author, weekKey: string) =>
   `obedience:audit:${author}:${weekKey}`;
+/** Lifetime stats — updated at finalize. Only ever overwritten when the
+ *  new value beats the stored one, so they're append-style records of
+ *  her best-ever performance. */
+export const bestWeekKey = (author: Author) =>
+  `obedience:best-week:${author}`;
+export const longestStreakRecordKey = (author: Author) =>
+  `obedience:longest-streak:${author}`;
+export const weeksTrackedKey = (author: Author) =>
+  `obedience:weeks-tracked:${author}`;
 
 // ── 5s in-process cache, mirroring restraint.ts ──────────────────────────
 
@@ -165,6 +191,26 @@ export async function setStreakThresholdRaw(value: number): Promise<void> {
   cache.delete(STREAK_THRESHOLD_KEY);
 }
 
+export async function getStreakRiskMinDeficit(): Promise<number> {
+  const cached = getCached<number>(STREAK_RISK_MIN_DEFICIT_KEY);
+  if (cached !== null) return cached;
+  try {
+    const stored = await redis.get<number | string>(STREAK_RISK_MIN_DEFICIT_KEY);
+    const n = Number(stored);
+    const value =
+      Number.isFinite(n) && n >= 1 ? n : DEFAULT_STREAK_RISK_MIN_DEFICIT;
+    setCached(STREAK_RISK_MIN_DEFICIT_KEY, value);
+    return value;
+  } catch {
+    return DEFAULT_STREAK_RISK_MIN_DEFICIT;
+  }
+}
+
+export async function setStreakRiskMinDeficitRaw(value: number): Promise<void> {
+  await redis.set(STREAK_RISK_MIN_DEFICIT_KEY, value);
+  cache.delete(STREAK_RISK_MIN_DEFICIT_KEY);
+}
+
 export async function getMultipliers(): Promise<readonly number[]> {
   const cached = getCached<readonly number[]>(MULTIPLIERS_KEY);
   if (cached) return cached;
@@ -225,6 +271,12 @@ export function shiftWeekKey(weekKey: string, weeks: number): string {
  * overwrite. Best-effort — failures must never break the calling write
  * path. Score lands in the week containing `ts` (defaults to now).
  *
+ * `note` is optional context (e.g. "engaged for ignoring rule X" for
+ * `restraint_engaged`). When non-empty it goes to the activity log via
+ * `logger.interaction` only — the ZSET member is unchanged so dedup
+ * still works on `{type}:{eventId}`. Mirrors the `manual_adjust` reason
+ * pattern.
+ *
  * On positive-points emit, fires a tier-unlock check that may FCM Besho
  * if she just crossed a new tier threshold. Negative emits skip the
  * check — there's no notification for tier-DROP.
@@ -235,6 +287,7 @@ export async function recordObedienceEvent(
   eventId: string,
   ts: number = Date.now(),
   weightOverride?: number,
+  note?: string,
 ): Promise<void> {
   try {
     const points =
@@ -248,6 +301,20 @@ export async function recordObedienceEvent(
     pipeline.zadd(eventsKey(author, weekKey), { score: points, member });
     pipeline.zadd(auditKey(author, weekKey), { score: ts, member });
     await pipeline.exec();
+    if (typeof note === "string" && note.trim().length > 0) {
+      try {
+        logger.interaction("[obedience] event", {
+          author,
+          type,
+          eventId,
+          weekKey,
+          points,
+          note: note.trim(),
+        });
+      } catch {
+        // logger side-channel — never break the caller.
+      }
+    }
     if (points > 0 && author === "Besho") {
       // Best-effort — never break the caller on FCM hiccups.
       void maybeNotifyTierUnlock(author, weekKey).catch(() => {});
@@ -268,6 +335,7 @@ export async function recordObedienceEventForWeek(
   eventId: string,
   weekKey: string,
   weightOverride?: number,
+  note?: string,
 ): Promise<void> {
   try {
     const points =
@@ -281,6 +349,20 @@ export async function recordObedienceEventForWeek(
     pipeline.zadd(eventsKey(author, weekKey), { score: points, member });
     pipeline.zadd(auditKey(author, weekKey), { score: ts, member });
     await pipeline.exec();
+    if (typeof note === "string" && note.trim().length > 0) {
+      try {
+        logger.interaction("[obedience] event", {
+          author,
+          type,
+          eventId,
+          weekKey,
+          points,
+          note: note.trim(),
+        });
+      } catch {
+        // logger side-channel — never break the caller.
+      }
+    }
   } catch {
     // best-effort
   }
@@ -477,11 +559,48 @@ export async function finalizeWeek(
   const isHighScore = score.displayedScore >= threshold;
   const newStreak = isHighScore ? score.streakEntering + 1 : 0;
 
+  // Lifetime records — read first so we know whether to overwrite.
+  // Race-safe enough at two-user scale (single finalize per author per
+  // week, gated by the sentinel).
+  const [prevBestRaw, prevLongestRaw] = await Promise.all([
+    (async () => {
+      try {
+        return await redis.get<{
+          weekKey: string;
+          displayedScore: number;
+        }>(bestWeekKey(author));
+      } catch {
+        return null;
+      }
+    })(),
+    (async () => {
+      try {
+        return await redis.get<number | string>(longestStreakRecordKey(author));
+      } catch {
+        return null;
+      }
+    })(),
+  ]);
+  const prevBestScore = prevBestRaw?.displayedScore ?? -Infinity;
+  const prevLongest = Number(prevLongestRaw) || 0;
+  const isNewBest = score.displayedScore > prevBestScore;
+  const isNewLongest = newStreak > prevLongest;
+
   const pipeline = redis.pipeline();
   pipeline.set(multiplierFrozenKey(author, weekKey), score.multiplier);
   pipeline.set(finalizedKey(author, weekKey), "1");
   if (newStreak <= 0) pipeline.del(streakKey(author));
   else pipeline.set(streakKey(author), newStreak);
+  pipeline.incr(weeksTrackedKey(author));
+  if (isNewBest) {
+    pipeline.set(bestWeekKey(author), {
+      weekKey,
+      displayedScore: score.displayedScore,
+    });
+  }
+  if (isNewLongest) {
+    pipeline.set(longestStreakRecordKey(author), newStreak);
+  }
   await pipeline.exec();
   cache.clear();
 
@@ -664,24 +783,43 @@ export interface ObedienceAuditEntry {
   ts: number;
 }
 
+export interface ObedienceEventLogPage {
+  entries: ObedienceAuditEntry[];
+  /** Total members in the audit ZSET for this (author, weekKey).
+   *  Used to surface "showing N of M" + load-more affordance. */
+  total: number;
+}
+
+/** Hard ceiling on how many entries can be hydrated in one call.
+ *  Keeps the combined audit + events read bounded regardless of caller. */
+const EVENT_LOG_MAX_LIMIT = 1000;
+
 /**
  * Joins the per-week events ZSET (member → points) with the audit ZSET
- * (member → ts). Returned newest-first, capped at `limit`. Members
- * present only in one of the two ZSETs (which shouldn't normally
- * happen, but can if a write half-failed) are skipped.
+ * (member → ts). Returns the requested slice newest-first plus the
+ * total audit-ZSET cardinality so the caller can decide whether to
+ * page. Members present only in one of the two ZSETs (write half-fail)
+ * are skipped here; use `repairObedienceZsetDrift` to reconcile.
  */
 export async function getEventLog(
   author: Author,
   weekKey: string,
   limit: number = 200,
-): Promise<ObedienceAuditEntry[]> {
+  offset: number = 0,
+): Promise<ObedienceEventLogPage> {
   try {
-    const safeLimit = Math.max(1, Math.min(500, Math.floor(limit)));
-    const [auditRaw, eventsRaw] = await Promise.all([
+    const safeLimit = Math.max(
+      1,
+      Math.min(EVENT_LOG_MAX_LIMIT, Math.floor(limit)),
+    );
+    const safeOffset = Math.max(0, Math.floor(offset));
+    const start = safeOffset;
+    const stop = safeOffset + safeLimit - 1;
+    const [auditRaw, eventsRaw, total] = await Promise.all([
       redis.zrange<(string | number)[]>(
         auditKey(author, weekKey),
-        0,
-        safeLimit - 1,
+        start,
+        stop,
         { rev: true, withScores: true },
       ),
       redis.zrange<(string | number)[]>(
@@ -690,6 +828,7 @@ export async function getEventLog(
         -1,
         { withScores: true },
       ),
+      redis.zcard(auditKey(author, weekKey)),
     ]);
     const points = new Map<string, number>();
     if (eventsRaw) {
@@ -697,22 +836,158 @@ export async function getEventLog(
         points.set(String(eventsRaw[i]), Number(eventsRaw[i + 1]) || 0);
       }
     }
-    const out: ObedienceAuditEntry[] = [];
-    if (!auditRaw) return out;
-    for (let i = 0; i < auditRaw.length; i += 2) {
-      const member = String(auditRaw[i]);
-      const ts = Number(auditRaw[i + 1]) || 0;
-      if (!points.has(member)) continue;
-      const colon = member.indexOf(":");
-      if (colon < 0) continue;
-      const type = member.slice(0, colon) as ObedienceEventType;
-      const eventId = member.slice(colon + 1);
-      out.push({ type, eventId, points: points.get(member)!, ts });
+    const entries: ObedienceAuditEntry[] = [];
+    if (auditRaw) {
+      for (let i = 0; i < auditRaw.length; i += 2) {
+        const member = String(auditRaw[i]);
+        const ts = Number(auditRaw[i + 1]) || 0;
+        if (!points.has(member)) continue;
+        const colon = member.indexOf(":");
+        if (colon < 0) continue;
+        const type = member.slice(0, colon) as ObedienceEventType;
+        const eventId = member.slice(colon + 1);
+        entries.push({ type, eventId, points: points.get(member)!, ts });
+      }
     }
-    return out;
+    return { entries, total: Number(total) || 0 };
   } catch {
-    return [];
+    return { entries: [], total: 0 };
   }
+}
+
+// ── ZSET drift repair ────────────────────────────────────────────────────
+
+export interface ObedienceDriftRepairResult {
+  /** Members that existed in `events:` but were missing from `audit:`
+   *  — re-added to audit with score = now (best available timestamp). */
+  eventsToAuditAdded: number;
+  /** Members that existed in `audit:` but had no matching points in
+   *  `events:` — removed from audit (no points to recover, so the
+   *  audit entry has no meaning). */
+  auditOrphansRemoved: number;
+  /** Total members in events ZSET after repair. */
+  eventsCountAfter: number;
+  /** Total members in audit ZSET after repair. */
+  auditCountAfter: number;
+}
+
+/**
+ * Walk the per-week events + audit ZSETs and reconcile drift. Either
+ * direction can drift if a `recordObedienceEvent` write half-failed
+ * (one ZADD landed, the other didn't). Audit-only orphans cost the user
+ * nothing — the score read uses the events ZSET — but they show up in
+ * the event log as missing-points rows. Events-only members are worse:
+ * the score still counts but the row never renders.
+ *
+ * Symmetric to `repairIndexes` for notes. Idempotent — running twice in
+ * a row is a no-op on the second pass.
+ */
+export async function repairObedienceZsetDrift(
+  author: Author,
+  weekKey: string,
+): Promise<ObedienceDriftRepairResult> {
+  const ek = eventsKey(author, weekKey);
+  const ak = auditKey(author, weekKey);
+  const [eventsRaw, auditRaw] = await Promise.all([
+    redis.zrange<(string | number)[]>(ek, 0, -1, { withScores: true }),
+    redis.zrange<(string | number)[]>(ak, 0, -1, { withScores: true }),
+  ]);
+  const eventMembers = new Set<string>();
+  if (eventsRaw) {
+    for (let i = 0; i < eventsRaw.length; i += 2) {
+      eventMembers.add(String(eventsRaw[i]));
+    }
+  }
+  const auditMembers = new Set<string>();
+  if (auditRaw) {
+    for (let i = 0; i < auditRaw.length; i += 2) {
+      auditMembers.add(String(auditRaw[i]));
+    }
+  }
+
+  const orphans: string[] = [];
+  for (const m of auditMembers) if (!eventMembers.has(m)) orphans.push(m);
+  const missingFromAudit: string[] = [];
+  for (const m of eventMembers) if (!auditMembers.has(m)) missingFromAudit.push(m);
+
+  if (orphans.length === 0 && missingFromAudit.length === 0) {
+    return {
+      eventsToAuditAdded: 0,
+      auditOrphansRemoved: 0,
+      eventsCountAfter: eventMembers.size,
+      auditCountAfter: auditMembers.size,
+    };
+  }
+
+  const now = Date.now();
+  const pipeline = redis.pipeline();
+  if (orphans.length > 0) {
+    pipeline.zrem(ak, ...orphans);
+  }
+  for (const m of missingFromAudit) {
+    pipeline.zadd(ak, { score: now, member: m });
+  }
+  await pipeline.exec();
+
+  return {
+    eventsToAuditAdded: missingFromAudit.length,
+    auditOrphansRemoved: orphans.length,
+    eventsCountAfter: eventMembers.size,
+    auditCountAfter:
+      auditMembers.size - orphans.length + missingFromAudit.length,
+  };
+}
+
+/**
+ * Sweep both authors over the current week + the prior `weeks` past
+ * weeks (default 4). Returns the per-week breakdown so the admin UI
+ * can summarize. Older weeks are typically immutable post-finalize, but
+ * a half-failed write before finalize can still leave drift there —
+ * the sweep is cheap so we include them.
+ */
+export async function repairAllObedienceZsetDrift(
+  weeks: number = 4,
+): Promise<{
+  totals: {
+    eventsToAuditAdded: number;
+    auditOrphansRemoved: number;
+    weeksScanned: number;
+  };
+  perWeek: Array<
+    { author: Author; weekKey: string } & ObedienceDriftRepairResult
+  >;
+}> {
+  const authors: Author[] = ["T7SEN", "Besho"];
+  const current = currentWeekKey();
+  const weekKeys: string[] = [current];
+  for (let i = 1; i <= Math.max(0, Math.floor(weeks)); i++) {
+    weekKeys.push(shiftWeekKey(current, -i));
+  }
+  const perWeek: Array<
+    { author: Author; weekKey: string } & ObedienceDriftRepairResult
+  > = [];
+  let addedTotal = 0;
+  let removedTotal = 0;
+  for (const author of authors) {
+    for (const wk of weekKeys) {
+      try {
+        const r = await repairObedienceZsetDrift(author, wk);
+        perWeek.push({ author, weekKey: wk, ...r });
+        addedTotal += r.eventsToAuditAdded;
+        removedTotal += r.auditOrphansRemoved;
+      } catch {
+        // best-effort per (author, week)
+      }
+    }
+  }
+  return {
+    totals: {
+      eventsToAuditAdded: addedTotal,
+      auditOrphansRemoved: removedTotal,
+      weeksScanned: weekKeys.length * authors.length,
+    },
+    perWeek,
+  };
 }
 
 // ── Range helpers re-exported for callers that don't want to import twice ─

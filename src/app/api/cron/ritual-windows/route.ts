@@ -15,6 +15,7 @@ import { Redis } from "@upstash/redis";
 import { getRituals } from "@/app/actions/rituals";
 import { sendNotification } from "@/app/actions/notifications";
 import { logger } from "@/lib/logger";
+import { writeCronTelemetry } from "@/lib/cron-telemetry";
 
 const redis = new Redis({
   url: process.env.KV_REST_API_URL!,
@@ -124,15 +125,28 @@ export async function GET(req: NextRequest) {
       }
     }
 
+    const durationMs = Date.now() - startedAt;
+    await writeCronTelemetry("ritual-windows", {
+      ok: true,
+      durationMs,
+      summary: { scanned, fired, dedupHits },
+    });
     return Response.json({
       ok: true,
       scanned,
       fired,
       dedupHits,
-      durationMs: Date.now() - startedAt,
+      durationMs,
     });
   } catch (err) {
     logger.error("[cron/ritual-windows] tick failed", err);
+    const durationMs = Date.now() - startedAt;
+    await writeCronTelemetry("ritual-windows", {
+      ok: false,
+      durationMs,
+      summary: { scanned, fired, dedupHits },
+      error: err instanceof Error ? err.message : "Tick failed.",
+    });
     return Response.json(
       {
         ok: false,
@@ -140,7 +154,7 @@ export async function GET(req: NextRequest) {
         scanned,
         fired,
         dedupHits,
-        durationMs: Date.now() - startedAt,
+        durationMs,
       },
       { status: 500 },
     );

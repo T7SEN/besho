@@ -14,6 +14,7 @@ import {
 } from "@/app/actions/admin";
 import { TITLE_BY_AUTHOR, type Author } from "@/lib/constants";
 import { vibrate } from "@/lib/haptic";
+import { useRefreshListener } from "@/hooks/use-refresh-listener";
 
 const CONFIRM_TIMEOUT_MS = 5_000;
 
@@ -47,8 +48,13 @@ export default function SessionsPage() {
   }, []);
 
   useEffect(() => {
-    void fetchEpochs();
+    const t = setTimeout(() => {
+      void fetchEpochs();
+    }, 0);
+    return () => clearTimeout(t);
   }, [fetchEpochs]);
+
+  useRefreshListener(fetchEpochs);
 
   useEffect(() => {
     if (!confirming) return;

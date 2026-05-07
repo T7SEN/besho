@@ -24,6 +24,7 @@ import {
 import { TITLE_BY_AUTHOR } from "@/lib/constants";
 import { vibrate } from "@/lib/haptic";
 import { cn } from "@/lib/utils";
+import { useRefreshListener } from "@/hooks/use-refresh-listener";
 
 function formatNumber(n: number): string {
   return new Intl.NumberFormat("en-US").format(n);
@@ -73,8 +74,13 @@ export default function StatsPage() {
   }, []);
 
   useEffect(() => {
-    void fetchAll();
+    const t = setTimeout(() => {
+      void fetchAll();
+    }, 0);
+    return () => clearTimeout(t);
   }, [fetchAll]);
+
+  useRefreshListener(fetchAll);
 
   const now = stats?.generatedAt ?? Date.now();
 

@@ -26,6 +26,7 @@ import {
 import { TITLE_BY_AUTHOR, type Author } from "@/lib/constants";
 import { vibrate } from "@/lib/haptic";
 import { cn } from "@/lib/utils";
+import { useRefreshListener } from "@/hooks/use-refresh-listener";
 
 const POLL_MS = 15_000;
 const CONFIRM_TIMEOUT_MS = 5_000;
@@ -96,6 +97,8 @@ export default function TrashPage() {
     const id = setInterval(() => void fetchTrash(), POLL_MS);
     return () => clearInterval(id);
   }, [fetchTrash]);
+
+  useRefreshListener(fetchTrash);
 
   useEffect(() => {
     const t = setTimeout(() => {

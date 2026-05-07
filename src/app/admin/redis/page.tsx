@@ -9,6 +9,7 @@ import {
 } from "@/app/actions/admin";
 import { vibrate } from "@/lib/haptic";
 import { cn } from "@/lib/utils";
+import { useRefreshListener } from "@/hooks/use-refresh-listener";
 
 const SAMPLE_KEYS: ReadonlyArray<{ label: string; key: string }> = [
   { label: "Restraint flag", key: "mode:restraint:Besho" },
@@ -61,6 +62,12 @@ export default function RedisInspectorPage() {
     },
     [],
   );
+
+  // Re-inspect the last-probed key on pull-to-refresh. No-op when
+  // nothing has been probed yet.
+  useRefreshListener(() => {
+    if (keyInput.trim()) void inspect(keyInput);
+  });
 
   return (
     <main className="mx-auto max-w-3xl p-4 pb-28 md:p-12 md:pb-32">

@@ -111,7 +111,7 @@ function Chip({ label, icon: Icon, href, pending, count }: ChipDef) {
               exit={{ scale: 0, opacity: 0 }}
               transition={{ type: "spring", bounce: 0.5, duration: 0.4 }}
               className={cn(
-                "absolute -right-2 -top-2 flex h-[14px] min-w-[14px] items-center justify-center",
+                "absolute -right-2 -top-2 flex h-3.5 min-w-3.5 items-center justify-center",
                 "rounded-full bg-destructive px-1 text-[9px] font-black text-white",
                 "shadow-[0_0_6px_hsl(var(--destructive)/0.8)]",
               )}

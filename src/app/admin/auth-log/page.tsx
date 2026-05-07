@@ -16,6 +16,7 @@ import {
 import type { AuthFailureRecord } from "@/app/actions/auth";
 import { cn } from "@/lib/utils";
 import { vibrate } from "@/lib/haptic";
+import { useRefreshListener } from "@/hooks/use-refresh-listener";
 
 const POLL_MS = 30_000;
 const CONFIRM_TIMEOUT_MS = 5_000;
@@ -58,6 +59,8 @@ export default function AuthLogPage() {
     const id = setInterval(() => void fetchLog(), POLL_MS);
     return () => clearInterval(id);
   }, [fetchLog]);
+
+  useRefreshListener(fetchLog);
 
   useEffect(() => {
     const id = setInterval(() => setTick(Date.now()), 30_000);

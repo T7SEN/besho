@@ -75,7 +75,10 @@ export function DistanceCard() {
   }, []);
 
   useEffect(() => {
-    void fetchLivePosition();
+    const t = setTimeout(() => {
+      void fetchLivePosition();
+    }, 0);
+    return () => clearTimeout(t);
   }, [fetchLivePosition]);
 
   useRefreshListener(() => {
