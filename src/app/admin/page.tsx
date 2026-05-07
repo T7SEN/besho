@@ -1,18 +1,14 @@
 import Link from "next/link";
 import {
-  Activity,
   ArrowLeft,
   Award,
   BarChart3,
-  Bell,
   CalendarHeart,
   Database,
   Download,
+  FileText,
   HeartPulse,
-  KeyRound,
-  Lock,
   Send,
-  ShieldAlert,
   ShieldCheck,
   Smartphone,
   Smile,
@@ -52,32 +48,20 @@ const TOOLS = [
   {
     href: "/admin/devices",
     title: "Devices & sessions",
-    description: "Live presence + FCM tokens + per-install device records.",
+    description: "Presence + FCM tokens + force-logout + per-install records.",
     Icon: Smartphone,
+  },
+  {
+    href: "/admin/logs",
+    title: "Logs",
+    description: "Activity, outbound notifications, restraint, auth failures.",
+    Icon: FileText,
   },
   {
     href: "/admin/push-test",
     title: "Send test push",
     description: "Fire a custom FCM to either author.",
     Icon: Send,
-  },
-  {
-    href: "/admin/activity",
-    title: "Activity feed",
-    description: "Last 500 logged interactions.",
-    Icon: Activity,
-  },
-  {
-    href: "/admin/sessions",
-    title: "Sessions",
-    description: "Force-logout an author's devices.",
-    Icon: KeyRound,
-  },
-  {
-    href: "/admin/auth-log",
-    title: "Auth log",
-    description: "Failed login attempts (last 100).",
-    Icon: ShieldAlert,
   },
   {
     href: "/admin/mood",
@@ -102,18 +86,6 @@ const TOOLS = [
     title: "Permissions admin",
     description: "Auto-rules + quotas (JSON), bulk decide pending.",
     Icon: ShieldCheck,
-  },
-  {
-    href: "/admin/notifications",
-    title: "Notification audit",
-    description: "Both drawers side-by-side; re-send any prior push.",
-    Icon: Bell,
-  },
-  {
-    href: "/admin/restraint-history",
-    title: "Restraint history",
-    description: "Engage / lift transitions with timestamps + reasons.",
-    Icon: Lock,
   },
   {
     href: "/admin/redis",

@@ -7,6 +7,7 @@ import {
   ArrowLeft,
   ExternalLink,
   Globe,
+  KeyRound,
   Loader2,
   MapPin,
   RefreshCw,
@@ -14,7 +15,9 @@ import {
   Trash2,
 } from "lucide-react";
 import {
+  forceLogoutAuthor,
   getInspectorSnapshot,
+  getSessionEpochs,
   listDevices,
   type DeviceListItem,
   type InspectorSnapshot,
@@ -53,19 +56,27 @@ function mapsHref(lat: number, lng: number): string {
 export default function DevicesPage() {
   const [devices, setDevices] = useState<DeviceListItem[] | null>(null);
   const [snapshot, setSnapshot] = useState<InspectorSnapshot | null>(null);
+  const [epochs, setEpochs] = useState<Record<Author, number> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [tick, setTick] = useState(() => Date.now());
   const [confirming, setConfirming] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
+  // Sessions section state — separate confirm/busy keys from device
+  // forget so taps on one don't reset the other.
+  const [confirmingLogout, setConfirmingLogout] = useState<Author | null>(null);
+  const [logoutBusy, setLogoutBusy] = useState<Author | null>(null);
+
   const fetchAll = useCallback(async () => {
     setRefreshing(true);
     try {
-      const [inspectorResult, devicesResult] = await Promise.all([
-        getInspectorSnapshot(),
-        listDevices(),
-      ]);
+      const [inspectorResult, devicesResult, sessionsResult] =
+        await Promise.all([
+          getInspectorSnapshot(),
+          listDevices(),
+          getSessionEpochs(),
+        ]);
       if (inspectorResult.error) {
         setError(inspectorResult.error);
       } else if (inspectorResult.snapshot) {
@@ -76,7 +87,16 @@ export default function DevicesPage() {
       } else {
         setDevices(devicesResult.devices ?? []);
       }
-      if (!inspectorResult.error && !devicesResult.error) {
+      if (sessionsResult.error) {
+        setError(sessionsResult.error);
+      } else if (sessionsResult.epochs) {
+        setEpochs(sessionsResult.epochs);
+      }
+      if (
+        !inspectorResult.error &&
+        !devicesResult.error &&
+        !sessionsResult.error
+      ) {
         setError(null);
       }
     } catch {
@@ -104,6 +124,31 @@ export default function DevicesPage() {
     const id = setTimeout(() => setConfirming(null), CONFIRM_TIMEOUT_MS);
     return () => clearTimeout(id);
   }, [confirming]);
+
+  useEffect(() => {
+    if (!confirmingLogout) return;
+    const id = setTimeout(
+      () => setConfirmingLogout(null),
+      CONFIRM_TIMEOUT_MS,
+    );
+    return () => clearTimeout(id);
+  }, [confirmingLogout]);
+
+  const handleForceLogout = async (author: Author) => {
+    void vibrate([100, 50, 100], "heavy");
+    setLogoutBusy(author);
+    try {
+      const result = await forceLogoutAuthor(author);
+      if (result.error) {
+        setError(result.error);
+      } else {
+        setConfirmingLogout(null);
+        await fetchAll();
+      }
+    } finally {
+      setLogoutBusy(null);
+    }
+  };
 
   const handleForget = async (deviceId: string) => {
     void vibrate([100, 50, 100], "heavy");
@@ -264,6 +309,90 @@ export default function DevicesPage() {
             </div>
           </motion.div>
         )}
+      </section>
+
+      {/* ── Sessions (force-logout per author) ── */}
+      <section className="mb-6">
+        <h2 className="mb-2 text-xs font-bold uppercase tracking-wider text-muted-foreground">
+          Sessions
+        </h2>
+        {!epochs ? (
+          <div className="grid gap-2 md:grid-cols-2">
+            {[0, 1].map((i) => (
+              <div
+                key={i}
+                className="h-20 animate-pulse rounded-2xl border border-border/40 bg-card"
+              />
+            ))}
+          </div>
+        ) : (
+          <ul className="grid gap-2 md:grid-cols-2">
+            {(["T7SEN", "Besho"] as const).map((author) => (
+              <li
+                key={author}
+                className="rounded-2xl border border-border/40 bg-card p-3"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-semibold">
+                      {TITLE_BY_AUTHOR[author]}
+                    </p>
+                    <p className="mt-0.5 text-[10px] text-muted-foreground">
+                      Last revoked:{" "}
+                      {epochs[author]
+                        ? new Date(epochs[author]).toLocaleString()
+                        : "Never"}
+                    </p>
+                  </div>
+                  {confirmingLogout === author ? (
+                    <div className="flex shrink-0 items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void vibrate(20, "light");
+                          setConfirmingLogout(null);
+                        }}
+                        disabled={logoutBusy === author}
+                        className="rounded-full border border-border/40 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground active:scale-95 disabled:opacity-50"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleForceLogout(author)}
+                        disabled={logoutBusy === author}
+                        className="flex items-center gap-1 rounded-full bg-destructive px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-white transition-colors hover:bg-destructive/90 active:scale-95 disabled:opacity-60"
+                      >
+                        {logoutBusy === author ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <KeyRound className="h-3 w-3" />
+                        )}
+                        Confirm
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void vibrate(50, "medium");
+                        setConfirmingLogout(author);
+                      }}
+                      className="flex shrink-0 items-center gap-1 rounded-full border border-destructive/30 bg-destructive/10 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-destructive transition-colors hover:bg-destructive/20 active:scale-95"
+                    >
+                      <KeyRound className="h-3 w-3" />
+                      Force logout
+                    </button>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+        <p className="mt-2 text-[10px] text-muted-foreground/70">
+          Force-logout invalidates every JWT issued before now for that
+          author. Existing devices redirect to login on their next request.
+        </p>
       </section>
 
       {/* ── Registered devices (existing list) ── */}

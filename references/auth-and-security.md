@@ -35,7 +35,7 @@ Note `await cookies()` — Next.js 16 makes it async.
 
 A 5-second in-process cache fronts the Redis read so high-frequency requests (presence pings, badge polls) don't hammer Upstash. Cutover delay is bounded by that 5s.
 
-The Sir-only revoke surface is `forceLogoutAuthor()` in `src/app/actions/admin.ts`, exposed via `/admin/sessions`.
+The Sir-only revoke surface is `forceLogoutAuthor()` in `src/app/actions/admin.ts`, exposed via the "Sessions" section on `/admin/devices` (formerly the standalone `/admin/sessions` page).
 
 ---
 
@@ -52,25 +52,23 @@ Surfaces under `/admin`:
 | --------------------------- | --------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
 | `/admin/trash`              | List / restore / forget / purge                                                               | `getTrashList`, `restoreTrashEntryAction`, `deleteTrashEntryAction`, `purgeTrashAction`                   |
 | `/admin/export`             | JSON snapshot download                                                                        | `exportSnapshot`                                                                                          |
-| `/admin/devices`            | "Right now" (presence + FCM tokens) + per-install device list (fingerprint / location / online) | `getInspectorSnapshot`, `listDevices`, `forgetDevice` (5s parallel poll)                                  |
+| `/admin/devices`            | "Right now" (presence + FCM tokens) + Sessions (force-logout) + per-install device list      | `getInspectorSnapshot`, `getSessionEpochs`, `forceLogoutAuthor`, `listDevices`, `forgetDevice`            |
 | `/admin/push-test`          | Send custom FCM (bypasses presence)                                                           | `sendTestPushAction` (form-bound via `useActionState`)                                                    |
-| `/admin/activity`           | Last 500 logged events                                                                        | `getActivityFeed`, `clearActivityFeed`                                                                    |
-| `/admin/sessions`           | Per-author force-logout                                                                       | `getSessionEpochs`, `forceLogoutAuthor`                                                                   |
+| `/admin/logs`               | Tabbed: Activity / Outbound / Restraint / Auth failures                                       | `getActivityFeed`, `clearActivityFeed`, `getOutboundNotificationAudit`, `resendNotification`, `getRestraintHistory`, `getAuthFailures`, `clearAuthFailures` |
 | `/admin/stats`              | Counts, ratios, 30-day heatmap                                                                | `getStats`, `getActivityHeatmap`                                                                          |
-| `/admin/health`             | Tabbed: Health (Redis/FCM/cron/repair) · Cooldowns · Time                                     | `getHealthSnapshot`, `getCronTelemetry`, `getCooldownState`, `repairIndexes`, `repairObedienceDrift`, `migrateObedienceBucketShift` |
-| `/admin/auth-log`           | Failed-login attempts                                                                         | `getAuthFailures`, `clearAuthFailures`                                                                    |
+| `/admin/health`             | Tabbed: Health (Redis/FCM/cron/repair) · Cooldowns · Time (live snapshot + Cairo↔Tabuk converter) | `getHealthSnapshot`, `getCronTelemetry`, `getCooldownState`, `repairIndexes`, `repairObedienceDrift`, `migrateObedienceBucketShift` |
 | `/admin/mood`               | Sir-only mood + state override                                                                | `adminSetMoodForAuthor`, `adminClearMoodForAuthor`, `adminSetStateForAuthor`, `adminClearStateForAuthor`  |
 | `/admin/dates`              | Anniversary + per-author birthday editor                                                      | `getRelationshipDates`, `setRelationshipDates`                                                            |
 | `/admin/rewards`            | Tabbed: Tiers / Weights / Streak / Status / Event log                                         | `getObedienceAdminSnapshot`, `setRewardTiers`, `setObedienceWeights`, `setStreakSettings`, `adminSetStreakRaw`, `getObedienceEventLog`, `adminAdjustScore`, `adminDeleteObedienceEvent`, `setTestModeState`, `adminPurgeTestClaims`, `recomputeWeek` |
 | `/admin/permissions`        | Tabbed: Bulk decide / Auto-rules JSON / Quotas JSON                                           | `getPermissionsAdminBundle`, `adminSaveAutoRulesJson`, `adminSaveQuotasJson`, `bulkApprovePendingOlderThan`, `bulkDenyPendingByCategory` |
-| `/admin/notifications`      | Forward-only outbound notification audit (separate from drawer LISTs)                         | `getOutboundNotificationAudit`, `resendNotification`                                                      |
-| `/admin/restraint-history`  | Engage/lift transitions log (capped 200)                                                      | `getRestraintHistory`                                                                                     |
 | `/admin/redis`              | Read-only key inspector                                                                       | `inspectRedisKey`                                                                                         |
 
-**Three consolidations landed mid-development**:
+**Five consolidations landed mid-development**:
 1. Inspector merged into Devices — `/admin/inspector` deleted; its presence + FCM token cards moved to a "Right now" section atop `/admin/devices`.
 2. Cooldowns + System time merged into Health — `/admin/cooldowns` and `/admin/time` deleted; both became tabs alongside Health on `/admin/health` (renamed "Diagnostics" in TOOLS).
-3. Timezone converter merged into Health → Time tab — `/admin/timezone` deleted; the input-driven Cairo↔Tabuk converter now sits below the live time snapshot in the Time tab (`<TimeSnapshot>` + `<TimezoneConverter>` co-render). The two were related enough that splitting "live read-only" from "input-driven" was needless friction; the merged tab is now the single Cairo/Tabuk surface.
+3. Timezone converter merged into Health → Time tab — `/admin/timezone` deleted; the input-driven Cairo↔Tabuk converter sits below the live time snapshot in the Time tab.
+4. Sessions merged into Devices — `/admin/sessions` deleted; force-logout buttons live as a "Sessions" section between "Right now" and "Registered devices" on `/admin/devices`.
+5. Logs cluster — `/admin/activity`, `/admin/notifications`, `/admin/restraint-history`, `/admin/auth-log` deleted and folded into `/admin/logs` as four tabs (Activity / Outbound / Restraint / Auth failures). Each tab body owns its own data fetch and subscribes to `useRefreshListener`; the page header's Refresh button dispatches a single `ourspace:refresh` event so all four tabs refetch in parallel. Rationale: all four were append-only chronological event streams with the same UX shape.
 
 The landing page itself (`/admin`) hosts a single action button — `<SummonButton>` — which calls `summonKitten()`. This is the sole Sir → Besho push that mirrors the safeword delivery shape: `bypassPresence: true` + Android `channelId: "safeword"` + `priority: "max"` + `sound: "default"`. The message is intentionally possessive and dominant; it is not configurable from the UI and lives directly in the action body. No cooldown — the two-step confirm is the only guard against an accidental tap.
 
@@ -82,7 +80,7 @@ Every `delete*` and `purgeAll*` server action across the app calls `moveToTrash`
 
 ### Activity feed is a logger side-channel
 
-`logger.interaction` / `warn` / `error` / `fatal` automatically write the message + context to `activity:log` (Redis ZSET, capped at 500). Feature code does not call `recordActivity` directly. The Sir-only viewer at `/admin/activity` polls every 10 seconds.
+`logger.interaction` / `warn` / `error` / `fatal` automatically write the message + context to `activity:log` (Redis ZSET, capped at 500). Feature code does not call `recordActivity` directly. The Sir-only viewer is the Activity tab on `/admin/logs` (formerly the standalone `/admin/activity` page).
 
 ### Per-device session tracking
 

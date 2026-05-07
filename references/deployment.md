@@ -255,13 +255,13 @@ Run this after every non-trivial deploy:
 - [ ] `/admin` redirects to `/` when logged in as Besho (verify the layout guard fires)
 - [ ] `/admin/devices` "Right now" section polls every 5s and shows live presence + masked FCM token preview (was the standalone `/admin/inspector` page; merged in)
 - [ ] `/admin/push-test` form sends a custom FCM and the kitten device receives it (bypasses presence)
-- [ ] `/admin/activity` shows at least the most recent `[admin]` interaction event from the test push
+- [ ] `/admin/logs` Activity tab shows at least the most recent `[admin]` interaction event from the test push
 - [ ] Soft-delete: delete a throwaway note → confirm it appears in `/admin/trash` → restore → it's back at its original list position
-- [ ] `/admin/sessions` "Force logout" on Besho invalidates her active session within 5 seconds (kitten device redirects to login on next nav)
+- [ ] `/admin/devices` Sessions section "Force logout" on Besho invalidates her active session within 5 seconds (kitten device redirects to login on next nav)
 - [ ] `/admin` "Summon kitten" two-step button delivers a max-priority FCM to Besho's device (bypasses presence; Android opens with sound + heads-up regardless of foreground state)
 - [ ] `/admin/devices` lists T7SEN's APK as online with a populated fingerprint (manufacturer · model · Android version · app version) and coarse coords; backgrounding the app for 90s flips it to offline while preserving the last-known state
 - [ ] Restraint toggle on `/admin` engages with two-step confirm; while on, Besho's note submission returns `"Sir put you on restraint."` and safeword still works
-- [ ] Wrong passcode at `/login` lands a record in `/admin/auth-log` within seconds (records IP + UA, never the passcode)
+- [ ] Wrong passcode at `/login` lands a record in `/admin/logs` Auth failures tab within seconds (records IP + UA, never the passcode)
 - [ ] `/admin/stats` renders all sections without 5xx; numbers update after a fresh note / task / ledger entry
 - [ ] `/admin/health` shows Redis OK + both FCM tokens registered; Reseed indexes button corrects a deliberately-mis-set `notes:count:*`
 - [ ] `/admin/dates` round-trips a date edit and the dashboard CounterCard reflects the change after refresh
