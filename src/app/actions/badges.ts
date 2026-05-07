@@ -72,7 +72,7 @@ export async function getNavBadges(): Promise<NavBadges> {
     // Phase 2: parallel MGET for the records we just enumerated.
     const [tasks, rules, rituals, permissions] = await Promise.all([
       taskIds.length
-        ? redis.mget<(Pick<Task, "completed"> | null)[]>(
+        ? redis.mget<(Pick<Task, "status" | "completed"> | null)[]>(
             ...taskIds.map((id) => `task:${id}`),
           )
         : Promise.resolve([]),
@@ -140,7 +140,16 @@ export async function getNavBadges(): Promise<NavBadges> {
     }
 
     return {
-      pendingTasks: tasks.filter((t) => t !== null && !t.completed).length,
+      // Status-driven: "pending" means kitten still needs to act.
+      // `in_review` (kitten submitted, awaiting Sir's review) and
+      // `completed` are NOT obligations on her side. Falls back to the
+      // legacy `completed` boolean for records written before the
+      // status field shipped — same JIT migration as `getTasks()`.
+      pendingTasks: tasks.filter((t) => {
+        if (t === null) return false;
+        const status = t.status ?? (t.completed ? "completed" : "pending");
+        return status === "pending";
+      }).length,
       unacknowledgedRules: rules.filter(
         (r) => r !== null && r.status === "pending",
       ).length,

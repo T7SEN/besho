@@ -1,5 +1,6 @@
 "use server";
 
+import { todayKeyCairo } from "@/lib/cairo-time";
 import { logger } from "@/lib/logger";
 
 export type QuoteData = {
@@ -38,12 +39,14 @@ export async function fetchRandomQuote(
       if (forceRandom) {
         index = Math.floor(Math.random() * json.quotes.length);
       } else {
-        // Deterministic daily seed: same quote for everyone on the same day
-        const today = new Date();
-        const seed =
-          today.getFullYear() * 10000 +
-          (today.getMonth() + 1) * 100 +
-          today.getDate();
+        // Deterministic daily seed: same quote for everyone on the same
+        // Cairo day. Was computed from the server-local Date (UTC on
+        // Vercel) so Cairo got the new daily quote 2-3h after midnight
+        // local. `todayKeyCairo()` returns YYYY-MM-DD in Cairo TZ;
+        // collapse to a numeric seed via the same shape as before.
+        const todayKey = todayKeyCairo();
+        const [yyyy, mm, dd] = todayKey.split("-").map(Number);
+        const seed = yyyy * 10000 + mm * 100 + dd;
         index = seed % json.quotes.length;
       }
 

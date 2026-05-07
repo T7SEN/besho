@@ -151,6 +151,7 @@ export async function acknowledgeRule(
       title: existing.title,
     });
     revalidatePath("/rules");
+    revalidatePath("/"); // nav badge depends on this
     return { success: true };
   } catch (error) {
     logger.error("[rules] Failed to acknowledge:", error);

@@ -685,6 +685,7 @@ export async function submitOccurrence(
       newStreak,
     });
     revalidatePath("/rituals");
+    revalidatePath("/"); // nav badge depends on this
     return { success: true };
   } catch (error) {
     logger.error("[rituals] Failed to submit:", error);

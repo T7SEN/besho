@@ -52,24 +52,20 @@ async function clearPresence(): Promise<void> {
   }
 }
 
-function clearPresenceBeacon(): void {
-  const nav = (globalThis as unknown as { navigator?: Navigator }).navigator;
-  if (nav?.sendBeacon) {
-    nav.sendBeacon(
-      "/api/presence/beacon",
-      new Blob(["{}"], { type: "application/json" }),
-    );
-  } else {
-    void clearPresence();
-  }
-}
-
 /**
  * Tracks the user's current page in Redis with a 10s TTL.
  *
  * ARCHITECTURAL UPGRADE:
  * - Prevents phantom heartbeats when the app is backgrounded.
  * - Secures async native listeners against unmount memory leaks.
+ *
+ * The page-hide path uses the same `clearPresence` fetch (DELETE
+ * `/api/presence`) the cleanup path uses. The `keepalive: true` flag
+ * lets the request outlive the page just like `navigator.sendBeacon`
+ * would — sendBeacon was tried earlier via `/api/presence/beacon`,
+ * but that route never existed, so the call was a silent 404. Native
+ * Capacitor `App.addListener("appStateChange")` handles the equivalent
+ * lifecycle on Android.
  */
 export function usePresence(page: string, enabled: boolean) {
   const isActiveRef = useRef(true);
@@ -137,7 +133,7 @@ export function usePresence(page: string, enabled: boolean) {
         if (!mounted) return;
 
         if (doc.visibilityState === "hidden") {
-          clearPresenceBeacon();
+          void clearPresence();
         } else {
           void setPresence(page);
         }
@@ -145,7 +141,7 @@ export function usePresence(page: string, enabled: boolean) {
 
       const handlePageHide = () => {
         if (!mounted) return;
-        clearPresenceBeacon();
+        void clearPresence();
       };
 
       doc.addEventListener("visibilitychange", handleVisibilityChange);

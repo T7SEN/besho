@@ -157,6 +157,7 @@ export async function submitTask(
     });
 
     revalidatePath("/tasks");
+    revalidatePath("/"); // nav badge depends on this
     return { success: true };
   } catch (error) {
     logger.error("[tasks] Failed to submit:", error);

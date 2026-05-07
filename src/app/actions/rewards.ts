@@ -1015,20 +1015,36 @@ export async function getRewardsHistory(
   const safeLimit = Math.max(1, Math.min(52, Math.floor(limit)));
   try {
     const current = currentWeekKey();
+
+    // Parallelize the per-week fetches across the entire window. Each
+    // iteration was previously `await Promise.all([state, claim])`
+    // sequentially behind the loop, so a 12-week history was 12 RTTs
+    // (× 2-3 sub-calls per week of state-fetching internals). Lifting
+    // the Promise.all to the outer level collapses that to a single
+    // wave on Upstash's REST tier.
+    const weekKeys = Array.from({ length: safeLimit }, (_, idx) =>
+      shiftWeekKey(current, -(idx + 1)),
+    );
+    const fetched = await Promise.all(
+      weekKeys.map(async (weekKey) => {
+        const [state, rawClaim] = await Promise.all([
+          getWeekState("Besho", weekKey),
+          readClaimForWeek("Besho", weekKey),
+        ]);
+        return { weekKey, state, rawClaim };
+      }),
+    );
+
     const out: RewardsHistoryEntry[] = [];
-    for (let i = 1; i <= safeLimit; i++) {
-      const weekKey = shiftWeekKey(current, -i);
-      const [state, rawClaim] = await Promise.all([
-        getWeekState("Besho", weekKey),
-        readClaimForWeek("Besho", weekKey),
-      ]);
+    for (let i = 0; i < fetched.length; i++) {
+      const { weekKey, state, rawClaim } = fetched[i];
       // Test claims are excluded from the history view. See
       // `listClaimsForAuthor` for the same filter rationale.
       const claim =
         rawClaim && rawClaim.testMode === true ? null : rawClaim;
       const isEmpty =
         state.breakdown.length === 0 && state.displayedScore === 0 && !claim;
-      const isFirstPrior = i === 1;
+      const isFirstPrior = i === 0;
       if (isEmpty && !isFirstPrior) continue;
       out.push({
         weekKey,

@@ -195,7 +195,14 @@ src/
 │   ├── rewards/                # Obedience score + tier ladder + claim/deliver flow (Besho score, Sir delivers)
 │   ├── admin/                  # Sir-only sub-tree (layout redirects non-Sir). Landing carries an at-a-glance dashboard strip (pending perms / pending claims / cron freshness / errors-24h) plus a recent-admin-actions timeline. Routes: trash (with multi-select bulk ops), export, push-test (12 tap-to-fill presets — 8 to Sir, 3 to Both, 1 to kitten — with a Daddy/Kitten/Both recipient selector that fans out to both authors when "Both" is picked), devices (presence + FCM tokens + force-logout sessions + per-install records — old /admin/inspector and /admin/sessions merged in), stats, health (tabbed: Health [Redis/FCM/cron/time-integrity/repair] / Cooldowns / Time [snapshot + Cairo↔Tabuk converter] — old /admin/cooldowns, /admin/time, /admin/timezone merged in), logs (tabbed: Activity [level filter] / Outbound / Restraint / Auth failures [IP filter] — old /admin/activity, /admin/notifications, /admin/restraint-history, /admin/auth-log merged in), mood, dates, rewards (Status tab carries a pure-client score simulator), permissions (Simulate tab runs auto-rules against a fake request), redis
 │   ├── actions/                # Server actions ('use server')
-│   │   ├── admin.ts            # Inspector, test push, activity feed reader, session epochs + force-logout, JSON export, trash list/restore/purge, device list, restraint toggle, auth-log reader, dates editor, mood override, stats, health + repair, heatmap, reward tiers/weights/streak editor, recompute week
+│   │   ├── admin.ts            # Slimmed orchestration core (~1.6k lines): activity feed, JSON export, cross-feature search, auth-log, dates editor, mood/state overrides, stats + heatmap, trash, landing summary widgets. Re-exports every bucket symbol so `@/app/actions/admin` imports keep resolving (Turbopack rejects `export {...} from` in 'use server' files; uses one-line wrapper functions).
+│   │   ├── admin/              # Sir-only domain buckets, all 'use server'
+│   │   │   ├── _shared.ts      # NON-server helper module: Upstash redis singleton, getSession, requireSir, PRESENCE_FRESH_MS. `import "server-only"` keeps it off the client bundle.
+│   │   │   ├── permissions.ts  # Auto-rules JSON, quotas, bulk-decide, simulator
+│   │   │   ├── rewards.ts      # Tiers, weights, streak, snapshot, recompute, manual adjust, event log, test mode, claim purge, per-event delete
+│   │   │   ├── health.ts       # Cooldowns, health snapshot, repair indexes, cron telemetry, drift repair, bucket-shift migration, deploy info, redis inspector
+│   │   │   ├── notifications.ts # Summon, test push, outbound audit, resend
+│   │   │   └── devices.ts      # Inspector, sessions, devices, restraint state + history
 │   │   ├── rewards.ts          # Both-author bundle, claim/deliver/deny, claim history
 │   │   └── devices.ts          # pingDevice (any authenticated user, own device), forgetDevice (Sir-only)
 │   └── api/
