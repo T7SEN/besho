@@ -10,45 +10,121 @@ import { hideKeyboard } from "@/lib/keyboard";
 import { useRefreshListener } from "@/hooks/use-refresh-listener";
 import { useRouter } from "next/navigation";
 
+type Recipient = Author | "Both";
+
 interface PushPreset {
   id: string;
   label: string;
   description: string;
-  to: Author;
+  to: Recipient;
   title: string;
   body: string;
   url: string;
 }
 
 const PRESETS: PushPreset[] = [
+  // ── To Sir: things kitten triggers ─────────────────────────────────────
   {
-    id: "love-note",
-    label: "Love note → kitten",
-    description: "Quick affirming push to Besho.",
-    to: "Besho",
-    title: "💌 from Sir",
-    body: "Thinking about you.",
-    url: "/notes",
+    id: "perm-request",
+    label: "Permission request → Sir",
+    description: "Mimics the new-request push from /permissions.",
+    to: "T7SEN",
+    title: "🙏 Permission Request: outfit",
+    body: "kitten asked for: skirt approval",
+    url: "/permissions",
   },
   {
-    id: "ritual-test",
-    label: "Ritual reminder → kitten",
-    description: "Mimics the cron-fired window-open notification.",
-    to: "Besho",
-    title: "🕯️ Ritual",
-    body: "Time for: your evening ritual",
+    id: "reward-claim",
+    label: "Reward claim → Sir",
+    description: "Kitten just claimed a reward.",
+    to: "T7SEN",
+    title: "🎁 Reward claim",
+    body: "kitten claimed Tier I: praise & affirmation",
+    url: "/rewards",
+  },
+  {
+    id: "reward-received",
+    label: "Reward delivered ack → Sir",
+    description: "Kitten confirmed receipt of a delivered reward.",
+    to: "T7SEN",
+    title: "✓ Reward received",
+    body: "kitten — thank you Sir",
+    url: "/rewards",
+  },
+  {
+    id: "task-submitted",
+    label: "Task submitted → Sir",
+    description: "Kitten submitted a task for review.",
+    to: "T7SEN",
+    title: "👀 Task Ready for Review",
+    body: "Besho submitted: clean room",
+    url: "/tasks",
+  },
+  {
+    id: "ritual-submitted",
+    label: "Ritual submitted → Sir",
+    description: "Kitten checked in on a ritual.",
+    to: "T7SEN",
+    title: "✓ Ritual Submitted",
+    body: "Evening prayer — done at 9pm",
     url: "/rituals",
   },
   {
+    id: "stale-claim",
+    label: "Stale claim nudge → Sir",
+    description: "Cron-fired nudge when a claim sits >24h.",
+    to: "T7SEN",
+    title: "🔔 Claim still waiting",
+    body: "kitten's Tier I claim (praise) has been pending 26h.",
+    url: "/rewards",
+  },
+  {
+    id: "auto-decided",
+    label: "Auto-rule fired → Sir",
+    description: "Awareness ping when an auto-rule decided a request.",
+    to: "T7SEN",
+    title: "Auto-approved request",
+    body: "water — approved by auto-rule",
+    url: "/permissions",
+  },
+  {
+    id: "rule-ack",
+    label: "Rule acknowledged → Sir",
+    description: "Kitten acknowledged a rule.",
+    to: "T7SEN",
+    title: "✓ Rule Acknowledged",
+    body: "kitten acknowledged: morning check-in",
+    url: "/rules",
+  },
+  // ── To Both: broadcast events ──────────────────────────────────────────
+  {
     id: "review-window",
     label: "Review window open → both",
-    description:
-      "Saturday window-open shape. Fires to kitten in this preset; swap recipient if you want Sir.",
-    to: "Besho",
+    description: "Saturday window-open cron fires to both.",
+    to: "Both",
     title: "🪞 Review window open",
     body: "Reflect on this week. Window closes Sunday 23:59 Cairo.",
     url: "/review",
   },
+  {
+    id: "week-wrapped",
+    label: "Week wrapped → both",
+    description: "Monday recap — fires to Sir and to author who scored.",
+    to: "Both",
+    title: "📊 Week wrapped — Apr 27 – May 3",
+    body: "18 pts. No tier reached this week.",
+    url: "/rewards",
+  },
+  {
+    id: "smoke-test",
+    label: "Smoke test → both",
+    description: "End-to-end FCM check on both devices.",
+    to: "Both",
+    title: "🛠️ Push smoke test",
+    body: "If you got this on both devices, FCM is healthy.",
+    url: "/",
+  },
+  // ── To kitten ──────────────────────────────────────────────────────────
   {
     id: "tier-unlock",
     label: "Tier unlock → kitten",
@@ -57,24 +133,6 @@ const PRESETS: PushPreset[] = [
     title: "🏆 Tier I unlocked",
     body: "20 pts this week. Reward unlocks at week close.",
     url: "/rewards",
-  },
-  {
-    id: "permission-approved",
-    label: "Permission approved → kitten",
-    description: "Manual-approve push shape from /permissions.",
-    to: "Besho",
-    title: "✓ Approved",
-    body: "Your last request — approved.",
-    url: "/permissions",
-  },
-  {
-    id: "permission-denied",
-    label: "Permission denied → kitten",
-    description: "Manual-deny push shape from /permissions.",
-    to: "Besho",
-    title: "✗ Denied",
-    body: "Your last request — denied.",
-    url: "/permissions",
   },
 ];
 
@@ -177,21 +235,21 @@ export default function PushTestPage() {
           <legend className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
             Recipient
           </legend>
-          <div className="grid grid-cols-2 gap-2">
-            {(["T7SEN", "Besho"] as const).map((author) => (
+          <div className="grid grid-cols-3 gap-2">
+            {(["T7SEN", "Besho", "Both"] as const).map((value) => (
               <label
-                key={author}
+                key={value}
                 className="flex cursor-pointer items-center justify-center gap-2 rounded-2xl border border-border/40 bg-card p-3 text-sm transition-colors has-checked:border-primary has-checked:bg-primary/10"
               >
                 <input
                   type="radio"
                   name="to"
-                  value={author}
+                  value={value}
                   required
                   className="sr-only"
                 />
                 <span className="font-semibold">
-                  {TITLE_BY_AUTHOR[author]}
+                  {value === "Both" ? "Both" : TITLE_BY_AUTHOR[value]}
                 </span>
               </label>
             ))}

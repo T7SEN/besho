@@ -277,7 +277,7 @@ export async function sendTestPushAction(
   const urlRaw = String(formData.get("url") ?? "").trim();
   const url = urlRaw.length > 0 ? urlRaw : "/";
 
-  if (to !== "T7SEN" && to !== "Besho") {
+  if (to !== "T7SEN" && to !== "Besho" && to !== "Both") {
     return { error: "Pick a recipient." };
   }
   if (title.length === 0) return { error: "Title is required." };
@@ -286,18 +286,34 @@ export async function sendTestPushAction(
   if (body.length > 240) return { error: "Body is too long (max 240)." };
   if (url.length > 200) return { error: "URL is too long (max 200)." };
 
+  const recipients: Author[] =
+    to === "Both" ? ["T7SEN", "Besho"] : [to];
+
   try {
-    await sendNotification(
-      to,
-      { title, body, url },
-      { bypassPresence: true },
+    const results = await Promise.allSettled(
+      recipients.map((r) =>
+        sendNotification(r, { title, body, url }, { bypassPresence: true }),
+      ),
     );
+    const failed = results.filter((r) => r.status === "rejected");
+    if (failed.length === recipients.length) {
+      logger.error("[admin] test push failed", failed[0]?.status === "rejected" ? failed[0].reason : null, {
+        to,
+        by: guard.session.author,
+      });
+      return { error: "Send failed." };
+    }
     logger.interaction("[admin] test push sent", {
       to,
       title,
       url,
       by: guard.session.author,
+      recipients: recipients.length,
+      failed: failed.length,
     });
+    if (failed.length > 0) {
+      return { error: `Sent to ${recipients.length - failed.length}/${recipients.length}.` };
+    }
     return { success: true };
   } catch (err) {
     logger.error("[admin] test push failed", err, { to, by: guard.session.author });
