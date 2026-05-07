@@ -3,6 +3,11 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import {
+  AnimatePresence,
+  motion,
+  useReducedMotion,
+} from "motion/react";
+import {
   ArrowLeft,
   Award,
   Check,
@@ -717,6 +722,7 @@ function ClaimPicker({
   );
   const [submitting, setSubmitting] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
+  const [unlockedClaim, setUnlockedClaim] = useState<RewardClaim | null>(null);
 
   const selectedTier =
     claimableTiers.find((t) => t.id === selectedTierId) ?? initialTier;
@@ -739,7 +745,33 @@ function ClaimPicker({
       setLocalError(result.error);
       return;
     }
-    void onRefresh();
+    // Build a local claim record to drive the unlock animation. The
+    // server-persisted version will replace it on the next bundle
+    // refresh after the modal closes — `AnimatePresence`
+    // `onExitComplete` defers the refresh until the exit animation
+    // finishes so the picker doesn't yank out from under the modal.
+    const reward =
+      selectedTier.rewards.find((r) => r.id === selectedRewardId) ??
+      selectedTier.rewards[0];
+    if (!reward) return;
+    const localClaim: RewardClaim = {
+      id: result.claimId ?? crypto.randomUUID(),
+      author: "Besho",
+      weekKey: priorBesho.weekKey,
+      tierId: selectedTier.id,
+      tierName: selectedTier.name,
+      ...(selectedTier.emoji && { tierEmoji: selectedTier.emoji }),
+      rewardId: reward.id,
+      rewardLabel: reward.label,
+      ...(reward.body && { rewardBody: reward.body }),
+      ...(reward.emoji && { rewardEmoji: reward.emoji }),
+      status: "pending",
+      requestedAt: Date.now(),
+      claimedScore: priorBesho.displayedScore,
+      claimedTierThreshold: selectedTier.threshold,
+      ...(testMode && { testMode: true }),
+    };
+    setUnlockedClaim(localClaim);
   };
 
   return (
@@ -813,12 +845,29 @@ function ClaimPicker({
       <button
         type="button"
         onClick={handleSubmit}
-        disabled={submitting || !selectedRewardId}
+        disabled={submitting || !selectedRewardId || unlockedClaim !== null}
         className="flex w-full items-center justify-center gap-2 rounded-full bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground transition-opacity active:scale-95 disabled:opacity-60"
       >
         {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
         Claim
       </button>
+
+      {/* Unlock animation. AnimatePresence's `onExitComplete` defers
+       *  the parent refresh until the exit animation finishes — without
+       *  it the picker would unmount mid-exit when the bundle re-fetch
+       *  populates `priorClaim` / `currentClaim`, yanking the modal. */}
+      <AnimatePresence
+        onExitComplete={() => {
+          void onRefresh();
+        }}
+      >
+        {unlockedClaim && (
+          <RewardUnlockOverlay
+            claim={unlockedClaim}
+            onDismiss={() => setUnlockedClaim(null)}
+          />
+        )}
+      </AnimatePresence>
     </section>
   );
 }
@@ -1191,6 +1240,269 @@ function Skeleton() {
           key={i}
           className="h-32 animate-pulse rounded-2xl border border-border/40 bg-card"
         />
+      ))}
+    </div>
+  );
+}
+
+// ── Reward unlock overlay ────────────────────────────────────────────────
+//
+// Four-phase reveal animation that fires the moment a claim succeeds:
+//   1. (0.0–0.4s)  Backdrop fades in, gift box scales in with a bounce
+//   2. (0.4–0.9s)  Gift box wiggles + glow pulse (anticipation)
+//   3. (0.9–1.1s)  Gift box bursts (scale-out) + confetti emoji fan
+//   4. (1.0–2.0s)  Reveal card scales in with the tier line, the
+//                  reward emoji big and bouncy, label, and body
+//
+// Constraints baked in (per AGENTS.md hot-path animation rules):
+//   - No `filter: blur()`. Glow is via animated `box-shadow` on the
+//     reveal card (GPU-composited).
+//   - No `mode="popLayout"` on AnimatePresence. Default mode is fine.
+//   - `will-change-transform` only on the elements that actually animate
+//     repeatedly (the box + reveal card).
+//   - `useReducedMotion` short-circuits the choreography for users with
+//     prefers-reduced-motion (instant reveal, no confetti).
+
+const CONFETTI_PARTICLES = ["✨", "🎉", "💖", "⭐", "🌟", "💫"] as const;
+const CONFETTI_COUNT = 18;
+
+function RewardUnlockOverlay({
+  claim,
+  onDismiss,
+}: {
+  claim: RewardClaim;
+  onDismiss: () => void;
+}) {
+  const reduced = useReducedMotion();
+  const [showHint, setShowHint] = useState(false);
+
+  // Surface the dismiss hint after the reveal has settled, so it
+  // doesn't compete with the climax. setState calls are deferred via
+  // setTimeout per AGENTS.md § 4 (no synchronous-setState-in-effect).
+  useEffect(() => {
+    const t = setTimeout(() => setShowHint(true), reduced ? 0 : 2200);
+    return () => clearTimeout(t);
+  }, [reduced]);
+
+  // Haptic punctuation matching the four phases. Skipped under
+  // reduced-motion since the visual choreography is also collapsed.
+  useEffect(() => {
+    if (reduced) {
+      void vibrate(60, "medium");
+      return;
+    }
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    timers.push(setTimeout(() => void vibrate(40, "light"), 0));
+    timers.push(
+      setTimeout(() => void vibrate([20, 30, 20, 30, 20], "light"), 400),
+    );
+    timers.push(
+      setTimeout(() => void vibrate([100, 40, 80], "heavy"), 900),
+    );
+    timers.push(setTimeout(() => void vibrate(50, "medium"), 1200));
+    return () => timers.forEach(clearTimeout);
+  }, [reduced]);
+
+  return (
+    <motion.div
+      key="reward-unlock"
+      className="fixed inset-0 z-60 flex items-center justify-center overflow-hidden bg-black/85 px-6"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.25 }}
+      onClick={onDismiss}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Reward unlock"
+    >
+      {/* Phase 1+2+3 — gift box. Disappears at the burst. */}
+      {!reduced && (
+        <motion.div
+          className="absolute inset-0 flex items-center justify-center"
+          initial={{ scale: 0, opacity: 0, rotate: 0 }}
+          animate={{
+            scale: [0, 1.1, 1, 1.05, 1, 1.05, 1, 0],
+            opacity: [0, 1, 1, 1, 1, 1, 1, 0],
+            rotate: [0, 0, -10, 10, -10, 10, 0, 0],
+          }}
+          transition={{
+            duration: 1.0,
+            times: [0, 0.18, 0.3, 0.42, 0.54, 0.66, 0.8, 1],
+            ease: "easeInOut",
+          }}
+        >
+          <span
+            className="text-9xl will-change-transform"
+            style={{
+              textShadow:
+                "0 0 32px hsl(var(--primary) / 0.6), 0 0 64px hsl(var(--primary) / 0.3)",
+            }}
+          >
+            🎁
+          </span>
+        </motion.div>
+      )}
+
+      {/* Phase 3 — confetti burst. Renders only on the live tick the
+       *  box opens; AnimatePresence handles cleanup. */}
+      {!reduced && <ConfettiBurst delay={0.85} />}
+
+      {/* Phase 4 — reveal card. */}
+      <motion.div
+        className="relative max-w-sm overflow-hidden rounded-3xl border border-primary/40 bg-card/95 px-6 py-7 shadow-xl shadow-black/60 will-change-transform"
+        initial={{ scale: reduced ? 1 : 0, opacity: reduced ? 1 : 0, y: 12 }}
+        animate={{
+          scale: 1,
+          opacity: 1,
+          y: 0,
+          boxShadow: reduced
+            ? undefined
+            : [
+                "0 0 0 hsl(var(--primary) / 0)",
+                "0 0 80px hsl(var(--primary) / 0.5)",
+                "0 0 30px hsl(var(--primary) / 0.25)",
+              ],
+        }}
+        transition={{
+          delay: reduced ? 0 : 1.0,
+          type: "spring",
+          stiffness: 260,
+          damping: 18,
+          boxShadow: { duration: 1.4, times: [0, 0.4, 1] },
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Tier line */}
+        <motion.p
+          initial={{ opacity: 0, y: -8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: reduced ? 0 : 1.25, duration: 0.3 }}
+          className="text-center text-xs font-bold uppercase tracking-widest text-primary/80"
+        >
+          {claim.tierEmoji && (
+            <span className="mr-1">{claim.tierEmoji}</span>
+          )}
+          {claim.tierName}
+        </motion.p>
+
+        {/* Reward emoji — the main spectacle */}
+        <motion.div
+          className="my-4 flex items-center justify-center"
+          initial={{
+            scale: reduced ? 1 : 0,
+            rotate: reduced ? 0 : -180,
+          }}
+          animate={{ scale: 1, rotate: 0 }}
+          transition={{
+            delay: reduced ? 0 : 1.35,
+            type: "spring",
+            stiffness: 220,
+            damping: 12,
+          }}
+        >
+          <span className="select-none text-7xl will-change-transform">
+            {claim.rewardEmoji ?? "🎁"}
+          </span>
+        </motion.div>
+
+        {/* Reward label */}
+        <motion.p
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: reduced ? 0 : 1.55, duration: 0.3 }}
+          dir="auto"
+          className="text-center text-xl font-bold leading-tight"
+        >
+          {claim.rewardLabel}
+        </motion.p>
+
+        {/* Reward body — the surprise reveal */}
+        {claim.rewardBody && (
+          <motion.p
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: reduced ? 0 : 1.75, duration: 0.4 }}
+            dir="auto"
+            className="mt-3 whitespace-pre-wrap text-center text-base leading-relaxed text-muted-foreground"
+          >
+            {claim.rewardBody}
+          </motion.p>
+        )}
+
+        {/* Tier-claim hint */}
+        <motion.p
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: reduced ? 0 : 1.95, duration: 0.3 }}
+          className="mt-5 text-center text-xs uppercase tracking-widest text-muted-foreground/70"
+        >
+          {claim.testMode
+            ? "Test mode — claim recorded for current week"
+            : "Awaiting Sir to deliver"}
+        </motion.p>
+
+        {showHint && (
+          <motion.p
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 0.7 }}
+            transition={{ duration: 0.5 }}
+            className="mt-2 text-center text-[11px] uppercase tracking-widest text-muted-foreground/50"
+          >
+            Tap anywhere to close
+          </motion.p>
+        )}
+      </motion.div>
+    </motion.div>
+  );
+}
+
+function ConfettiBurst({ delay }: { delay: number }) {
+  // Generate the layout once on mount so re-renders don't reshuffle the
+  // particles mid-animation. Each particle gets a deterministic
+  // position based on its index plus a hashed jitter — pure but
+  // varied.
+  const [particles] = useState(() =>
+    Array.from({ length: CONFETTI_COUNT }, (_, i) => {
+      const angle = (i / CONFETTI_COUNT) * Math.PI * 2;
+      const jitter = ((i * 1103515245 + 12345) & 0xff) / 0xff;
+      const distance = 160 + jitter * 80;
+      return {
+        i,
+        emoji: CONFETTI_PARTICLES[i % CONFETTI_PARTICLES.length],
+        x: Math.cos(angle) * distance,
+        y: Math.sin(angle) * distance,
+        rotate: jitter * 720 - 360,
+      };
+    }),
+  );
+  return (
+    <div
+      className="pointer-events-none absolute inset-0 flex items-center justify-center"
+      aria-hidden
+    >
+      {particles.map((p) => (
+        <motion.span
+          key={p.i}
+          className="absolute text-2xl"
+          initial={{ x: 0, y: 0, opacity: 0, scale: 0, rotate: 0 }}
+          animate={{
+            x: p.x,
+            y: p.y,
+            opacity: [0, 1, 1, 0],
+            scale: [0, 1.3, 1, 0.4],
+            rotate: p.rotate,
+          }}
+          transition={{
+            delay,
+            duration: 1.5,
+            ease: "easeOut",
+            opacity: { duration: 1.5, times: [0, 0.15, 0.7, 1] },
+            scale: { duration: 1.5, times: [0, 0.2, 0.6, 1] },
+          }}
+        >
+          {p.emoji}
+        </motion.span>
       ))}
     </div>
   );
