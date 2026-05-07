@@ -13,8 +13,8 @@ import {
   getOutboundNotificationAudit,
   resendNotification,
   type NotificationAuditPair,
+  type OutboundNotificationAuditEntry,
 } from "@/app/actions/admin";
-import type { NotificationRecord } from "@/app/actions/notifications";
 import type { Author } from "@/lib/constants";
 import { TITLE_BY_AUTHOR } from "@/lib/constants";
 import { vibrate } from "@/lib/haptic";
@@ -84,10 +84,12 @@ export default function AdminNotificationsPage() {
 
       <h1 className="text-2xl font-bold tracking-tight">Notification audit</h1>
       <p className="mt-1 mb-6 text-sm text-muted-foreground">
-        Both authors&apos; <code>notifications:&#123;author&#125;</code> LISTs
-        side by side. Re-send fires a fresh push (and adds a new entry to the
-        target&apos;s drawer) using the original title/body/url — useful for
-        verifying delivery without composing a new test push.
+        Forward-only send-time audit log (<code>notifications:audit</code> ZSET,
+        capped at 200), independent from the per-user drawers. Drawer clears
+        and the 50-entry LTRIM don&apos;t touch this. Re-send fires a fresh
+        push (and creates new audit + drawer entries) using the original
+        title/body/url — useful for verifying delivery without composing a
+        new test push.
       </p>
 
       {error && (
@@ -166,7 +168,7 @@ function NotificationRow({
   now,
   onResent,
 }: {
-  record: NotificationRecord;
+  record: OutboundNotificationAuditEntry;
   author: Author;
   now: number;
   onResent: () => Promise<void>;
@@ -197,7 +199,7 @@ function NotificationRow({
           {record.title}
         </p>
         <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground/70">
-          {formatRelativeTs(record.timestamp, now)}
+          {formatRelativeTs(record.ts, now)}
         </span>
       </div>
       <p
@@ -230,11 +232,6 @@ function NotificationRow({
         </button>
       </div>
       {err && <p className="mt-1 text-[10px] text-destructive">{err}</p>}
-      {!record.read && (
-        <span className="mt-1 inline-block rounded-full bg-primary/15 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-primary">
-          Unread
-        </span>
-      )}
     </li>
   );
 }

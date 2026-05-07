@@ -132,6 +132,46 @@ const EMPTY_STATE_TIPS_BESHO = [
 
 const PULL_TO_REFRESH_THRESHOLD = 80;
 
+/**
+ * Client-side wrapper around `createPermission` that catches the
+ * network-layer family of `TypeError`s (Failed to fetch / network
+ * error / Load failed) and converts them into the action's normal
+ * `{ error }` return shape so `useActionState` surfaces a clear
+ * message instead of bubbling to the error boundary or leaving the
+ * form stuck pending.
+ *
+ * The action is NOT idempotent — `createPermission` mints a fresh
+ * id every call, no body-hash dedup at the create layer — so the
+ * wrapper deliberately does NOT auto-retry. The request may have
+ * landed and produced a record on the server before the response was
+ * lost; auto-retrying would create duplicate requests for one user
+ * intent. The right move is to tell kitten to verify and re-submit.
+ *
+ * Non-network errors propagate unchanged so the error boundary still
+ * catches genuine bugs.
+ */
+const NETWORK_FETCH_MESSAGE_RE = /^(failed to fetch|network error|load failed)$/i;
+
+async function createPermissionWithNetworkGuard(
+  prevState: unknown,
+  formData: FormData,
+): Promise<{ success?: boolean; error?: string }> {
+  try {
+    return await createPermission(prevState, formData);
+  } catch (err) {
+    if (
+      err instanceof TypeError &&
+      NETWORK_FETCH_MESSAGE_RE.test(err.message?.trim() ?? "")
+    ) {
+      return {
+        error:
+          "Couldn't reach server. Check your connection and try again — your request may not have been sent.",
+      };
+    }
+    throw err;
+  }
+}
+
 export default function PermissionsPage() {
   const [requests, setRequests] = useState<PermissionRequest[]>([]);
   const [usage, setUsage] = useState<CategoryUsage[]>([]);
@@ -165,7 +205,7 @@ export default function PermissionsPage() {
   );
 
   const [createState, createAction, isCreatePending] = useActionState(
-    createPermission,
+    createPermissionWithNetworkGuard,
     null,
   );
   const formRef = useRef<HTMLFormElement & { reset: () => void }>(null);

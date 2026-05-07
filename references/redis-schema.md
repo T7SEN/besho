@@ -191,15 +191,20 @@ Both devices register an FCM token on app launch. `FCMProvider` catches any regi
 
 ## Notifications
 
-| Key                      | Type | Description                                            |
-| ------------------------ | ---- | ------------------------------------------------------ |
-| `notifications:{author}` | LIST | `NotificationRecord` objects, capped at 50 via `LTRIM` |
+| Key                      | Type | Description                                                                                  |
+| ------------------------ | ---- | -------------------------------------------------------------------------------------------- |
+| `notifications:{author}` | LIST | `NotificationRecord` objects, capped at 50 via `LTRIM`. Per-user drawer; user-clearable      |
+| `notifications:audit`    | ZSET | Forward-only send-time audit, capped at 200 via `ZREMRANGEBYRANK`. Sir-only read; not user-mutable |
 
 `NotificationRecord = { id, title, body, url, timestamp, read }`. Newest first (LPUSH). The `NotificationDrawer` reads via `LRANGE 0 49`.
 
 `markAllNotificationsRead()` rewrites the entire list with `read: true` — this is a known O(n) operation but n ≤ 50 so it's fine.
 
-This list is the durable artifact when FCM delivery is unavailable for any reason — both users see missed notifications next time they open the app.
+The drawer LIST is the durable artifact when FCM delivery is unavailable for any reason — both users see missed notifications next time they open the app.
+
+### Audit ZSET
+
+`notifications:audit` is a separate, Sir-private forward-only log. Score = `ts` (ms), member = JSON `{ id, to, title, body, url, ts }`. Written from `pushNotificationToHistory` in the same pipeline as the drawer LPUSH so both records share the same `id`. Independent of drawer state — `clearAllNotifications` and the 50-entry LTRIM never touch the audit. Cap of 200 applies via `ZREMRANGEBYRANK 0 -201` after every ZADD. Read via `admin.getOutboundNotificationAudit()`; surfaced on `/admin/notifications`. This is the source-of-truth for "did Sir actually fire push X" — the drawer is mutable user state and not authoritative.
 
 ---
 

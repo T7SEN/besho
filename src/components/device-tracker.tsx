@@ -63,7 +63,16 @@ export function DeviceTracker() {
 
         intervalId = setInterval(() => {
           if (cancelled) return;
-          void pingDevice({ id: deviceId, page: pathnameRef.current });
+          // Best-effort heartbeat. Rejections happen on bad URLs (the
+          // server-action POST 404s when the user is on a path with no
+          // matching handler), network drops, etc. Swallow them — the
+          // next interval self-heals, and an uncaught rejection here
+          // surfaces as a Sentry issue with no signal value.
+          pingDevice({ id: deviceId, page: pathnameRef.current }).catch(
+            () => {
+              // intentionally ignored
+            },
+          );
         }, HEARTBEAT_MS);
       } catch (err) {
         logger.error("[device-tracker] init failed", err);

@@ -1438,15 +1438,27 @@ export async function searchAcrossFeatures(
 }
 
 // ──────────────────────────────────────────────────────────────────
-// Outbound notification audit — Sir reads BOTH authors' drawer
-// histories side-by-side. Lets him verify "did my recent push
-// actually land in her drawer?" Currently each author only sees
-// their own drawer via getNotificationHistory.
+// Outbound notification audit — Sir-private forward-only log of
+// every send-time notification. Independent storage from the per-
+// author `notifications:{author}` drawers, so a user clearing their
+// drawer (or LTRIM rolling at the 50-cap) doesn't erase the audit.
+// Source: `notifications:audit` ZSET capped at 200 via ZREMRANGEBYRANK,
+// written from `pushNotificationToHistory` in the same pipeline as
+// the drawer push.
 // ──────────────────────────────────────────────────────────────────
+
+export interface OutboundNotificationAuditEntry {
+  id: string;
+  to: Author;
+  title: string;
+  body: string;
+  url: string;
+  ts: number;
+}
 
 export interface NotificationAuditPair {
   author: Author;
-  records: NotificationRecord[];
+  records: OutboundNotificationAuditEntry[];
 }
 
 export interface NotificationAuditResult {
@@ -1455,39 +1467,70 @@ export interface NotificationAuditResult {
   error?: string;
 }
 
+const NOTIFICATION_AUDIT_KEY = "notifications:audit";
+const NOTIFICATION_AUDIT_LIMIT = 200;
 const NOTIFICATION_HISTORY_MAX = 50;
 const notificationHistoryKey = (author: Author) => `notifications:${author}`;
+
+function parseAuditEntry(raw: unknown): OutboundNotificationAuditEntry | null {
+  let parsed: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+  const entry = parsed as Partial<OutboundNotificationAuditEntry>;
+  if (
+    typeof entry.id !== "string" ||
+    (entry.to !== "T7SEN" && entry.to !== "Besho") ||
+    typeof entry.title !== "string" ||
+    typeof entry.body !== "string" ||
+    typeof entry.url !== "string" ||
+    typeof entry.ts !== "number"
+  ) {
+    return null;
+  }
+  return entry as OutboundNotificationAuditEntry;
+}
 
 export async function getOutboundNotificationAudit(): Promise<NotificationAuditResult> {
   const guard = await requireSir();
   if (!guard.ok) return { error: guard.error };
   try {
+    const raws =
+      ((await redis.zrange<unknown[]>(
+        NOTIFICATION_AUDIT_KEY,
+        0,
+        NOTIFICATION_AUDIT_LIMIT - 1,
+        { rev: true },
+      )) ?? []);
+    const entries: OutboundNotificationAuditEntry[] = [];
+    for (const raw of raws) {
+      const e = parseAuditEntry(raw);
+      if (e) entries.push(e);
+    }
     const authors: Author[] = ["T7SEN", "Besho"];
-    const lists = await Promise.all(
-      authors.map((a) =>
-        redis.lrange<NotificationRecord>(
-          notificationHistoryKey(a),
-          0,
-          NOTIFICATION_HISTORY_MAX - 1,
-        ),
-      ),
-    );
-    const pairs: NotificationAuditPair[] = authors.map((author, i) => ({
+    const pairs: NotificationAuditPair[] = authors.map((author) => ({
       author,
-      records: lists[i] ?? [],
+      records: entries.filter((e) => e.to === author),
     }));
     return { pairs, generatedAt: Date.now() };
   } catch (err) {
     logger.error("[admin] notification audit read failed", err);
-    return { error: "Failed to read notification history." };
+    return { error: "Failed to read notification audit." };
   }
 }
 
 /**
- * Re-fires a notification by id from the target author's drawer.
- * Calls `sendNotification` with the recorded title/body/url, which
- * lpushes a fresh entry and attempts FCM. The original entry isn't
- * removed — the new fire is additive. Sir-only.
+ * Re-fires a notification by id. Looks up in the audit ZSET first,
+ * which is the durable record — drawer-only entries (pre-audit)
+ * fall through to the LIST as a transitional fallback. Calls
+ * `sendNotification` with the recorded title/body/url; the new fire
+ * is additive and creates fresh audit + drawer entries with new ids.
+ * The original audit entry is untouched.
  */
 export async function resendNotification(
   author: Author,
@@ -1502,20 +1545,45 @@ export async function resendNotification(
     return { error: "Invalid notification id." };
   }
   try {
-    const records = await redis.lrange<NotificationRecord>(
-      notificationHistoryKey(author),
-      0,
-      NOTIFICATION_HISTORY_MAX - 1,
-    );
-    const target = (records ?? []).find((r) => r?.id === notificationId);
-    if (!target) {
-      return { error: "Notification not found in recent history." };
+    let target: { title: string; body: string; url: string } | null = null;
+
+    // Audit ZSET — the durable source.
+    const raws =
+      ((await redis.zrange<unknown[]>(
+        NOTIFICATION_AUDIT_KEY,
+        0,
+        NOTIFICATION_AUDIT_LIMIT - 1,
+        { rev: true },
+      )) ?? []);
+    for (const raw of raws) {
+      const e = parseAuditEntry(raw);
+      if (e && e.id === notificationId && e.to === author) {
+        target = { title: e.title, body: e.body, url: e.url };
+        break;
+      }
     }
-    await sendNotification(author, {
-      title: target.title,
-      body: target.body,
-      url: target.url,
-    });
+
+    // Transitional fallback — drawer LIST may carry pre-audit entries.
+    if (!target) {
+      const records = await redis.lrange<NotificationRecord>(
+        notificationHistoryKey(author),
+        0,
+        NOTIFICATION_HISTORY_MAX - 1,
+      );
+      const drawer = (records ?? []).find((r) => r?.id === notificationId);
+      if (drawer) {
+        target = {
+          title: drawer.title,
+          body: drawer.body,
+          url: drawer.url,
+        };
+      }
+    }
+
+    if (!target) {
+      return { error: "Notification not found in audit or recent drawer." };
+    }
+    await sendNotification(author, target);
     logger.interaction("[admin] notification re-sent", {
       by: guard.session.author,
       to: author,

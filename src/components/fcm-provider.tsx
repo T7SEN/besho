@@ -95,6 +95,27 @@ export function FCMProvider() {
               registeredForAuthor.current = author;
               logger.info(`[fcm] Token stored for ${author}.`);
             } catch (err) {
+              // Network-layer fetch failures during FCM registration are
+              // non-actionable: WiFi → cellular handoff on app launch,
+              // WebView pause, brief signal drop. Registration is
+              // documented as best-effort (push:fcm:{author} is treated
+              // as nullable; missing token = silent push skip), and the
+              // next app launch retries via the same listener wiring.
+              // Downgrade to `logger.warn` — still lands in the activity
+              // feed for Sir's diagnostic view, but doesn't fire a Sentry
+              // issue. Non-network errors keep the loud path.
+              if (
+                err instanceof TypeError &&
+                /^(failed to fetch|network error|load failed)$/i.test(
+                  err.message?.trim() ?? "",
+                )
+              ) {
+                logger.warn(
+                  `[fcm] Token POST blocked by network for ${author}; will retry on next launch.`,
+                  { reason: err.message },
+                );
+                return;
+              }
               logger.error(`[fcm] Failed to store token for ${author}:`, err);
             }
           },

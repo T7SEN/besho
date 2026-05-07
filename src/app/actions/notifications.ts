@@ -22,6 +22,13 @@ const redis = new Redis({
 
 const MAX_HISTORY = 50;
 const historyKey = (author: string) => `notifications:${author}`;
+/** Forward-only outbound audit. Lives independently from the per-
+ *  author drawer LIST so a user clearing their drawer (or LTRIM
+ *  rolling at the 50-cap) doesn't erase the audit record. Sir-only
+ *  read via `admin.getOutboundNotificationAudit`. ZSET scored by ts;
+ *  capped at 200 via ZREMRANGEBYRANK. */
+const AUDIT_KEY = "notifications:audit";
+const AUDIT_CAP = 200;
 
 async function getSessionAuthor(): Promise<"T7SEN" | "Besho" | null> {
   const cookieStore = await cookies();
@@ -76,10 +83,19 @@ export async function markAllNotificationsRead(): Promise<void> {
 
 /**
  * Persists a notification record to `notifications:{author}` (LIST,
- * capped at 50 via LTRIM). Called from `sendNotification` before
- * attempting FCM delivery so the record is always durable, even when
- * FCM is unavailable (Honor / no-GMS) or the recipient is on the
- * target page and the push is intentionally skipped.
+ * capped at 50 via LTRIM) AND mirrors the send into the global
+ * `notifications:audit` ZSET (capped 200, scored by ts). Called from
+ * `sendNotification` before attempting FCM delivery so both records
+ * are durable even when FCM is unavailable (Honor / no-GMS) or the
+ * recipient is on the target page and the push is intentionally
+ * skipped.
+ *
+ * The drawer LIST is mutable user state — Besho or Sir can clear it,
+ * and LTRIM rolls old entries off the end. The audit ZSET is
+ * forward-only Sir-private state with its own retention; clearing a
+ * drawer doesn't touch the audit. Both writes share the same
+ * record id so the admin re-send path can resolve by id from either
+ * source.
  */
 export async function pushNotificationToHistory(
   author: string,
@@ -91,9 +107,22 @@ export async function pushNotificationToHistory(
       id: crypto.randomUUID(),
       read: false,
     };
+    const auditEntry = {
+      id: full.id,
+      to: author,
+      title: full.title,
+      body: full.body,
+      url: full.url,
+      ts: full.timestamp,
+    };
     const pipeline = redis.pipeline();
     pipeline.lpush(historyKey(author), full);
     pipeline.ltrim(historyKey(author), 0, MAX_HISTORY - 1);
+    pipeline.zadd(AUDIT_KEY, {
+      score: auditEntry.ts,
+      member: JSON.stringify(auditEntry),
+    });
+    pipeline.zremrangebyrank(AUDIT_KEY, 0, -AUDIT_CAP - 1);
     await pipeline.exec();
   } catch (error) {
     logger.error("[notifications] Failed to push to history:", error);
