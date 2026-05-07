@@ -18,6 +18,7 @@ import {
   ShieldCheck,
   Smartphone,
   Smile,
+  Timer,
   Trash2,
 } from "lucide-react";
 import { SummonButton } from "@/components/admin/summon-button";
@@ -128,6 +129,18 @@ const TOOLS = [
     title: "Timezone converter",
     description: "Cairo ↔ Tabuk picker for visit planning.",
     Icon: Clock,
+  },
+  {
+    href: "/admin/time",
+    title: "System time",
+    description: "Cairo / Tabuk / weekKey / next midnight + rollover.",
+    Icon: Clock,
+  },
+  {
+    href: "/admin/cooldowns",
+    title: "Cooldowns & rate-limits",
+    description: "Active reask blocks, safeword cooldowns, denied-hash count.",
+    Icon: Timer,
   },
   {
     href: "/admin/redis",

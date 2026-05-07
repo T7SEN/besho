@@ -1119,6 +1119,132 @@ export async function bulkDenyPendingByCategory(
 }
 
 // ──────────────────────────────────────────────────────────────────
+// Cooldown / rate-limit viewer — read-only diagnostic surface for
+// the TTL'd state that's invisible in normal UIs:
+//  - `permission:reask-block:{bodyHash}` — denial-cooldown blocks
+//  - `safeword:cooldown:{author}` — 5-minute safeword spam-shield
+//  - `permissions:denied-hashes` — SET cardinality (lifetime denials)
+//
+// Pre-curated for the common cases that matter when debugging "why
+// can't kitten re-submit this?" or "is the safeword guard armed?"
+// Pairs with /admin/redis (general-purpose), but doesn't replace it.
+// ──────────────────────────────────────────────────────────────────
+
+export interface ReaskBlockEntry {
+  /** Suffix of `permission:reask-block:{bodyHash}` — body-hash only. */
+  bodyHash: string;
+  /** Remaining TTL in seconds; -1 = no expire (shouldn't happen for
+   *  reask blocks in practice, but surfaced honestly). */
+  ttlSeconds: number;
+}
+
+export interface SafewordCooldownEntry {
+  author: Author;
+  ttlSeconds: number | null; // null = not currently set
+}
+
+export interface CooldownState {
+  reaskBlocks: ReaskBlockEntry[];
+  safewordCooldowns: SafewordCooldownEntry[];
+  deniedHashesCount: number;
+  generatedAt: number;
+}
+
+export interface CooldownResult {
+  state?: CooldownState;
+  error?: string;
+}
+
+/** Hard cap on how many reask-block keys we'll surface in one call.
+ *  At realistic two-user scale the active count is in the single
+ *  digits — the cap is defensive, not a real bound. */
+const REASK_SCAN_CAP = 200;
+
+export async function getCooldownState(): Promise<CooldownResult> {
+  const guard = await requireSir();
+  if (!guard.ok) return { error: guard.error };
+  try {
+    // 1. SCAN `permission:reask-block:*` — paginate until exhausted or
+    //    we hit the cap. Upstash returns [cursor, keys].
+    const blockKeys = new Set<string>();
+    let cursor: string | number = 0;
+    let safety = 0;
+    do {
+      const [next, keys] = (await redis.scan(cursor, {
+        match: "permission:reask-block:*",
+        count: 200,
+      })) as [string | number, string[]];
+      for (const k of keys ?? []) blockKeys.add(k);
+      cursor = next;
+      safety++;
+      if (blockKeys.size >= REASK_SCAN_CAP) break;
+      if (safety > 50) break;
+    } while (
+      cursor !== 0 &&
+      cursor !== "0" &&
+      blockKeys.size < REASK_SCAN_CAP
+    );
+
+    // 2. PTTL each block key (Upstash exposes `ttl` in seconds).
+    const blockKeyArr = Array.from(blockKeys);
+    const ttls = blockKeyArr.length
+      ? await Promise.all(
+          blockKeyArr.map((k) =>
+            redis.ttl(k).catch(() => -2 as number),
+          ),
+        )
+      : [];
+    const reaskBlocks: ReaskBlockEntry[] = [];
+    for (let i = 0; i < blockKeyArr.length; i++) {
+      const ttl = ttls[i];
+      if (typeof ttl !== "number" || ttl <= -2) continue;
+      const k = blockKeyArr[i];
+      const bodyHash = k.replace(/^permission:reask-block:/, "");
+      reaskBlocks.push({ bodyHash, ttlSeconds: ttl });
+    }
+    reaskBlocks.sort((a, b) => b.ttlSeconds - a.ttlSeconds);
+
+    // 3. Safeword cooldowns — known author keys, GET-with-TTL pattern.
+    const authors: Author[] = ["T7SEN", "Besho"];
+    const safewordTtls = await Promise.all(
+      authors.map((a) =>
+        redis.ttl(`safeword:cooldown:${a}`).catch(() => -2 as number),
+      ),
+    );
+    const safewordCooldowns: SafewordCooldownEntry[] = authors.map(
+      (author, i) => {
+        const ttl = safewordTtls[i];
+        return {
+          author,
+          // ttl returns -2 if key doesn't exist, -1 if no expire.
+          ttlSeconds: typeof ttl === "number" && ttl >= 0 ? ttl : null,
+        };
+      },
+    );
+
+    // 4. denied-hashes set size — SCARD.
+    let deniedHashesCount = 0;
+    try {
+      deniedHashesCount = await redis.scard("permissions:denied-hashes");
+    } catch {
+      deniedHashesCount = 0;
+    }
+
+    return {
+      state: {
+        reaskBlocks,
+        safewordCooldowns,
+        deniedHashesCount,
+        generatedAt: Date.now(),
+      },
+    };
+  } catch (err) {
+    logger.error("[admin] cooldown viewer read failed", err);
+    return { error: "Failed to read cooldown state." };
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────
 // Cross-feature search — single substring search across the four
 // primary feature indexes (notes / rules / tasks / ledger).
 // ──────────────────────────────────────────────────────────────────
@@ -1406,7 +1532,10 @@ export async function resendNotification(
 // Restraint history — small ZSET log of engage/lift transitions.
 // ──────────────────────────────────────────────────────────────────
 
-export const RESTRAINT_HISTORY_KEY = "restraint:history";
+// Internal — `'use server'` files can only export async functions, so
+// the key is kept private here. External callers go through the
+// `getRestraintHistory` action.
+const RESTRAINT_HISTORY_KEY = "restraint:history";
 const RESTRAINT_HISTORY_CAP = 200;
 
 export interface RestraintHistoryEntry {
