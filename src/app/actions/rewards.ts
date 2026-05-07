@@ -16,6 +16,7 @@ import {
   shiftWeekKey,
   multiplierForStreak,
   getMultipliers,
+  getTestMode,
 } from "@/lib/obedience";
 import {
   type ObedienceWeekState,
@@ -59,6 +60,11 @@ export interface RewardsBundle {
   myClaims: RewardClaim[];
   /** Whether Besho already claimed for the prior week. */
   priorClaim: RewardClaim | null;
+  /** Whether Besho already claimed for the CURRENT week (only meaningful
+   *  when test mode is on; null otherwise to keep the UI simple). */
+  currentClaim: RewardClaim | null;
+  /** Sir-controlled flag that opens current-week claims. */
+  testModeOn: boolean;
   streakThreshold: number;
   multipliers: readonly number[];
 }
@@ -82,15 +88,25 @@ export async function getRewardsBundle(): Promise<{
     const current = currentWeekKey();
     const prior = shiftWeekKey(current, -1);
 
-    const [besho, priorBesho, threshold, mults, myClaims, priorClaim] =
-      await Promise.all([
-        getWeekState("Besho", current),
-        getWeekState("Besho", prior),
-        getStreakThreshold(),
-        getMultipliers(),
-        listClaimsForAuthor(session.author === "Besho" ? "Besho" : "Besho"),
-        readClaimForWeek("Besho", prior),
-      ]);
+    const [
+      besho,
+      priorBesho,
+      threshold,
+      mults,
+      myClaims,
+      priorClaim,
+      currentClaim,
+      testModeOn,
+    ] = await Promise.all([
+      getWeekState("Besho", current),
+      getWeekState("Besho", prior),
+      getStreakThreshold(),
+      getMultipliers(),
+      listClaimsForAuthor(session.author === "Besho" ? "Besho" : "Besho"),
+      readClaimForWeek("Besho", prior),
+      readClaimForWeek("Besho", current),
+      getTestMode(),
+    ]);
 
     let pendingClaim: RewardClaim | null = null;
     if (session.author === "T7SEN") {
@@ -108,6 +124,8 @@ export async function getRewardsBundle(): Promise<{
         pendingClaim,
         myClaims: session.author === "Besho" ? myClaims : [],
         priorClaim,
+        currentClaim,
+        testModeOn,
         streakThreshold: threshold,
         multipliers: mults,
       },
@@ -139,12 +157,22 @@ export async function claimReward(
   if (block) return block;
 
   const current = currentWeekKey();
-  if (args.weekKey >= current) {
-    return { error: "Week is not closed yet." };
-  }
-  // Only the immediately prior week is claimable. Older weeks lapse.
   const prior = shiftWeekKey(current, -1);
-  if (args.weekKey !== prior) {
+  // Test mode lets Sir exercise the full claim → deliver flow against
+  // the CURRENT week. The week itself isn't finalized — no streak
+  // bump, no frozen multiplier — so testing leaves the score
+  // machinery unaffected. Otherwise the normal rule applies: only the
+  // immediately prior week is claimable; older weeks lapse.
+  const testMode = await getTestMode();
+  const allowed = testMode ? new Set([prior, current]) : new Set([prior]);
+  if (!allowed.has(args.weekKey)) {
+    if (args.weekKey >= current) {
+      return {
+        error: testMode
+          ? "Pick the current or prior week."
+          : "Week is not closed yet.",
+      };
+    }
     return { error: "That week's claim window has closed." };
   }
 
@@ -173,6 +201,7 @@ export async function claimReward(
       weekKey: args.weekKey,
       tierId: tier.id,
       tierName: tier.name,
+      ...(tier.emoji && { tierEmoji: tier.emoji }),
       rewardId: reward.id,
       rewardLabel: reward.label,
       ...(reward.body && { rewardBody: reward.body }),
@@ -389,7 +418,12 @@ export interface RewardsHistoryEntry {
   rawScore: number;
   displayedScore: number;
   multiplier: number;
-  tier: { id: string; name: string; threshold: number } | null;
+  tier: {
+    id: string;
+    name: string;
+    threshold: number;
+    emoji?: string;
+  } | null;
   claim: RewardClaim | null;
   finalized: boolean;
 }
@@ -437,6 +471,9 @@ export async function getRewardsHistory(
               id: state.unlockedTier.id,
               name: state.unlockedTier.name,
               threshold: state.unlockedTier.threshold,
+              ...(state.unlockedTier.emoji && {
+                emoji: state.unlockedTier.emoji,
+              }),
             }
           : null,
         claim,

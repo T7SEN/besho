@@ -60,6 +60,10 @@ export interface RewardTier {
   name: string;
   threshold: number;
   rewards: RewardItem[];
+  /** Optional emoji shown alongside the tier name in the ladder, claim
+   *  picker, and history. Snapshotted onto each claim's `tierEmoji` so
+   *  catalog renames don't rewrite historical displays. */
+  emoji?: string;
 }
 
 export interface ObedienceBreakdownEntry {
@@ -93,6 +97,8 @@ export interface RewardClaim {
   weekKey: string;
   tierId: string;
   tierName: string;
+  /** Snapshotted at claim time. Symmetric with rewardEmoji. */
+  tierEmoji?: string;
   rewardId: string;
   rewardLabel: string;
   rewardBody?: string;
@@ -135,6 +141,7 @@ export const DEFAULT_REWARD_TIERS: RewardTier[] = [
   {
     id: "t1",
     name: "Tier I",
+    emoji: "🥉",
     threshold: 20,
     rewards: [
       { id: "t1-r1", label: "Reward 1", body: "Sir, fill this in." },
@@ -143,6 +150,7 @@ export const DEFAULT_REWARD_TIERS: RewardTier[] = [
   {
     id: "t2",
     name: "Tier II",
+    emoji: "🥈",
     threshold: 50,
     rewards: [
       { id: "t2-r1", label: "Reward 1", body: "Sir, fill this in." },
@@ -151,6 +159,7 @@ export const DEFAULT_REWARD_TIERS: RewardTier[] = [
   {
     id: "t3",
     name: "Tier III",
+    emoji: "🥇",
     threshold: 85,
     rewards: [
       { id: "t3-r1", label: "Reward 1", body: "Sir, fill this in." },
@@ -159,6 +168,7 @@ export const DEFAULT_REWARD_TIERS: RewardTier[] = [
   {
     id: "t4",
     name: "Tier IV",
+    emoji: "🏆",
     threshold: 120,
     rewards: [
       { id: "t4-r1", label: "Reward 1", body: "Sir, fill this in." },
@@ -167,6 +177,7 @@ export const DEFAULT_REWARD_TIERS: RewardTier[] = [
   {
     id: "t5",
     name: "Tier V",
+    emoji: "👑",
     threshold: 160,
     rewards: [
       { id: "t5-r1", label: "Reward 1", body: "Sir, fill this in." },
@@ -201,6 +212,7 @@ export const OBEDIENCE_EVENT_LABELS: Record<ObedienceEventType, string> = {
 export const REWARD_LABEL_MAX = 80;
 export const REWARD_BODY_MAX = 500;
 export const REWARD_EMOJI_MAX = 8;
+export const TIER_EMOJI_MAX = 8;
 export const TIER_NAME_MAX = 32;
 export const MAX_REWARDS_PER_TIER = 12;
 export const MAX_TIER_THRESHOLD = 9999;

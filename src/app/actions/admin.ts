@@ -50,17 +50,23 @@ import {
   computeWeekScore,
   currentWeekKey,
   getEventLog,
+  deleteObedienceEvent,
+  getTestMode,
+  setTestModeRaw,
   type ObedienceAuditEntry,
 } from "@/lib/obedience";
 import {
   type RewardTier,
   type RewardItem,
   type ObedienceWeights,
+  type ObedienceEventType,
   REWARD_TIER_COUNT,
   TUNABLE_EVENT_TYPES,
+  OBEDIENCE_EVENT_TYPES,
   REWARD_LABEL_MAX,
   REWARD_BODY_MAX,
   REWARD_EMOJI_MAX,
+  TIER_EMOJI_MAX,
   TIER_NAME_MAX,
   MAX_REWARDS_PER_TIER,
   MAX_TIER_THRESHOLD,
@@ -1731,6 +1737,13 @@ function validateTiers(tiers: unknown): RewardTier[] | { error: string } {
       return { error: `Tier name too long (max ${TIER_NAME_MAX}).` };
     }
 
+    const tierEmoji = typeof t.emoji === "string" ? t.emoji.trim() : "";
+    if (tierEmoji.length > TIER_EMOJI_MAX) {
+      return {
+        error: `Tier emoji too long (max ${TIER_EMOJI_MAX} chars).`,
+      };
+    }
+
     const threshold = Number(t.threshold);
     if (!Number.isFinite(threshold) || threshold < 0 || threshold > MAX_TIER_THRESHOLD) {
       return {
@@ -1795,7 +1808,13 @@ function validateTiers(tiers: unknown): RewardTier[] | { error: string } {
       });
     }
 
-    out.push({ id, name, threshold, rewards });
+    out.push({
+      id,
+      name,
+      threshold,
+      rewards,
+      ...(tierEmoji.length > 0 && { emoji: tierEmoji }),
+    });
   }
   return out;
 }
@@ -2273,6 +2292,110 @@ export interface ObedienceEventLogResult {
   weekKey?: string;
   author?: Author;
   error?: string;
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Test mode — Sir-only flag that opens current-week claims so the
+// full claim → deliver flow can be exercised without ending the week.
+// ──────────────────────────────────────────────────────────────────
+
+export interface TestModeResult {
+  on?: boolean;
+  error?: string;
+}
+
+export async function getTestModeState(): Promise<TestModeResult> {
+  const guard = await requireSir();
+  if (!guard.ok) return { error: guard.error };
+  try {
+    return { on: await getTestMode() };
+  } catch (err) {
+    logger.error("[admin] test mode read failed", err);
+    return { error: "Read failed." };
+  }
+}
+
+export async function setTestModeState(
+  on: boolean,
+): Promise<{ success?: boolean; error?: string; on?: boolean }> {
+  const guard = await requireSir();
+  if (!guard.ok) return { error: guard.error };
+  try {
+    await setTestModeRaw(on);
+    logger.interaction("[admin] test mode toggled", {
+      on,
+      by: guard.session.author,
+    });
+    revalidatePath("/admin/rewards");
+    revalidatePath("/rewards");
+    return { success: true, on };
+  } catch (err) {
+    logger.error("[admin] test mode toggle failed", err);
+    return { error: "Toggle failed." };
+  }
+}
+
+export interface DeleteObedienceEventArgs {
+  author: Author;
+  weekKey: string;
+  type: ObedienceEventType;
+  eventId: string;
+}
+
+export async function adminDeleteObedienceEvent(
+  args: DeleteObedienceEventArgs,
+): Promise<{
+  success?: boolean;
+  error?: string;
+  pointsRemoved?: number;
+  removed?: boolean;
+}> {
+  const guard = await requireSir();
+  if (!guard.ok) return { error: guard.error };
+  if (args.author !== "T7SEN" && args.author !== "Besho") {
+    return { error: "Invalid author." };
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(args.weekKey)) {
+    return { error: "Invalid week key." };
+  }
+  if (!OBEDIENCE_EVENT_TYPES.includes(args.type)) {
+    return { error: "Invalid event type." };
+  }
+  if (
+    !args.eventId ||
+    typeof args.eventId !== "string" ||
+    args.eventId.length > 200
+  ) {
+    return { error: "Invalid event id." };
+  }
+  try {
+    const result = await deleteObedienceEvent(
+      args.author,
+      args.weekKey,
+      args.type,
+      args.eventId,
+    );
+    logger.interaction("[admin] obedience event deleted", {
+      by: guard.session.author,
+      author: args.author,
+      weekKey: args.weekKey,
+      type: args.type,
+      eventId: args.eventId,
+      pointsRemoved: result.pointsRemoved,
+      removedFromEvents: result.removedFromEvents,
+      removedFromAudit: result.removedFromAudit,
+    });
+    revalidatePath("/admin/rewards");
+    revalidatePath("/rewards");
+    return {
+      success: true,
+      pointsRemoved: result.pointsRemoved,
+      removed: result.removedFromEvents > 0,
+    };
+  } catch (err) {
+    logger.error("[admin] event delete failed", err);
+    return { error: "Delete failed." };
+  }
 }
 
 export async function getObedienceEventLog(

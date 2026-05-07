@@ -54,6 +54,11 @@ export const WEIGHTS_KEY = "obedience:weights";
 export const TIERS_KEY = "rewards:tiers";
 export const STREAK_THRESHOLD_KEY = "obedience:streak-threshold";
 export const MULTIPLIERS_KEY = "obedience:multipliers";
+/** Sir-only test-mode flag. When "on", `claimReward` accepts the
+ *  current week (in addition to the immediately prior week), so the
+ *  full claim → deliver → status flow can be exercised without ending
+ *  the week and bumping the streak / freezing the multiplier. */
+export const TEST_MODE_KEY = "obedience:test-mode";
 
 export const eventsKey = (author: Author, weekKey: string) =>
   `obedience:events:${author}:${weekKey}`;
@@ -177,6 +182,28 @@ export async function getMultipliers(): Promise<readonly number[]> {
 export async function setMultipliersRaw(mults: number[]): Promise<void> {
   await redis.set(MULTIPLIERS_KEY, mults);
   cache.delete(MULTIPLIERS_KEY);
+}
+
+export async function getTestMode(): Promise<boolean> {
+  const cached = getCached<boolean>(TEST_MODE_KEY);
+  if (cached !== null) return cached;
+  try {
+    const v = await redis.get<string>(TEST_MODE_KEY);
+    const on = v === "on";
+    setCached(TEST_MODE_KEY, on);
+    return on;
+  } catch {
+    return false;
+  }
+}
+
+export async function setTestModeRaw(on: boolean): Promise<void> {
+  if (on) {
+    await redis.set(TEST_MODE_KEY, "on");
+  } else {
+    await redis.del(TEST_MODE_KEY);
+  }
+  cache.delete(TEST_MODE_KEY);
 }
 
 // ── Week-key helper ──────────────────────────────────────────────────────
@@ -578,6 +605,54 @@ export async function catchUpFinalizations(
     if (result.finalized) count++;
   }
   return count;
+}
+
+// ── Audit log mutations (Sir-only via admin actions) ─────────────────────
+
+/**
+ * Removes a single event from both the events ZSET and the audit ZSET.
+ * Score recomputation is implicit — `computeWeekScore` sums the events
+ * ZSET fresh on every read, so removing a member with score `-10`
+ * effectively adds 10 to the displayed score. Idempotent: if the member
+ * doesn't exist, the ZREM is a no-op and returns 0.
+ *
+ * Caveat: removing events from a finalized past week does NOT roll back
+ * the streak counter or unfreeze the stored multiplier — those captured
+ * the at-finalize state and are immutable history. The recomputed score
+ * still uses the frozen multiplier. Removals are most meaningful for
+ * the current (unfinalized) week.
+ */
+export async function deleteObedienceEvent(
+  author: Author,
+  weekKey: string,
+  type: ObedienceEventType,
+  eventId: string,
+): Promise<{
+  removedFromEvents: number;
+  removedFromAudit: number;
+  pointsRemoved: number;
+}> {
+  const member = `${type}:${eventId}`;
+  let pointsRemoved = 0;
+  try {
+    const raw = await redis.zscore(eventsKey(author, weekKey), member);
+    if (typeof raw === "number") pointsRemoved = raw;
+    else if (raw != null) {
+      const parsed = Number(raw);
+      if (Number.isFinite(parsed)) pointsRemoved = parsed;
+    }
+  } catch {
+    // best-effort — fall through with 0
+  }
+  const pipeline = redis.pipeline();
+  pipeline.zrem(eventsKey(author, weekKey), member);
+  pipeline.zrem(auditKey(author, weekKey), member);
+  const results = (await pipeline.exec()) as [number, number];
+  return {
+    removedFromEvents: results[0] ?? 0,
+    removedFromAudit: results[1] ?? 0,
+    pointsRemoved,
+  };
 }
 
 // ── Audit log read ───────────────────────────────────────────────────────

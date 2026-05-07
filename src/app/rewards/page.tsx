@@ -7,8 +7,11 @@ import {
   Award,
   Check,
   CheckCircle2,
+  ChevronDown,
+  FlaskConical,
   Gift,
   Loader2,
+  Lock,
   RefreshCw,
   Sparkles,
   Trophy,
@@ -179,6 +182,8 @@ function RewardsView({
 
   return (
     <div className="space-y-4">
+      {bundle.testModeOn && <TestModeBanner />}
+
       <ScoreCard
         weekState={bundle.besho}
         viewer={bundle.viewer}
@@ -192,6 +197,19 @@ function RewardsView({
       {bundle.besho.breakdown.length > 0 && (
         <BreakdownCard weekState={bundle.besho} />
       )}
+
+      {/* Test-mode current-week claim path. Renders only when Sir
+       *  enabled the flag AND Besho actually has a tier reached this
+       *  week. Pre-empts the prior-week section when it's active so
+       *  the picker she sees is the test one. */}
+      {bundle.testModeOn ? (
+        <CurrentWeekClaimSection
+          besho={bundle.besho}
+          currentClaim={bundle.currentClaim}
+          viewer={bundle.viewer}
+          onRefresh={onRefresh}
+        />
+      ) : null}
 
       <PriorWeekSection
         priorBesho={bundle.priorBesho}
@@ -213,6 +231,70 @@ function RewardsView({
 
       {history && history.length > 0 && <HistorySection entries={history} />}
     </div>
+  );
+}
+
+function TestModeBanner() {
+  return (
+    <section className="rounded-2xl border border-amber-500/40 bg-amber-500/10 px-4 py-3">
+      <div className="flex items-start gap-3">
+        <FlaskConical className="h-4 w-4 flex-none text-amber-400" />
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-semibold text-amber-400">
+            Test mode is on
+          </p>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            Current-week claims are open. The week itself isn&apos;t
+            ending — streak and multiplier stay untouched.
+          </p>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function CurrentWeekClaimSection({
+  besho,
+  currentClaim,
+  viewer,
+  onRefresh,
+}: {
+  besho: ObedienceWeekState;
+  currentClaim: RewardClaim | null;
+  viewer: "T7SEN" | "Besho";
+  onRefresh: () => Promise<void>;
+}) {
+  const tier = besho.unlockedTier;
+
+  if (currentClaim) {
+    return <ClaimStatusCard claim={currentClaim} />;
+  }
+  if (!tier) {
+    return null; // Nothing to test — no tier reached yet this week.
+  }
+  if (viewer === "T7SEN") {
+    return (
+      <section className="rounded-2xl border border-amber-500/30 bg-amber-500/5 p-5 backdrop-blur-md shadow-xl shadow-black/30">
+        <h2 className="mb-2 flex items-center gap-2 text-sm font-semibold">
+          <Gift className="h-4 w-4 text-amber-400" />
+          This week (test) —{" "}
+          {tier.emoji && <span className="mr-1">{tier.emoji}</span>}
+          {tier.name} unlocked
+        </h2>
+        <p className="text-sm text-muted-foreground">
+          {Math.max(0, besho.displayedScore)} pts so far. kitten can claim
+          against the current week while test mode is on.
+        </p>
+      </section>
+    );
+  }
+  return (
+    <ClaimPicker
+      priorBesho={besho}
+      tier={tier}
+      onRefresh={onRefresh}
+      testMode
+    />
   );
 }
 
@@ -289,7 +371,7 @@ function ScoreCard({
         )}
       </div>
 
-      <div className="mt-4 space-y-1.5 text-[11px] text-muted-foreground">
+      <div className="mt-4 space-y-2 text-xs text-muted-foreground">
         <div>
           High-score threshold:{" "}
           <span className="font-semibold text-foreground">
@@ -326,6 +408,19 @@ function TierLadderCard({ weekState }: { weekState: ObedienceWeekState }) {
   const nextTier = tiers.find((t) => t.threshold > score) ?? null;
   const gap = nextTier ? nextTier.threshold - score : 0;
 
+  // Expanded tier IDs — tap a row to preview its rewards. Multi-expand
+  // so she can compare what's at Tier IV vs Tier V at a glance.
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  const toggle = (id: string) => {
+    void vibrate(15, "light");
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
   return (
     <section className="rounded-2xl border border-border/40 bg-card p-5 backdrop-blur-md shadow-xl shadow-black/30">
       <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold">
@@ -345,11 +440,13 @@ function TierLadderCard({ weekState }: { weekState: ObedienceWeekState }) {
                   -Infinity,
                 );
           const isNext = nextTier !== null && tier.id === nextTier.id;
+          const isOpen = expanded.has(tier.id);
+          const hasRewards = tier.rewards.length > 0;
           return (
             <div
               key={tier.id}
               className={cn(
-                "flex items-center gap-3 rounded-lg border px-3 py-2 transition-colors",
+                "rounded-lg border transition-colors",
                 isHighestReached
                   ? "border-primary/50 bg-primary/15"
                   : reached
@@ -359,35 +456,127 @@ function TierLadderCard({ weekState }: { weekState: ObedienceWeekState }) {
                       : "border-border/30 bg-card opacity-60",
               )}
             >
-              <span
-                className={cn(
-                  "flex h-7 w-7 items-center justify-center rounded-full text-[10px] font-bold",
-                  reached
-                    ? "bg-primary/30 text-primary"
-                    : "bg-muted/40 text-muted-foreground",
-                )}
+              <button
+                type="button"
+                onClick={() => toggle(tier.id)}
+                aria-expanded={isOpen}
+                aria-label={`${tier.name} — ${reached ? "reached" : "locked"}, ${tier.rewards.length} rewards`}
+                className="flex w-full items-center gap-3 px-3 py-2 text-left active:scale-[0.99]"
               >
-                {reached ? <Check className="h-3.5 w-3.5" /> : tier.threshold}
-              </span>
-              <span className="flex-1 text-sm font-semibold">{tier.name}</span>
-              <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
-                {tier.threshold} pts
-              </span>
+                <span
+                  className={cn(
+                    "flex h-7 w-7 items-center justify-center rounded-full text-[10px] font-bold",
+                    reached
+                      ? "bg-primary/30 text-primary"
+                      : "bg-muted/40 text-muted-foreground",
+                  )}
+                >
+                  {reached ? <Check className="h-3.5 w-3.5" /> : tier.threshold}
+                </span>
+                {tier.emoji && (
+                  <span className="text-base leading-none">{tier.emoji}</span>
+                )}
+                <span className="flex-1 text-sm font-semibold">
+                  {tier.name}
+                </span>
+                <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                  {tier.threshold} pts
+                </span>
+                <ChevronDown
+                  className={cn(
+                    "h-4 w-4 text-muted-foreground/70 transition-transform",
+                    isOpen && "rotate-180",
+                  )}
+                />
+              </button>
+              {isOpen && (
+                <div className="border-t border-border/30 px-3 py-3">
+                  {!hasRewards && (
+                    <p className="text-xs text-muted-foreground/70">
+                      No rewards in this tier yet.
+                    </p>
+                  )}
+                  {hasRewards && (
+                    <>
+                      <ul className="space-y-2">
+                        {tier.rewards.map((r) => (
+                          <li
+                            key={r.id}
+                            className={cn(
+                              "flex items-center gap-2 text-sm",
+                              !reached && "opacity-70",
+                            )}
+                          >
+                            {r.emoji ? (
+                              <span className="text-base leading-none">
+                                {r.emoji}
+                              </span>
+                            ) : (
+                              <Gift
+                                className={cn(
+                                  "h-4 w-4 flex-none",
+                                  reached
+                                    ? "text-primary/70"
+                                    : "text-muted-foreground/50",
+                                )}
+                              />
+                            )}
+                            <span
+                              dir="auto"
+                              className="min-w-0 flex-1 truncate font-semibold"
+                            >
+                              {r.label}
+                            </span>
+                            {!reached && (
+                              <Lock
+                                className="h-3.5 w-3.5 flex-none text-muted-foreground/40"
+                                aria-label="Locked"
+                              />
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                      {/* Bodies are intentionally hidden everywhere in
+                       *  the catalog — the description reveals only when
+                       *  Besho commits to a claim. Picking is blind by
+                       *  design; the gamble is the point. */}
+                      <p className="mt-3 text-xs italic text-muted-foreground/70">
+                        Descriptions reveal after you claim.
+                      </p>
+                    </>
+                  )}
+                </div>
+              )}
             </div>
           );
         })}
       </div>
+      {weekState.unlockedTier && (
+        <div className="mt-4 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2.5">
+          <p className="text-sm font-semibold text-primary">
+            {weekState.unlockedTier.emoji ?? "🎁"}{" "}
+            {weekState.unlockedTier.name} unlocked this week.
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Claim opens once this week wraps (after Sat 23:59 Cairo). Push
+            higher before then if you can.
+          </p>
+        </div>
+      )}
       {nextTier && (
-        <p className="mt-3 text-[11px] text-muted-foreground">
+        <p className="mt-3 text-xs text-muted-foreground">
           <span className="font-semibold text-foreground">{gap}</span> more pts
           to {nextTier.name}.
         </p>
       )}
       {!nextTier && score > 0 && (
-        <p className="mt-3 text-[11px] text-muted-foreground">
+        <p className="mt-3 text-xs text-muted-foreground">
           Top tier reached. Hold the line.
         </p>
       )}
+      <p className="mt-2 text-xs text-muted-foreground/60">
+        Tap any tier to preview what&apos;s inside.
+      </p>
     </section>
   );
 }
@@ -462,7 +651,7 @@ function PriorWeekSection({
           <Gift className="h-4 w-4 text-muted-foreground/70" />
           Last week — {formatWeekRange(priorBesho.weekKey)}
         </h2>
-        <p className="text-xs text-muted-foreground">
+        <p className="text-sm text-muted-foreground">
           {headline} pts
           {penalized && (
             <>
@@ -486,9 +675,10 @@ function PriorWeekSection({
           <Gift className="h-4 w-4 text-primary/70" />
           Last week — {formatWeekRange(priorBesho.weekKey)}
         </h2>
-        <p className="text-xs text-muted-foreground">
-          {Math.max(0, priorBesho.displayedScore)} pts • Unlocked {tier.name}.
-          Awaiting her claim.
+        <p className="text-sm text-muted-foreground">
+          {Math.max(0, priorBesho.displayedScore)} pts • Unlocked{" "}
+          {tier.emoji && <span className="mr-1">{tier.emoji}</span>}
+          {tier.name}. Awaiting her claim.
         </p>
       </section>
     );
@@ -507,10 +697,14 @@ function ClaimPicker({
   priorBesho,
   tier,
   onRefresh,
+  testMode = false,
 }: {
+  /** Score state of the week being claimed against. Param name is
+   *  historical — it can be the current week when `testMode` is on. */
   priorBesho: ObedienceWeekState;
   tier: RewardTier;
   onRefresh: () => Promise<void>;
+  testMode?: boolean;
 }) {
   // She can pick from any tier whose threshold ≤ her unlocked tier.
   const claimableTiers = priorBesho.tiers.filter(
@@ -552,11 +746,16 @@ function ClaimPicker({
     <section className="rounded-2xl border border-primary/40 bg-primary/5 p-5 backdrop-blur-md shadow-xl shadow-black/30">
       <h2 className="mb-1 flex items-center gap-2 text-sm font-semibold">
         <Gift className="h-4 w-4 text-primary" />
-        Claim your reward
+        Claim your reward {testMode && "(test)"}
       </h2>
-      <p className="mb-4 text-xs text-muted-foreground">
-        {priorBesho.displayedScore} pts last week — {tier.name} unlocked.
-        Pick a reward at this tier or any below.
+      <p className="mb-1 text-sm text-muted-foreground">
+        {Math.max(0, priorBesho.displayedScore)} pts{" "}
+        {testMode ? "this week (test mode)" : "last week"} —{" "}
+        {tier.emoji && <span className="mr-1">{tier.emoji}</span>}
+        {tier.name} unlocked. Pick a reward at this tier or any below.
+      </p>
+      <p className="mb-4 text-xs italic text-muted-foreground/70">
+        Pick blind. The description reveals once you commit.
       </p>
 
       <div className="mb-3">
@@ -633,12 +832,15 @@ function RewardOption({
   checked: boolean;
   onSelect: () => void;
 }) {
+  // Body intentionally NOT shown in the picker. The description is the
+  // reveal — she commits blind, then sees what she got in
+  // ClaimStatusCard once the claim record exists.
   return (
     <button
       type="button"
       onClick={onSelect}
       className={cn(
-        "flex w-full items-start gap-3 rounded-lg border p-3 text-left transition-colors active:scale-[0.98]",
+        "flex w-full items-center gap-3 rounded-lg border p-3 text-left transition-colors active:scale-[0.98]",
         checked
           ? "border-primary/60 bg-primary/10"
           : "border-border/40 bg-card hover:border-border",
@@ -646,24 +848,24 @@ function RewardOption({
     >
       <span
         className={cn(
-          "mt-0.5 flex h-4 w-4 flex-none items-center justify-center rounded-full border-2",
+          "flex h-4 w-4 flex-none items-center justify-center rounded-full border-2",
           checked ? "border-primary bg-primary/30" : "border-border",
         )}
       >
         {checked && <span className="h-1.5 w-1.5 rounded-full bg-primary" />}
       </span>
-      {reward.emoji && (
-        <span className="mt-0.5 flex-none text-base leading-none">
+      {reward.emoji ? (
+        <span className="flex-none text-base leading-none">
           {reward.emoji}
         </span>
+      ) : (
+        <Gift className="h-4 w-4 flex-none text-primary/70" />
       )}
-      <span className="min-w-0 flex-1">
-        <span className="block text-sm font-semibold">{reward.label}</span>
-        {reward.body && (
-          <span className="mt-0.5 block text-xs text-muted-foreground">
-            {reward.body}
-          </span>
-        )}
+      <span
+        dir="auto"
+        className="min-w-0 flex-1 truncate text-sm font-semibold"
+      >
+        {reward.label}
       </span>
     </button>
   );
@@ -689,23 +891,33 @@ function ClaimStatusCard({ claim }: { claim: RewardClaim }) {
         Last week&apos;s claim
       </h2>
       <p className="text-xs text-muted-foreground">
-        {formatWeekRange(claim.weekKey)} • {claim.tierName}
+        {formatWeekRange(claim.weekKey)} •{" "}
+        {claim.tierEmoji && <span className="mr-1">{claim.tierEmoji}</span>}
+        {claim.tierName}
       </p>
       <p className="mt-2 flex items-center gap-2 text-sm font-semibold">
         {claim.rewardEmoji && (
           <span className="text-base leading-none">{claim.rewardEmoji}</span>
         )}
-        <span>{claim.rewardLabel}</span>
+        <span dir="auto">{claim.rewardLabel}</span>
       </p>
       {claim.rewardBody && (
-        <p className="mt-1 text-xs text-muted-foreground">{claim.rewardBody}</p>
+        <p
+          dir="auto"
+          className="mt-1 whitespace-pre-wrap text-sm text-muted-foreground"
+        >
+          {claim.rewardBody}
+        </p>
       )}
       <p className={cn("mt-3 text-xs font-bold uppercase tracking-wider", statusClass)}>
         {statusLabel}
       </p>
       {claim.sirNote && (
-        <p className="mt-1 text-xs text-muted-foreground">
-          Sir: {claim.sirNote}
+        <p className="mt-1 text-sm text-muted-foreground">
+          <span>Sir: </span>
+          <span dir="auto" className="whitespace-pre-wrap">
+            {claim.sirNote}
+          </span>
         </p>
       )}
     </section>
@@ -748,16 +960,23 @@ function PendingClaimCard({
         Pending claim
       </h2>
       <p className="text-xs text-muted-foreground">
-        {formatWeekRange(claim.weekKey)} • {claim.tierName} • {claim.claimedScore} pts
+        {formatWeekRange(claim.weekKey)} •{" "}
+        {claim.tierEmoji && <span className="mr-1">{claim.tierEmoji}</span>}
+        {claim.tierName} • {claim.claimedScore} pts
       </p>
       <p className="mt-2 flex items-center gap-2 text-sm font-semibold">
         {claim.rewardEmoji && (
           <span className="text-base leading-none">{claim.rewardEmoji}</span>
         )}
-        <span>{claim.rewardLabel}</span>
+        <span dir="auto">{claim.rewardLabel}</span>
       </p>
       {claim.rewardBody && (
-        <p className="mt-1 text-xs text-muted-foreground">{claim.rewardBody}</p>
+        <p
+          dir="auto"
+          className="mt-1 whitespace-pre-wrap text-sm text-muted-foreground"
+        >
+          {claim.rewardBody}
+        </p>
       )}
 
       <textarea
@@ -766,6 +985,7 @@ function PendingClaimCard({
         placeholder="Optional note (kitten will see this)"
         rows={2}
         maxLength={500}
+        dir="auto"
         className="mt-3 w-full rounded-lg border border-border/60 bg-input/50 px-3 py-2 text-sm placeholder:text-muted-foreground/60 focus:border-primary focus:outline-none"
       />
 
@@ -843,18 +1063,24 @@ function ClaimHistoryCard({ claims }: { claims: RewardClaim[] }) {
                 </span>
               </div>
               <div className="mt-1 flex items-center gap-2 text-sm font-semibold">
+                {c.tierEmoji && (
+                  <span className="text-base leading-none">{c.tierEmoji}</span>
+                )}
                 <span>{c.tierName} —</span>
                 {c.rewardEmoji && (
                   <span className="text-base leading-none">{c.rewardEmoji}</span>
                 )}
-                <span>{c.rewardLabel}</span>
+                <span dir="auto">{c.rewardLabel}</span>
               </div>
-              <div className="mt-0.5 text-[10px] text-muted-foreground/70">
+              <div className="mt-1 text-xs text-muted-foreground/70">
                 Claimed {formatRelative(c.requestedAt, now)}
               </div>
               {c.sirNote && (
-                <div className="mt-1 text-xs text-muted-foreground">
-                  Sir: {c.sirNote}
+                <div className="mt-1 text-sm text-muted-foreground">
+                  <span>Sir: </span>
+                  <span dir="auto" className="whitespace-pre-wrap">
+                    {c.sirNote}
+                  </span>
                 </div>
               )}
             </li>
@@ -923,13 +1149,18 @@ function HistoryRow({ entry }: { entry: RewardsHistoryEntry }) {
         </span>
       </div>
       <div className="mt-1 flex items-center justify-between gap-2 text-xs text-muted-foreground">
-        <span>{tier ? tier.name : "no tier"}</span>
+        <span className="flex items-center gap-1">
+          {tier?.emoji && <span>{tier.emoji}</span>}
+          <span>{tier ? tier.name : "no tier"}</span>
+        </span>
         {claim && (
           <span className="flex items-center gap-1.5">
             {claim.rewardEmoji && (
               <span className="text-sm leading-none">{claim.rewardEmoji}</span>
             )}
-            <span className="truncate">{claim.rewardLabel}</span>
+            <span dir="auto" className="truncate">
+              {claim.rewardLabel}
+            </span>
             <span
               className={cn(
                 "ml-1 font-bold uppercase tracking-wider",
