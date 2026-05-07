@@ -32,7 +32,23 @@ import {
 } from "@/lib/restraint";
 import { todayKeyCairo } from "@/lib/cairo-time";
 import { sendNotification } from "./notifications";
+import type { NotificationRecord } from "./notifications";
 import type { AuthFailureRecord } from "./auth";
+import type {
+  PermissionRequest,
+  PermissionQuotas,
+} from "./permissions";
+import {
+  PERMISSION_CATEGORIES,
+  DENIAL_REASONS,
+  DENIAL_REASON_COOLDOWN_HOURS,
+  type AutoDecideRule,
+  type DenialReason,
+  type PermissionCategory,
+  MAX_AUTO_RULES,
+  MAX_RULE_KEYWORDS,
+  MAX_RULE_KEYWORD_LENGTH,
+} from "@/lib/permissions-constants";
 import {
   recordObedienceEvent,
   recordObedienceEventForWeek,
@@ -615,16 +631,842 @@ export async function setRestraintState(
       );
     }
 
+    // Restraint history — ZSET capped at 200, every engage AND lift
+    // becomes an entry. Reason text only persists on engage; lift
+    // entries are timestamp + by only. Pipeline ZADD + ZREMRANGEBYRANK
+    // for the cap.
+    const ts = Date.now();
+    const historyEntry: RestraintHistoryEntry = {
+      action: on ? "engage" : "lift",
+      by: guard.session.author,
+      ts,
+      ...(on && trimmedNote ? { reason: trimmedNote } : {}),
+    };
+    try {
+      const pipeline = redis.pipeline();
+      pipeline.zadd(RESTRAINT_HISTORY_KEY, {
+        score: ts,
+        member: JSON.stringify(historyEntry),
+      });
+      pipeline.zremrangebyrank(
+        RESTRAINT_HISTORY_KEY,
+        0,
+        -RESTRAINT_HISTORY_CAP - 1,
+      );
+      await pipeline.exec();
+    } catch (err) {
+      // Best-effort — history is observability, not load-bearing.
+      logger.error("[admin] restraint history write failed", err);
+    }
+
     logger.interaction("[admin] restraint toggled", {
       on,
       by: guard.session.author,
       ...(trimmedNote ? { note: trimmedNote } : {}),
     });
     revalidatePath("/admin");
+    revalidatePath("/admin/restraint-history");
     return { success: true, on };
   } catch (err) {
     logger.error("[admin] restraint toggle failed", err);
     return { error: "Toggle failed." };
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Permissions admin — auto-rules + quotas read/write via JSON, plus
+// bulk force-decide for the pending queue. The /permissions modals
+// stay; this is an additional path for power-user editing.
+// ──────────────────────────────────────────────────────────────────
+
+const PERMISSIONS_INDEX = "permissions:index";
+const QUOTAS_KEY = "permissions:quotas";
+const AUTO_RULES_KEY = "permissions:auto-rules";
+const DENIED_HASHES_KEY = "permissions:denied-hashes";
+const permissionRecordKey = (id: string) => `permission:${id}`;
+const reaskBlockKey = (bodyHash: string) =>
+  `permission:reask-block:${bodyHash}`;
+
+function permissionBodyHash(body: string): string {
+  const normalized = body.toLowerCase().trim().replace(/\s+/g, " ");
+  let hash = 0;
+  for (let i = 0; i < normalized.length; i++) {
+    hash = (hash * 31 + normalized.charCodeAt(i)) >>> 0;
+  }
+  return hash.toString(36);
+}
+
+export interface PermissionsAdminBundle {
+  autoRules: AutoDecideRule[];
+  quotas: PermissionQuotas;
+  pendingCount: number;
+  pendingByCategory: Partial<Record<PermissionCategory, number>>;
+}
+
+export async function getPermissionsAdminBundle(): Promise<{
+  bundle?: PermissionsAdminBundle;
+  error?: string;
+}> {
+  const guard = await requireSir();
+  if (!guard.ok) return { error: guard.error };
+  try {
+    const [rules, quotas, ids] = await Promise.all([
+      redis.get<AutoDecideRule[]>(AUTO_RULES_KEY),
+      redis.get<PermissionQuotas>(QUOTAS_KEY),
+      redis.zrange<unknown[]>(PERMISSIONS_INDEX, 0, -1, { rev: true }),
+    ]);
+    const idStrs = (ids ?? []).map(String);
+    const records = idStrs.length
+      ? ((await redis.mget<PermissionRequest[]>(
+          ...idStrs.map((id) => permissionRecordKey(id)),
+        )) ?? [])
+      : [];
+    let pendingCount = 0;
+    const pendingByCategory: Partial<Record<PermissionCategory, number>> = {};
+    for (const r of records) {
+      if (!r) continue;
+      if (r.status !== "pending") continue;
+      pendingCount++;
+      if (r.category) {
+        pendingByCategory[r.category] =
+          (pendingByCategory[r.category] ?? 0) + 1;
+      }
+    }
+    return {
+      bundle: {
+        autoRules: rules ?? [],
+        quotas: quotas ?? { monthlyLimits: {} },
+        pendingCount,
+        pendingByCategory,
+      },
+    };
+  } catch (err) {
+    logger.error("[admin] permissions bundle read failed", err);
+    return { error: "Failed to load permissions admin bundle." };
+  }
+}
+
+/**
+ * Validates and saves a JSON-encoded auto-rules array. Mirrors the
+ * inline validator in `permissions.saveAutoRules` but operates on a
+ * raw JSON string so the `/admin/permissions` page can offer a
+ * power-user textarea + import path.
+ */
+export async function adminSaveAutoRulesJson(
+  json: string,
+): Promise<{ success?: boolean; error?: string; count?: number }> {
+  const guard = await requireSir();
+  if (!guard.ok) return { error: guard.error };
+  if (typeof json !== "string" || json.trim().length === 0) {
+    return { error: "JSON payload required." };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch (err) {
+    return {
+      error: `Invalid JSON: ${err instanceof Error ? err.message : "parse error"}.`,
+    };
+  }
+  if (!Array.isArray(parsed)) {
+    return { error: "Top-level value must be an array." };
+  }
+  if (parsed.length > MAX_AUTO_RULES) {
+    return { error: `Too many rules (max ${MAX_AUTO_RULES}).` };
+  }
+  for (const rawRule of parsed) {
+    const rule = rawRule as AutoDecideRule;
+    if (!rule || typeof rule !== "object") {
+      return { error: "Every rule must be an object." };
+    }
+    if (!rule.id || typeof rule.id !== "string") {
+      return { error: "Every rule needs a string id." };
+    }
+    if (typeof rule.enabled !== "boolean") {
+      return { error: `Rule ${rule.id} missing 'enabled' boolean.` };
+    }
+    if (rule.decision !== "approved" && rule.decision !== "denied") {
+      return { error: `Rule ${rule.id} decision must be approved or denied.` };
+    }
+    if (
+      rule.category !== undefined &&
+      !PERMISSION_CATEGORIES.includes(rule.category)
+    ) {
+      return { error: `Rule ${rule.id} has invalid category.` };
+    }
+    if (rule.priceMax !== undefined) {
+      if (
+        typeof rule.priceMax !== "number" ||
+        !Number.isFinite(rule.priceMax) ||
+        rule.priceMax < 0
+      ) {
+        return { error: `Rule ${rule.id} priceMax must be non-negative number.` };
+      }
+    }
+    if (rule.bodyContainsAny !== undefined) {
+      if (!Array.isArray(rule.bodyContainsAny)) {
+        return { error: `Rule ${rule.id} bodyContainsAny must be an array.` };
+      }
+      if (rule.bodyContainsAny.length > MAX_RULE_KEYWORDS) {
+        return {
+          error: `Rule ${rule.id} has too many keywords (max ${MAX_RULE_KEYWORDS}).`,
+        };
+      }
+      for (const kw of rule.bodyContainsAny) {
+        if (typeof kw !== "string" || kw.length === 0) {
+          return { error: `Rule ${rule.id} keywords must be non-empty strings.` };
+        }
+        if (kw.length > MAX_RULE_KEYWORD_LENGTH) {
+          return {
+            error: `Rule ${rule.id} keyword too long (max ${MAX_RULE_KEYWORD_LENGTH}).`,
+          };
+        }
+      }
+    }
+    if (
+      rule.denialReason !== undefined &&
+      !DENIAL_REASONS.includes(rule.denialReason)
+    ) {
+      return { error: `Rule ${rule.id} has invalid denial reason.` };
+    }
+    if (typeof rule.createdAt !== "number") {
+      return { error: `Rule ${rule.id} missing createdAt number.` };
+    }
+  }
+  try {
+    await redis.set(AUTO_RULES_KEY, parsed);
+    logger.interaction("[admin] auto-rules saved via JSON", {
+      by: guard.session.author,
+      count: (parsed as AutoDecideRule[]).length,
+    });
+    revalidatePath("/admin/permissions");
+    revalidatePath("/permissions");
+    return { success: true, count: (parsed as AutoDecideRule[]).length };
+  } catch (err) {
+    logger.error("[admin] auto-rules JSON save failed", err);
+    return { error: "Save failed." };
+  }
+}
+
+/**
+ * Validates and saves a JSON-encoded quotas object. Same shape as
+ * `PermissionQuotas`. Empty `monthlyLimits` is valid (clears every cap).
+ */
+export async function adminSaveQuotasJson(
+  json: string,
+): Promise<{ success?: boolean; error?: string }> {
+  const guard = await requireSir();
+  if (!guard.ok) return { error: guard.error };
+  if (typeof json !== "string" || json.trim().length === 0) {
+    return { error: "JSON payload required." };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch (err) {
+    return {
+      error: `Invalid JSON: ${err instanceof Error ? err.message : "parse error"}.`,
+    };
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { error: "Top-level value must be an object." };
+  }
+  const obj = parsed as Partial<PermissionQuotas>;
+  const monthlyLimits = obj.monthlyLimits ?? {};
+  if (typeof monthlyLimits !== "object" || Array.isArray(monthlyLimits)) {
+    return { error: "monthlyLimits must be an object." };
+  }
+  const cleanLimits: Partial<Record<PermissionCategory, number>> = {};
+  for (const [k, v] of Object.entries(monthlyLimits)) {
+    if (!PERMISSION_CATEGORIES.includes(k as PermissionCategory)) {
+      return { error: `Unknown category: ${k}.` };
+    }
+    if (typeof v !== "number" || !Number.isInteger(v) || v < 0 || v > 999) {
+      return { error: `Limit for ${k} must be integer 0-999.` };
+    }
+    if (v > 0) cleanLimits[k as PermissionCategory] = v;
+  }
+  let maxPending: number | undefined;
+  if (obj.maxPending !== undefined) {
+    if (
+      typeof obj.maxPending !== "number" ||
+      !Number.isInteger(obj.maxPending) ||
+      obj.maxPending < 0 ||
+      obj.maxPending > 99
+    ) {
+      return { error: "maxPending must be integer 0-99." };
+    }
+    if (obj.maxPending > 0) maxPending = obj.maxPending;
+  }
+  try {
+    const next: PermissionQuotas = {
+      monthlyLimits: cleanLimits,
+      ...(maxPending !== undefined && { maxPending }),
+    };
+    await redis.set(QUOTAS_KEY, next);
+    logger.interaction("[admin] quotas saved via JSON", {
+      by: guard.session.author,
+      monthlyLimits: cleanLimits,
+      maxPending,
+    });
+    revalidatePath("/admin/permissions");
+    revalidatePath("/permissions");
+    return { success: true };
+  } catch (err) {
+    logger.error("[admin] quotas JSON save failed", err);
+    return { error: "Save failed." };
+  }
+}
+
+export interface BulkDecideArgs {
+  /** Approve: minimum age in hours; pending requests older than this
+   *  get approved. Deny: ignored. */
+  olderThanHours?: number;
+  /** Deny only — narrows to a single category. */
+  category?: PermissionCategory;
+  /** Optional reply applied to every approved/denied record. */
+  reply?: string;
+  /** Deny only — drives re-ask cooldown via DENIAL_REASON_COOLDOWN_HOURS. */
+  reason?: DenialReason;
+}
+
+export interface BulkDecideResult {
+  success?: boolean;
+  error?: string;
+  approved?: number;
+  denied?: number;
+}
+
+/**
+ * Walks pending permission requests older than `olderThanHours`,
+ * mutates each to approved in a single pipeline. Optional reply
+ * applied verbatim. Auto-emit obedience event +1 per record (idempotent
+ * on id). One summary FCM to Besho instead of N per-claim FCMs.
+ */
+export async function bulkApprovePendingOlderThan(
+  args: BulkDecideArgs,
+): Promise<BulkDecideResult> {
+  const guard = await requireSir();
+  if (!guard.ok) return { error: guard.error };
+  const hours = Number(args.olderThanHours);
+  if (!Number.isFinite(hours) || hours < 1) {
+    return { error: "olderThanHours must be ≥ 1." };
+  }
+  const reply = (args.reply ?? "").trim().slice(0, 1000);
+  const cutoff = Date.now() - hours * 60 * 60 * 1000;
+  try {
+    const ids =
+      ((await redis.zrange<unknown[]>(PERMISSIONS_INDEX, 0, -1, {
+        rev: true,
+      })) ?? []).map(String);
+    if (!ids.length) return { success: true, approved: 0 };
+    const records =
+      (await redis.mget<PermissionRequest[]>(
+        ...ids.map((id) => permissionRecordKey(id)),
+      )) ?? [];
+    const targets: PermissionRequest[] = [];
+    for (const r of records) {
+      if (!r) continue;
+      if (r.status !== "pending") continue;
+      if (r.requestedAt > cutoff) continue;
+      targets.push(r);
+    }
+    if (targets.length === 0) return { success: true, approved: 0 };
+
+    const decidedAt = Date.now();
+    const pipeline = redis.pipeline();
+    for (const r of targets) {
+      const updated: PermissionRequest = {
+        ...r,
+        status: "approved",
+        decidedAt,
+        decidedBy: "T7SEN",
+      };
+      delete updated.reply;
+      delete updated.terms;
+      delete updated.denialReason;
+      if (reply) updated.reply = reply;
+      pipeline.set(permissionRecordKey(r.id), updated);
+    }
+    await pipeline.exec();
+
+    // Obedience: +1 per approval, fire-and-forget. eventId = request id
+    // so retries are idempotent at the ZSET layer.
+    for (const r of targets) {
+      void recordObedienceEvent(
+        "Besho",
+        "permission_approved",
+        r.id,
+        decidedAt,
+      );
+    }
+
+    // Single summary FCM.
+    const noun = targets.length === 1 ? "request" : "requests";
+    void sendNotification("Besho", {
+      title: `✓ ${targets.length} ${noun} approved`,
+      body: reply
+        ? `${targets.length} pending ${noun} bulk-approved. Sir's note: "${reply.slice(0, 120)}"`
+        : `${targets.length} pending ${noun} bulk-approved by Sir.`,
+      url: "/permissions",
+    }).catch(() => {});
+
+    logger.interaction("[admin] bulk approved pending permissions", {
+      by: guard.session.author,
+      count: targets.length,
+      olderThanHours: hours,
+      withReply: reply.length > 0,
+    });
+    revalidatePath("/admin/permissions");
+    revalidatePath("/permissions");
+    return { success: true, approved: targets.length };
+  } catch (err) {
+    logger.error("[admin] bulk approve failed", err);
+    return { error: "Bulk approve failed." };
+  }
+}
+
+/**
+ * Denies every pending request matching `category`. Optional `reason`
+ * drives the re-ask cooldown per `DENIAL_REASON_COOLDOWN_HOURS`. One
+ * summary FCM to Besho.
+ */
+export async function bulkDenyPendingByCategory(
+  args: BulkDecideArgs,
+): Promise<BulkDecideResult> {
+  const guard = await requireSir();
+  if (!guard.ok) return { error: guard.error };
+  if (!args.category || !PERMISSION_CATEGORIES.includes(args.category)) {
+    return { error: "Valid category required." };
+  }
+  let reason: DenialReason | undefined;
+  if (args.reason) {
+    if (!DENIAL_REASONS.includes(args.reason)) {
+      return { error: "Invalid denial reason." };
+    }
+    reason = args.reason;
+  }
+  const reply = (args.reply ?? "").trim().slice(0, 1000);
+  try {
+    const ids =
+      ((await redis.zrange<unknown[]>(PERMISSIONS_INDEX, 0, -1, {
+        rev: true,
+      })) ?? []).map(String);
+    if (!ids.length) return { success: true, denied: 0 };
+    const records =
+      (await redis.mget<PermissionRequest[]>(
+        ...ids.map((id) => permissionRecordKey(id)),
+      )) ?? [];
+    const targets: PermissionRequest[] = [];
+    for (const r of records) {
+      if (!r) continue;
+      if (r.status !== "pending") continue;
+      if (r.category !== args.category) continue;
+      targets.push(r);
+    }
+    if (targets.length === 0) return { success: true, denied: 0 };
+
+    const decidedAt = Date.now();
+    const cooldownHours =
+      DENIAL_REASON_COOLDOWN_HOURS[reason ?? "default"] ?? 12;
+    const pipeline = redis.pipeline();
+    for (const r of targets) {
+      const updated: PermissionRequest = {
+        ...r,
+        status: "denied",
+        decidedAt,
+        decidedBy: "T7SEN",
+      };
+      delete updated.reply;
+      delete updated.terms;
+      delete updated.denialReason;
+      if (reply) updated.reply = reply;
+      if (reason) updated.denialReason = reason;
+      pipeline.set(permissionRecordKey(r.id), updated);
+      const bodyHash = permissionBodyHash(r.body);
+      pipeline.sadd(DENIED_HASHES_KEY, bodyHash);
+      if (cooldownHours > 0) {
+        pipeline.set(reaskBlockKey(bodyHash), "1", {
+          ex: cooldownHours * 3600,
+        });
+      }
+    }
+    await pipeline.exec();
+
+    const noun = targets.length === 1 ? "request" : "requests";
+    void sendNotification("Besho", {
+      title: `✗ ${targets.length} ${args.category} ${noun} denied`,
+      body: reply
+        ? `${targets.length} ${args.category} ${noun} denied by Sir. "${reply.slice(0, 120)}"`
+        : `${targets.length} ${args.category} ${noun} denied in bulk by Sir.`,
+      url: "/permissions",
+    }).catch(() => {});
+
+    logger.interaction("[admin] bulk denied pending by category", {
+      by: guard.session.author,
+      count: targets.length,
+      category: args.category,
+      reason,
+      withReply: reply.length > 0,
+    });
+    revalidatePath("/admin/permissions");
+    revalidatePath("/permissions");
+    return { success: true, denied: targets.length };
+  } catch (err) {
+    logger.error("[admin] bulk deny failed", err);
+    return { error: "Bulk deny failed." };
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Cross-feature search — single substring search across the four
+// primary feature indexes (notes / rules / tasks / ledger).
+// ──────────────────────────────────────────────────────────────────
+
+export type CrossFeatureKind = "note" | "rule" | "task" | "ledger";
+
+export interface CrossFeatureHit {
+  kind: CrossFeatureKind;
+  id: string;
+  /** Short label — title for rules/tasks/ledger, content excerpt for notes. */
+  label: string;
+  /** Body excerpt highlighting the match context. */
+  preview: string;
+  /** ms timestamp the record sorted on (createdAt or equivalent). */
+  ts: number;
+  /** Path to navigate the user to the source page. */
+  href: string;
+}
+
+export interface CrossFeatureSearchResult {
+  query?: string;
+  hits?: CrossFeatureHit[];
+  scanned?: { notes: number; rules: number; tasks: number; ledger: number };
+  /** Set when the query was empty/too short. */
+  error?: string;
+}
+
+const SEARCH_INDEX_LIMIT = 500;
+const SEARCH_HIT_CAP = 50;
+const SEARCH_PREVIEW_LEN = 140;
+
+function buildExcerpt(haystack: string, needle: string): string {
+  const lower = haystack.toLowerCase();
+  const i = lower.indexOf(needle.toLowerCase());
+  if (i < 0) {
+    return haystack.length > SEARCH_PREVIEW_LEN
+      ? `${haystack.slice(0, SEARCH_PREVIEW_LEN - 1)}…`
+      : haystack;
+  }
+  const radius = Math.floor(SEARCH_PREVIEW_LEN / 2);
+  const start = Math.max(0, i - radius);
+  const end = Math.min(haystack.length, i + needle.length + radius);
+  const slice = haystack.slice(start, end).replace(/\s+/g, " ").trim();
+  return `${start > 0 ? "…" : ""}${slice}${end < haystack.length ? "…" : ""}`;
+}
+
+export async function searchAcrossFeatures(
+  query: string,
+): Promise<CrossFeatureSearchResult> {
+  const guard = await requireSir();
+  if (!guard.ok) return { error: guard.error };
+  const q = (query ?? "").trim();
+  if (q.length < 2) return { error: "Query must be at least 2 characters." };
+  if (q.length > 200) return { error: "Query too long (max 200)." };
+
+  try {
+    const [noteIds, ruleIds, taskIds, ledgerIds] = await Promise.all([
+      redis.zrange<unknown[]>("notes:index", 0, SEARCH_INDEX_LIMIT - 1, {
+        rev: true,
+      }),
+      redis.zrange<unknown[]>("rules:index", 0, SEARCH_INDEX_LIMIT - 1, {
+        rev: true,
+      }),
+      redis.zrange<unknown[]>("tasks:index", 0, SEARCH_INDEX_LIMIT - 1, {
+        rev: true,
+      }),
+      redis.zrange<unknown[]>("ledger:index", 0, SEARCH_INDEX_LIMIT - 1, {
+        rev: true,
+      }),
+    ]);
+    const nIds = (noteIds ?? []).map(String);
+    const rIds = (ruleIds ?? []).map(String);
+    const tIds = (taskIds ?? []).map(String);
+    const lIds = (ledgerIds ?? []).map(String);
+
+    const [notes, rules, tasks, ledgers] = await Promise.all([
+      nIds.length
+        ? redis.mget<({ id?: string; content?: string; createdAt?: number } | null)[]>(
+            ...nIds.map((id) => `note:${id}`),
+          )
+        : Promise.resolve([]),
+      rIds.length
+        ? redis.mget<
+            ({
+              id?: string;
+              title?: string;
+              description?: string;
+              createdAt?: number;
+            } | null)[]
+          >(...rIds.map((id) => `rule:${id}`))
+        : Promise.resolve([]),
+      tIds.length
+        ? redis.mget<
+            ({
+              id?: string;
+              title?: string;
+              description?: string;
+              createdAt?: number;
+            } | null)[]
+          >(...tIds.map((id) => `task:${id}`))
+        : Promise.resolve([]),
+      lIds.length
+        ? redis.mget<
+            ({
+              id?: string;
+              title?: string;
+              description?: string;
+              category?: string;
+              timestamp?: number;
+            } | null)[]
+          >(...lIds.map((id) => `ledger:${id}`))
+        : Promise.resolve([]),
+    ]);
+
+    const lower = q.toLowerCase();
+    const hits: CrossFeatureHit[] = [];
+
+    for (let i = 0; i < (notes ?? []).length; i++) {
+      const n = notes![i];
+      if (!n) continue;
+      const content = n.content ?? "";
+      if (!content.toLowerCase().includes(lower)) continue;
+      const label = content.slice(0, 60).replace(/\s+/g, " ").trim();
+      hits.push({
+        kind: "note",
+        id: nIds[i],
+        label: label || "(empty note)",
+        preview: buildExcerpt(content, q),
+        ts: n.createdAt ?? 0,
+        href: "/notes",
+      });
+    }
+    for (let i = 0; i < (rules ?? []).length; i++) {
+      const r = rules![i];
+      if (!r) continue;
+      const haystack = `${r.title ?? ""}\n${r.description ?? ""}`;
+      if (!haystack.toLowerCase().includes(lower)) continue;
+      hits.push({
+        kind: "rule",
+        id: rIds[i],
+        label: r.title ?? "(untitled rule)",
+        preview: buildExcerpt(haystack, q),
+        ts: r.createdAt ?? 0,
+        href: "/rules",
+      });
+    }
+    for (let i = 0; i < (tasks ?? []).length; i++) {
+      const t = tasks![i];
+      if (!t) continue;
+      const haystack = `${t.title ?? ""}\n${t.description ?? ""}`;
+      if (!haystack.toLowerCase().includes(lower)) continue;
+      hits.push({
+        kind: "task",
+        id: tIds[i],
+        label: t.title ?? "(untitled task)",
+        preview: buildExcerpt(haystack, q),
+        ts: t.createdAt ?? 0,
+        href: "/tasks",
+      });
+    }
+    for (let i = 0; i < (ledgers ?? []).length; i++) {
+      const l = ledgers![i];
+      if (!l) continue;
+      const haystack = `${l.title ?? ""}\n${l.description ?? ""}\n${l.category ?? ""}`;
+      if (!haystack.toLowerCase().includes(lower)) continue;
+      hits.push({
+        kind: "ledger",
+        id: lIds[i],
+        label: l.title ?? "(untitled entry)",
+        preview: buildExcerpt(haystack, q),
+        ts: l.timestamp ?? 0,
+        href: "/ledger",
+      });
+    }
+
+    hits.sort((a, b) => b.ts - a.ts);
+    return {
+      query: q,
+      hits: hits.slice(0, SEARCH_HIT_CAP),
+      scanned: {
+        notes: nIds.length,
+        rules: rIds.length,
+        tasks: tIds.length,
+        ledger: lIds.length,
+      },
+    };
+  } catch (err) {
+    logger.error("[admin] cross-feature search failed", err);
+    return { error: "Search failed." };
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Outbound notification audit — Sir reads BOTH authors' drawer
+// histories side-by-side. Lets him verify "did my recent push
+// actually land in her drawer?" Currently each author only sees
+// their own drawer via getNotificationHistory.
+// ──────────────────────────────────────────────────────────────────
+
+export interface NotificationAuditPair {
+  author: Author;
+  records: NotificationRecord[];
+}
+
+export interface NotificationAuditResult {
+  pairs?: NotificationAuditPair[];
+  generatedAt?: number;
+  error?: string;
+}
+
+const NOTIFICATION_HISTORY_MAX = 50;
+const notificationHistoryKey = (author: Author) => `notifications:${author}`;
+
+export async function getOutboundNotificationAudit(): Promise<NotificationAuditResult> {
+  const guard = await requireSir();
+  if (!guard.ok) return { error: guard.error };
+  try {
+    const authors: Author[] = ["T7SEN", "Besho"];
+    const lists = await Promise.all(
+      authors.map((a) =>
+        redis.lrange<NotificationRecord>(
+          notificationHistoryKey(a),
+          0,
+          NOTIFICATION_HISTORY_MAX - 1,
+        ),
+      ),
+    );
+    const pairs: NotificationAuditPair[] = authors.map((author, i) => ({
+      author,
+      records: lists[i] ?? [],
+    }));
+    return { pairs, generatedAt: Date.now() };
+  } catch (err) {
+    logger.error("[admin] notification audit read failed", err);
+    return { error: "Failed to read notification history." };
+  }
+}
+
+/**
+ * Re-fires a notification by id from the target author's drawer.
+ * Calls `sendNotification` with the recorded title/body/url, which
+ * lpushes a fresh entry and attempts FCM. The original entry isn't
+ * removed — the new fire is additive. Sir-only.
+ */
+export async function resendNotification(
+  author: Author,
+  notificationId: string,
+): Promise<{ success?: boolean; error?: string }> {
+  const guard = await requireSir();
+  if (!guard.ok) return { error: guard.error };
+  if (author !== "T7SEN" && author !== "Besho") {
+    return { error: "Invalid author." };
+  }
+  if (!notificationId || typeof notificationId !== "string") {
+    return { error: "Invalid notification id." };
+  }
+  try {
+    const records = await redis.lrange<NotificationRecord>(
+      notificationHistoryKey(author),
+      0,
+      NOTIFICATION_HISTORY_MAX - 1,
+    );
+    const target = (records ?? []).find((r) => r?.id === notificationId);
+    if (!target) {
+      return { error: "Notification not found in recent history." };
+    }
+    await sendNotification(author, {
+      title: target.title,
+      body: target.body,
+      url: target.url,
+    });
+    logger.interaction("[admin] notification re-sent", {
+      by: guard.session.author,
+      to: author,
+      originalId: notificationId,
+    });
+    return { success: true };
+  } catch (err) {
+    logger.error("[admin] notification re-send failed", err);
+    return { error: "Re-send failed." };
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Restraint history — small ZSET log of engage/lift transitions.
+// ──────────────────────────────────────────────────────────────────
+
+export const RESTRAINT_HISTORY_KEY = "restraint:history";
+const RESTRAINT_HISTORY_CAP = 200;
+
+export interface RestraintHistoryEntry {
+  action: "engage" | "lift";
+  /** Always Sir at the moment — only Sir can toggle. Kept generic for
+   *  future-proofing if the toggle ever moves. */
+  by: Author;
+  ts: number;
+  /** Engage entries may carry the optional reason note; lift entries
+   *  never do. */
+  reason?: string;
+}
+
+export interface RestraintHistoryResult {
+  entries?: RestraintHistoryEntry[];
+  generatedAt?: number;
+  error?: string;
+}
+
+/**
+ * Reads the restraint history ZSET newest-first up to `limit`.
+ * Sir-only — the audit is private. Limit is clamped to 1..200.
+ */
+export async function getRestraintHistory(
+  limit: number = 50,
+): Promise<RestraintHistoryResult> {
+  const guard = await requireSir();
+  if (!guard.ok) return { error: guard.error };
+  const safeLimit = Math.max(1, Math.min(RESTRAINT_HISTORY_CAP, Math.floor(limit)));
+  try {
+    const raws = (await redis.zrange<unknown[]>(
+      RESTRAINT_HISTORY_KEY,
+      0,
+      safeLimit - 1,
+      { rev: true },
+    )) ?? [];
+    const entries: RestraintHistoryEntry[] = [];
+    for (const raw of raws) {
+      let parsed: RestraintHistoryEntry | null = null;
+      if (typeof raw === "string") {
+        try {
+          parsed = JSON.parse(raw) as RestraintHistoryEntry;
+        } catch {
+          parsed = null;
+        }
+      } else if (raw && typeof raw === "object") {
+        parsed = raw as RestraintHistoryEntry;
+      }
+      if (
+        parsed &&
+        (parsed.action === "engage" || parsed.action === "lift") &&
+        typeof parsed.ts === "number"
+      ) {
+        entries.push(parsed);
+      }
+    }
+    return { entries, generatedAt: Date.now() };
+  } catch (err) {
+    logger.error("[admin] restraint history read failed", err);
+    return { error: "Failed to read history." };
   }
 }
 

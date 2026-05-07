@@ -4,20 +4,25 @@ import {
   ArrowLeft,
   Award,
   BarChart3,
+  Bell,
   CalendarHeart,
+  Clock,
   Database,
   Download,
   Eye,
   HeartPulse,
   KeyRound,
+  Lock,
   Send,
   ShieldAlert,
+  ShieldCheck,
   Smartphone,
   Smile,
   Trash2,
 } from "lucide-react";
 import { SummonButton } from "@/components/admin/summon-button";
 import { RestraintToggle } from "@/components/admin/restraint-toggle";
+import { CrossFeatureSearch } from "@/components/admin/cross-feature-search";
 import { RefreshListenerForServerPage } from "@/components/refresh-listener";
 import { getDeployInfo, type DeployInfo } from "@/app/actions/admin";
 
@@ -101,6 +106,30 @@ const TOOLS = [
     Icon: Award,
   },
   {
+    href: "/admin/permissions",
+    title: "Permissions admin",
+    description: "Auto-rules + quotas (JSON), bulk decide pending.",
+    Icon: ShieldCheck,
+  },
+  {
+    href: "/admin/notifications",
+    title: "Notification audit",
+    description: "Both drawers side-by-side; re-send any prior push.",
+    Icon: Bell,
+  },
+  {
+    href: "/admin/restraint-history",
+    title: "Restraint history",
+    description: "Engage / lift transitions with timestamps + reasons.",
+    Icon: Lock,
+  },
+  {
+    href: "/admin/timezone",
+    title: "Timezone converter",
+    description: "Cairo ↔ Tabuk picker for visit planning.",
+    Icon: Clock,
+  },
+  {
     href: "/admin/redis",
     title: "Redis inspector",
     description: "Read-only probe by exact key. Type, TTL, capped preview.",
@@ -146,6 +175,8 @@ export default async function AdminLandingPage() {
 
       <RestraintToggle />
       <SummonButton />
+
+      <CrossFeatureSearch />
 
       <div className="grid gap-4 md:grid-cols-2 md:gap-6">
         {TOOLS.map(({ href, title, description, Icon }) => (

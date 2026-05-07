@@ -291,8 +291,9 @@ For features with composite IDs, the `TrashEntry.id` joins parts with `:` (e.g. 
 | Key                    | Type   | Description                                                  |
 | ---------------------- | ------ | ------------------------------------------------------------ |
 | `mode:restraint:Besho` | STRING | Present (`"on"`) when Besho is on read-only restraint. Absent otherwise. |
+| `restraint:history`    | ZSET   | Capped 200. Score = `ts`, member = JSON `RestraintHistoryEntry` (`{ action, by, ts, reason? }`). Every engage AND lift becomes an entry; reason text persists only on engage |
 
-Read via `assertWriteAllowed(author)` in `src/lib/restraint.ts` (5s in-process cache). Sir is never restrained — the helper short-circuits before the Redis read for `T7SEN`. Safeword is intentionally exempt and stays callable. Toggled from `setRestraintState(on)` (Sir-only) in `src/app/actions/admin.ts`.
+Read via `assertWriteAllowed(author)` in `src/lib/restraint.ts` (5s in-process cache). Sir is never restrained — the helper short-circuits before the Redis read for `T7SEN`. Safeword is intentionally exempt and stays callable. Toggled from `setRestraintState(on, note?)` (Sir-only) in `src/app/actions/admin.ts`. Each toggle pipelines the flag write + a `ZADD` to `restraint:history` + `ZREMRANGEBYRANK` to keep the cap. Read via `getRestraintHistory(limit)` (Sir-only), surfaced on `/admin/restraint-history`.
 
 **Per-action guard pattern** (every Besho-writable action):
 
