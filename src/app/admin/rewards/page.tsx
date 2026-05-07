@@ -161,6 +161,7 @@ export default function AdminRewardsPage() {
             />
             <TestModeToggle />
             <ManualAdjustEditor onSaved={fetchSnapshot} />
+            <ScoreSimulator snapshot={snapshot} />
             <BulkClaimOpsEditor onSaved={fetchSnapshot} />
             <EventLogViewer
               initialWeekKey={snapshot.besho.currentWeek.weekKey}
@@ -1278,6 +1279,273 @@ function BulkClaimOpsEditor({
       {msg && <p className="mt-3 text-sm text-emerald-400">{msg}</p>}
       {err && <p className="mt-3 text-sm text-destructive">{err}</p>}
     </section>
+  );
+}
+
+// ── Score simulator ──────────────────────────────────────────────────────
+
+/**
+ * Pure-client what-if calculator for kitten's current week. Reads
+ * her current `rawScore` + `multiplier` + `streakEntering` from the
+ * snapshot, lets Sir add hypothetical events, recomputes
+ * displayedScore + unlockedTier locally. No Redis writes.
+ *
+ * Useful when calibrating weight values, when deciding whether a
+ * manual_adjust would push her above/below the streak threshold,
+ * or when answering "what would the tier be if I logged a punishment
+ * right now?" without firing the real event.
+ */
+function ScoreSimulator({ snapshot }: { snapshot: ObedienceAdminSnapshot }) {
+  const baseScore = snapshot.besho.currentWeek.rawScore;
+  const multiplier =
+    snapshot.multipliers[
+      Math.min(snapshot.besho.streak, snapshot.multipliers.length - 1)
+    ] ?? 1;
+  const tiers = [...snapshot.tiers].sort((a, b) => a.threshold - b.threshold);
+  const streakThreshold = snapshot.streakThreshold;
+
+  // Hypothetical events: count per type (Sir presses + and − to nudge).
+  const [adjustments, setAdjustments] = useState<
+    Partial<Record<ObedienceEventType, number>>
+  >({});
+  // Optional manual override on top of the canonical weight (mirrors
+  // adminAdjustScore's signed-points input). Captured here for the
+  // simulation only; doesn't fire anything.
+  const [manualPoints, setManualPoints] = useState<string>("");
+
+  const reset = () => {
+    void vibrate(15, "light");
+    setAdjustments({});
+    setManualPoints("");
+  };
+
+  const bump = (type: ObedienceEventType, delta: number) => {
+    void vibrate(15, "light");
+    setAdjustments((prev) => {
+      const next = { ...prev };
+      const current = next[type] ?? 0;
+      const updated = current + delta;
+      if (updated === 0) {
+        delete next[type];
+      } else {
+        next[type] = updated;
+      }
+      return next;
+    });
+  };
+
+  // Compute hypothetical raw delta from the adjustments map.
+  let hypotheticalRawDelta = 0;
+  for (const [t, count] of Object.entries(adjustments)) {
+    const weight = snapshot.weights[t as ObedienceEventType] ?? 0;
+    hypotheticalRawDelta += weight * (count ?? 0);
+  }
+  const manualPointsNum = Number(manualPoints);
+  if (Number.isFinite(manualPointsNum) && manualPoints.trim() !== "") {
+    hypotheticalRawDelta += manualPointsNum;
+  }
+
+  const newRaw = baseScore + hypotheticalRawDelta;
+  const newDisplayed = Math.max(0, Math.round(newRaw * multiplier));
+  const newTier = [...tiers]
+    .reverse()
+    .find((t) => newDisplayed >= t.threshold);
+  const baseDisplayed = Math.max(0, Math.round(baseScore * multiplier));
+  const baseTier = [...tiers]
+    .reverse()
+    .find((t) => baseDisplayed >= t.threshold);
+  const tierChanged =
+    (baseTier?.id ?? null) !== (newTier?.id ?? null);
+  const willMakeStreak = newDisplayed >= streakThreshold;
+  const wouldMakeStreak = baseDisplayed >= streakThreshold;
+  const streakDelta = willMakeStreak !== wouldMakeStreak;
+
+  const hasAdjustments =
+    Object.keys(adjustments).length > 0 ||
+    (manualPoints.trim() !== "" && Number.isFinite(manualPointsNum));
+
+  return (
+    <section className="rounded-2xl border border-border/40 bg-card p-5">
+      <h2 className="mb-3 text-sm font-semibold">Score simulator</h2>
+      <p className="mb-4 text-xs text-muted-foreground">
+        Hypothetical recompute against kitten&apos;s current week. No Redis
+        writes; pure client math against the snapshot. Useful for
+        &ldquo;what if I add a punishment right now?&rdquo; before
+        firing it.
+      </p>
+
+      <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-4">
+        <SimStat label="Base raw" value={baseScore.toString()} />
+        <SimStat label="Base displayed" value={baseDisplayed.toString()} />
+        <SimStat
+          label="Base tier"
+          value={baseTier ? `${baseTier.emoji ?? ""}${baseTier.name}` : "—"}
+        />
+        <SimStat label="Multiplier" value={`×${multiplier.toFixed(2)}`} />
+      </div>
+
+      <div className="space-y-2">
+        {OBEDIENCE_EVENT_TYPES.filter((t) => t !== "manual_adjust").map(
+          (type) => {
+            const weight = snapshot.weights[type] ?? 0;
+            const count = adjustments[type] ?? 0;
+            return (
+              <div
+                key={type}
+                className="grid grid-cols-[1fr_auto_auto_auto] items-center gap-2 rounded-lg border border-border/30 bg-card/40 px-2.5 py-1.5 text-xs"
+              >
+                <span className="truncate">
+                  {OBEDIENCE_EVENT_LABELS[type]}{" "}
+                  <span
+                    className={cn(
+                      "font-mono tabular-nums",
+                      weight > 0
+                        ? "text-emerald-400"
+                        : weight < 0
+                          ? "text-rose-400"
+                          : "text-muted-foreground/70",
+                    )}
+                  >
+                    ({weight > 0 ? `+${weight}` : weight})
+                  </span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => bump(type, -1)}
+                  disabled={count === 0}
+                  className="flex h-6 w-6 items-center justify-center rounded border border-border/40 text-muted-foreground transition-colors hover:text-foreground active:scale-90 disabled:opacity-30"
+                  aria-label={`Remove one ${type}`}
+                >
+                  −
+                </button>
+                <span className="w-8 text-center font-mono text-sm tabular-nums">
+                  {count}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => bump(type, +1)}
+                  className="flex h-6 w-6 items-center justify-center rounded border border-border/40 text-muted-foreground transition-colors hover:text-foreground active:scale-90"
+                  aria-label={`Add one ${type}`}
+                >
+                  +
+                </button>
+              </div>
+            );
+          },
+        )}
+      </div>
+
+      <div className="mt-3 flex items-center gap-2">
+        <Field label="Manual adjust (signed pts)">
+          <input
+            type="number"
+            inputMode="numeric"
+            value={manualPoints}
+            onChange={(e) => setManualPoints(e.target.value)}
+            placeholder="e.g. -5"
+            className="w-32 rounded border border-border/60 bg-input/40 px-2 py-1 text-sm tabular-nums focus:border-primary focus:outline-none"
+          />
+        </Field>
+        {hasAdjustments && (
+          <button
+            type="button"
+            onClick={reset}
+            className="ml-auto self-end rounded-full border border-border/40 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground active:scale-95"
+          >
+            Reset
+          </button>
+        )}
+      </div>
+
+      {/* Result */}
+      <div
+        className={cn(
+          "mt-5 rounded-2xl border p-4 transition-colors",
+          !hasAdjustments
+            ? "border-border/30 bg-card/40"
+            : tierChanged || streakDelta
+              ? newTier && newDisplayed > baseDisplayed
+                ? "border-emerald-400/40 bg-emerald-400/5"
+                : "border-rose-500/40 bg-rose-500/5"
+              : "border-primary/30 bg-primary/5",
+        )}
+      >
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+          <SimStat
+            label="New raw"
+            value={`${newRaw} (${hypotheticalRawDelta >= 0 ? "+" : ""}${hypotheticalRawDelta})`}
+            highlight={hypotheticalRawDelta !== 0}
+          />
+          <SimStat
+            label="New displayed"
+            value={`${newDisplayed} (${newDisplayed - baseDisplayed >= 0 ? "+" : ""}${newDisplayed - baseDisplayed})`}
+            highlight={newDisplayed !== baseDisplayed}
+          />
+          <SimStat
+            label="New tier"
+            value={newTier ? `${newTier.emoji ?? ""}${newTier.name}` : "—"}
+            highlight={tierChanged}
+          />
+          <SimStat
+            label={`Streak (≥${streakThreshold})`}
+            value={willMakeStreak ? "would clear" : "would NOT clear"}
+            highlight={streakDelta}
+          />
+        </div>
+        {(tierChanged || streakDelta) && (
+          <p className="mt-3 text-xs">
+            {tierChanged && (
+              <span className="block">
+                Tier crossing:{" "}
+                <span className="font-bold">
+                  {baseTier?.name ?? "no tier"}
+                </span>{" "}
+                →{" "}
+                <span className="font-bold">{newTier?.name ?? "no tier"}</span>
+              </span>
+            )}
+            {streakDelta && (
+              <span className="block">
+                Streak threshold:{" "}
+                <span className="font-bold">
+                  {wouldMakeStreak ? "clears now" : "fails now"}
+                </span>{" "}
+                →{" "}
+                <span className="font-bold">
+                  {willMakeStreak ? "would clear" : "would fail"}
+                </span>
+              </span>
+            )}
+          </p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function SimStat({
+  label,
+  value,
+  highlight,
+}: {
+  label: string;
+  value: string;
+  highlight?: boolean;
+}) {
+  return (
+    <div>
+      <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground/70">
+        {label}
+      </p>
+      <p
+        className={cn(
+          "mt-0.5 truncate text-sm font-bold tabular-nums",
+          highlight ? "text-foreground" : "text-muted-foreground",
+        )}
+      >
+        {value}
+      </p>
+    </div>
   );
 }
 

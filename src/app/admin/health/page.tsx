@@ -319,6 +319,10 @@ export default function HealthPage() {
                 )}
               </Section>
 
+              <Section title="Time integrity">
+                <TimeIntegrity now={now} />
+              </Section>
+
               <Section title="Notes index integrity">
                 <Diag
                   label="Index size"
@@ -1304,6 +1308,94 @@ function Section({
       </h2>
       <ul className="space-y-2">{children}</ul>
     </section>
+  );
+}
+
+// ── Time integrity ───────────────────────────────────────────────────────
+
+/**
+ * Diagnostic block confirming the server clock + Cairo offset machinery
+ * is producing sensible values. Catches OS clock skew, stale ICU time
+ * zone tables, or anything weird that would corrupt date keys.
+ *
+ * Computes:
+ *   - Cairo offset right now (should be UTC+2 or UTC+3 depending on DST)
+ *   - Hours-into-Cairo-day (via Date.now() − cairoMidnightMs(today))
+ *   - Tomorrow's Cairo midnight (sanity check the rollover math)
+ *
+ * "Expected offset" hardcodes Egypt's DST rules so a mismatch flags
+ * either a runtime ICU table issue or a real DST policy change.
+ */
+function TimeIntegrity({ now }: { now: number }) {
+  const cairoOffsetMin = tzOffsetMinutes(ZONES.cairo.id, now);
+  const cairoOffsetH = cairoOffsetMin / 60;
+  const offsetLabel =
+    cairoOffsetH === Math.floor(cairoOffsetH)
+      ? `UTC+${cairoOffsetH}`
+      : `UTC+${cairoOffsetH.toFixed(2)}`;
+
+  // Egypt DST: last Friday April → last Thursday October.
+  // We approximate: DST runs late-April through late-October.
+  // Computed against UTC date (DST changes happen at Cairo midnight,
+  // so UTC month is a close-enough proxy at this scale).
+  const utcMonth = new Date(now).getUTCMonth(); // 0=Jan
+  const expectedDST = utcMonth >= 3 && utcMonth <= 9; // April..October
+  const expectedOffsetH = expectedDST ? 3 : 2;
+  const offsetMatches = cairoOffsetH === expectedOffsetH;
+
+  // Hours into Cairo day.
+  const cairoDate = dateKeyInZone(ZONES.cairo.id, now);
+  const cairoMidnightMs = tzWallClockToUtcMs(
+    ZONES.cairo.id,
+    cairoDate,
+    "00:00",
+  );
+  const msIntoDay = now - cairoMidnightMs;
+  const hoursIntoDay = msIntoDay / 3_600_000;
+  const sensibleHours = hoursIntoDay >= 0 && hoursIntoDay < 24.001;
+
+  const tomorrow = addDaysToKey(cairoDate, 1);
+  const tomorrowMidnightMs = tzWallClockToUtcMs(
+    ZONES.cairo.id,
+    tomorrow,
+    "00:00",
+  );
+  const dayLengthMs = tomorrowMidnightMs - cairoMidnightMs;
+  const dayLengthHours = dayLengthMs / 3_600_000;
+  // 23h or 25h on DST transition days; otherwise exactly 24h.
+  const sensibleDayLength = dayLengthHours >= 23 && dayLengthHours <= 25;
+
+  return (
+    <>
+      <Diag
+        label="Cairo offset"
+        ok={offsetMatches}
+        detail={
+          offsetMatches
+            ? `${offsetLabel} (${expectedDST ? "EEST" : "EET"})`
+            : `${offsetLabel} (expected UTC+${expectedOffsetH})`
+        }
+      />
+      <Diag
+        label="Hours into Cairo day"
+        ok={sensibleHours}
+        detail={`${hoursIntoDay.toFixed(2)}h`}
+      />
+      <Diag
+        label="Cairo day length (today)"
+        ok={sensibleDayLength}
+        detail={
+          dayLengthHours === 24
+            ? "24h (no DST today)"
+            : `${dayLengthHours.toFixed(2)}h (DST transition)`
+        }
+      />
+      <Diag
+        label="UTC time"
+        ok
+        detail={new Date(now).toISOString().replace("T", " ").slice(0, 19)}
+      />
+    </>
   );
 }
 

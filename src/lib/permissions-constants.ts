@@ -119,3 +119,41 @@ export interface AutoDecideRule {
 export const MAX_AUTO_RULES = 20;
 export const MAX_RULE_KEYWORDS = 10;
 export const MAX_RULE_KEYWORD_LENGTH = 60;
+
+/**
+ * Pure predicate — does this rule fire on this request shape?
+ * Conjunctive within fields, OR within `bodyContainsAny`. Disabled
+ * rules never match.
+ *
+ * Lives in this constants module (rather than `actions/permissions.ts`
+ * where it's primarily used) because it's also called from the
+ * Sir-only auto-rule simulator on `/admin/permissions`. Non-async +
+ * non-side-effecting → can't be exported from a `'use server'` file.
+ */
+export function matchesAutoRule(
+  rule: AutoDecideRule,
+  req: {
+    body: string;
+    category?: PermissionCategory;
+    price?: number;
+    expiresAt?: number;
+  },
+): boolean {
+  if (!rule.enabled) return false;
+  if (rule.category !== undefined && rule.category !== req.category) {
+    return false;
+  }
+  if (rule.priceMax !== undefined) {
+    if (req.price === undefined) return false;
+    if (req.price > rule.priceMax) return false;
+  }
+  if (rule.bodyContainsAny && rule.bodyContainsAny.length > 0) {
+    const lower = req.body.toLowerCase();
+    const hit = rule.bodyContainsAny.some((kw) =>
+      lower.includes(kw.toLowerCase()),
+    );
+    if (!hit) return false;
+  }
+  if (rule.noExpiry === true && req.expiresAt !== undefined) return false;
+  return true;
+}

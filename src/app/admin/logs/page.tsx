@@ -161,11 +161,25 @@ const LEVEL_STYLES: Record<ActivityRecord["level"], string> = {
   fatal: "bg-destructive/20 text-destructive",
 };
 
+const ACTIVITY_LEVEL_FILTERS: ReadonlyArray<{
+  value: ActivityRecord["level"] | "all";
+  label: string;
+}> = [
+  { value: "all", label: "All" },
+  { value: "interaction", label: "Interaction" },
+  { value: "warn", label: "Warn" },
+  { value: "error", label: "Error" },
+  { value: "fatal", label: "Fatal" },
+];
+
 function ActivityTabBody({ now }: { now: number }) {
   const [records, setRecords] = useState<ActivityRecord[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [clearing, setClearing] = useState(false);
+  const [levelFilter, setLevelFilter] = useState<
+    ActivityRecord["level"] | "all"
+  >("all");
 
   const fetchFeed = useCallback(async () => {
     try {
@@ -251,15 +265,61 @@ function ActivityTabBody({ now }: { now: number }) {
         </div>
       )}
 
+      <div className="flex flex-wrap items-center gap-1.5">
+        {ACTIVITY_LEVEL_FILTERS.map((f) => (
+          <button
+            key={f.value}
+            type="button"
+            onClick={() => {
+              void vibrate(15, "light");
+              setLevelFilter(f.value);
+            }}
+            className={cn(
+              "rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider transition-colors active:scale-95",
+              levelFilter === f.value
+                ? "border-primary/60 bg-primary/15 text-primary"
+                : "border-border/40 text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {f.label}
+          </button>
+        ))}
+        {records && records.length > 0 && (
+          <span className="ml-auto text-[10px] tabular-nums text-muted-foreground">
+            {(() => {
+              const matching =
+                levelFilter === "all"
+                  ? records.length
+                  : records.filter((r) => r.level === levelFilter).length;
+              return levelFilter === "all"
+                ? `${records.length}`
+                : `${matching} match · ${records.length} loaded`;
+            })()}
+          </span>
+        )}
+      </div>
+
       {records == null ? (
         <FeedSkeleton />
       ) : records.length === 0 ? (
         <p className="rounded-2xl border border-dashed border-border/40 p-8 text-center text-sm text-muted-foreground">
           No activity recorded yet.
         </p>
-      ) : (
+      ) : (() => {
+        const filtered =
+          levelFilter === "all"
+            ? records
+            : records.filter((r) => r.level === levelFilter);
+        if (filtered.length === 0) {
+          return (
+            <p className="rounded-2xl border border-dashed border-border/40 p-8 text-center text-sm text-muted-foreground">
+              No matches for this filter.
+            </p>
+          );
+        }
+        return (
         <ul className="space-y-2">
-          {records.map((r, i) => (
+          {filtered.map((r, i) => (
             <li
               key={`${r.at}-${i}`}
               className="rounded-xl border border-border/40 bg-card p-3"
@@ -286,7 +346,8 @@ function ActivityTabBody({ now }: { now: number }) {
             </li>
           ))}
         </ul>
-      )}
+        );
+      })()}
     </>
   );
 }
@@ -580,6 +641,7 @@ function AuthFailuresTabBody({ now }: { now: number }) {
   const [error, setError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [clearing, setClearing] = useState(false);
+  const [ipFilter, setIpFilter] = useState<string | "all">("all");
 
   const fetchLog = useCallback(async () => {
     try {
@@ -665,6 +727,46 @@ function AuthFailuresTabBody({ now }: { now: number }) {
         </div>
       )}
 
+      {records && records.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => {
+              void vibrate(15, "light");
+              setIpFilter("all");
+            }}
+            className={cn(
+              "rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider transition-colors active:scale-95",
+              ipFilter === "all"
+                ? "border-primary/60 bg-primary/15 text-primary"
+                : "border-border/40 text-muted-foreground hover:text-foreground",
+            )}
+          >
+            All IPs
+          </button>
+          {Array.from(new Set(records.map((r) => r.ip).filter((ip): ip is string => !!ip)))
+            .sort()
+            .map((ip) => (
+              <button
+                key={ip}
+                type="button"
+                onClick={() => {
+                  void vibrate(15, "light");
+                  setIpFilter(ip);
+                }}
+                className={cn(
+                  "rounded-full border px-2.5 py-1 font-mono text-[10px] transition-colors active:scale-95",
+                  ipFilter === ip
+                    ? "border-primary/60 bg-primary/15 text-primary"
+                    : "border-border/40 text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {ip}
+              </button>
+            ))}
+        </div>
+      )}
+
       {records == null ? (
         <ul className="space-y-2">
           {[0, 1, 2].map((i) => (
@@ -678,9 +780,21 @@ function AuthFailuresTabBody({ now }: { now: number }) {
         <p className="rounded-2xl border border-dashed border-border/40 p-8 text-center text-sm text-muted-foreground">
           No failed logins on file.
         </p>
-      ) : (
+      ) : (() => {
+        const filtered =
+          ipFilter === "all"
+            ? records
+            : records.filter((r) => r.ip === ipFilter);
+        if (filtered.length === 0) {
+          return (
+            <p className="rounded-2xl border border-dashed border-border/40 p-8 text-center text-sm text-muted-foreground">
+              No failures from this IP.
+            </p>
+          );
+        }
+        return (
         <ul className="space-y-2">
-          {records.map((r, i) => (
+          {filtered.map((r, i) => (
             <li
               key={`${r.ts}-${i}`}
               className="rounded-xl border border-border/40 bg-card p-3"
@@ -705,7 +819,8 @@ function AuthFailuresTabBody({ now }: { now: number }) {
             </li>
           ))}
         </ul>
-      )}
+        );
+      })()}
     </>
   );
 }

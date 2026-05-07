@@ -17,6 +17,10 @@ import {
 import { SummonButton } from "@/components/admin/summon-button";
 import { RestraintToggle } from "@/components/admin/restraint-toggle";
 import { CrossFeatureSearch } from "@/components/admin/cross-feature-search";
+import {
+  AdminDashboardStrip,
+  RecentAdminActions,
+} from "@/components/admin/admin-dashboard";
 import { RefreshListenerForServerPage } from "@/components/refresh-listener";
 import { getDeployInfo, type DeployInfo } from "@/app/actions/admin";
 
@@ -131,8 +135,12 @@ export default async function AdminLandingPage() {
         </p>
       </header>
 
+      <AdminDashboardStrip />
+
       <RestraintToggle />
       <SummonButton />
+
+      <RecentAdminActions />
 
       <CrossFeatureSearch />
 

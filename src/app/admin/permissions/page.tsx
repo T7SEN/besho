@@ -17,7 +17,9 @@ import {
   bulkApprovePendingOlderThan,
   bulkDenyPendingByCategory,
   getPermissionsAdminBundle,
+  simulateAutoRules,
   type PermissionsAdminBundle,
+  type SimulateAutoRuleResult,
 } from "@/app/actions/admin";
 import {
   CATEGORY_LABEL,
@@ -126,6 +128,7 @@ export default function AdminPermissionsPage() {
             <TabsTrigger value="bulk">Bulk decide</TabsTrigger>
             <TabsTrigger value="rules">Auto-rules JSON</TabsTrigger>
             <TabsTrigger value="quotas">Quotas JSON</TabsTrigger>
+            <TabsTrigger value="simulate">Simulate</TabsTrigger>
           </TabsList>
           <TabsContent value="bulk" className="space-y-6">
             <BulkDecideEditor bundle={bundle} onSaved={fetchBundle} />
@@ -135,6 +138,9 @@ export default function AdminPermissionsPage() {
           </TabsContent>
           <TabsContent value="quotas" className="space-y-6">
             <QuotasEditor bundle={bundle} onSaved={fetchBundle} />
+          </TabsContent>
+          <TabsContent value="simulate" className="space-y-6">
+            <AutoRuleSimulator bundle={bundle} />
           </TabsContent>
         </Tabs>
       )}
@@ -555,6 +561,233 @@ function QuotasEditor({
         {msg && <span className="text-xs text-emerald-400">{msg}</span>}
         {err && <span className="text-xs text-destructive">{err}</span>}
       </div>
+    </section>
+  );
+}
+
+// ── Auto-rule simulator ──────────────────────────────────────────────────
+
+function AutoRuleSimulator({ bundle }: { bundle: PermissionsAdminBundle }) {
+  const [body, setBody] = useState("");
+  const [category, setCategory] = useState<PermissionCategory | "">("");
+  const [price, setPrice] = useState("");
+  const [hasExpiry, setHasExpiry] = useState(false);
+  const [expiresInHours, setExpiresInHours] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<SimulateAutoRuleResult | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  const handleSimulate = async () => {
+    setErr(null);
+    setBusy(true);
+    void vibrate(30, "light");
+    try {
+      const args: {
+        body: string;
+        category?: PermissionCategory;
+        price?: number;
+        expiresAt?: number;
+      } = { body };
+      if (category) args.category = category;
+      if (price.trim() !== "") {
+        const n = Number(price);
+        if (!Number.isFinite(n) || n < 0) {
+          setErr("Price must be a non-negative number.");
+          setBusy(false);
+          return;
+        }
+        args.price = n;
+      }
+      if (hasExpiry && expiresInHours.trim() !== "") {
+        const n = Number(expiresInHours);
+        if (!Number.isFinite(n) || n <= 0) {
+          setErr("Expiry hours must be > 0.");
+          setBusy(false);
+          return;
+        }
+        args.expiresAt = Date.now() + n * 60 * 60 * 1000;
+      }
+      const r = await simulateAutoRules(args);
+      if (r.error) setErr(r.error);
+      else setResult(r);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const enabledCount = bundle.autoRules.filter((r) => r.enabled).length;
+  const totalCount = bundle.autoRules.length;
+
+  return (
+    <section className="rounded-2xl border border-border/40 bg-card p-5">
+      <h2 className="mb-3 text-sm font-semibold">Auto-rule simulator</h2>
+      <p className="mb-4 text-sm text-muted-foreground">
+        Paste a fake permission request shape. Server applies the same
+        first-match-wins logic as <code>createPermission</code>; no Redis
+        writes, no FCM. {enabledCount} of {totalCount} rules enabled.
+      </p>
+
+      <div className="space-y-3">
+        <Field label="Body (required)">
+          <textarea
+            value={body}
+            onChange={(e) => setBody(e.target.value)}
+            rows={3}
+            dir="auto"
+            placeholder="e.g. Can I have a small treat?"
+            className="w-full rounded border border-border/60 bg-input/40 px-2 py-1.5 text-sm focus:border-primary focus:outline-none"
+          />
+        </Field>
+        <div className="grid gap-3 md:grid-cols-3">
+          <Field label="Category">
+            <select
+              value={category}
+              onChange={(e) =>
+                setCategory(e.target.value as PermissionCategory | "")
+              }
+              className="w-full rounded border border-border/60 bg-input/40 px-2 py-1 text-sm focus:border-primary focus:outline-none"
+            >
+              <option value="">— none —</option>
+              {PERMISSION_CATEGORIES.map((c) => (
+                <option key={c} value={c}>
+                  {CATEGORY_LABEL[c]}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Price (purchase only)">
+            <input
+              type="number"
+              inputMode="decimal"
+              value={price}
+              onChange={(e) => setPrice(e.target.value)}
+              placeholder="e.g. 25"
+              min={0}
+              className="w-full rounded border border-border/60 bg-input/40 px-2 py-1 text-sm tabular-nums focus:border-primary focus:outline-none"
+            />
+          </Field>
+          <Field label="Expiry">
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={hasExpiry}
+                onChange={(e) => setHasExpiry(e.target.checked)}
+                className="rounded border-border/60"
+              />
+              <input
+                type="number"
+                inputMode="numeric"
+                value={expiresInHours}
+                onChange={(e) => setExpiresInHours(e.target.value)}
+                placeholder="hours"
+                disabled={!hasExpiry}
+                min={1}
+                className="w-full rounded border border-border/60 bg-input/40 px-2 py-1 text-sm tabular-nums focus:border-primary focus:outline-none disabled:opacity-40"
+              />
+            </div>
+          </Field>
+        </div>
+      </div>
+
+      <button
+        type="button"
+        onClick={() => void handleSimulate()}
+        disabled={busy || body.trim().length === 0}
+        className="mt-4 flex items-center gap-1.5 rounded-full bg-primary px-4 py-2 text-xs font-bold uppercase tracking-wider text-primary-foreground transition-opacity active:scale-95 disabled:opacity-60"
+      >
+        {busy ? (
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        ) : (
+          <Save className="h-3.5 w-3.5" />
+        )}
+        Simulate
+      </button>
+
+      {err && (
+        <p className="mt-3 text-xs text-destructive" role="alert">
+          {err}
+        </p>
+      )}
+
+      {result && (
+        <div
+          className={cn(
+            "mt-5 rounded-2xl border p-4",
+            result.matched
+              ? result.decision === "approved"
+                ? "border-emerald-400/40 bg-emerald-400/5"
+                : "border-rose-500/40 bg-rose-500/5"
+              : "border-border/40 bg-card/40",
+          )}
+        >
+          {result.matched && result.rule ? (
+            <>
+              <p className="text-sm font-bold">
+                Matched rule:{" "}
+                <span className="font-mono text-xs">{result.rule.id}</span>
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Would{" "}
+                <span
+                  className={cn(
+                    "font-bold",
+                    result.decision === "approved"
+                      ? "text-emerald-400"
+                      : "text-rose-400",
+                  )}
+                >
+                  {result.decision}
+                </span>{" "}
+                this request.
+              </p>
+              <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+                {result.reply && (
+                  <>
+                    <dt className="font-bold uppercase tracking-wider text-muted-foreground/70">
+                      Reply
+                    </dt>
+                    <dd dir="auto">{result.reply}</dd>
+                  </>
+                )}
+                {result.terms && (
+                  <>
+                    <dt className="font-bold uppercase tracking-wider text-muted-foreground/70">
+                      Terms
+                    </dt>
+                    <dd dir="auto">{result.terms}</dd>
+                  </>
+                )}
+                {result.denialReason && (
+                  <>
+                    <dt className="font-bold uppercase tracking-wider text-muted-foreground/70">
+                      Reason
+                    </dt>
+                    <dd className="font-mono">
+                      {DENIAL_REASON_LABEL[result.denialReason]}
+                    </dd>
+                  </>
+                )}
+                <dt className="font-bold uppercase tracking-wider text-muted-foreground/70">
+                  Considered
+                </dt>
+                <dd className="font-mono tabular-nums">
+                  {result.rulesConsidered ?? 0} enabled rules
+                </dd>
+              </dl>
+            </>
+          ) : (
+            <>
+              <p className="text-sm font-bold">No rule matched.</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Considered {result.rulesConsidered ?? 0} enabled rules.
+                The request would land in the pending queue (or be
+                quota-rejected) per the canonical{" "}
+                <code>createPermission</code> flow.
+              </p>
+            </>
+          )}
+        </div>
+      )}
     </section>
   );
 }

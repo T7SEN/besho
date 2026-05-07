@@ -48,6 +48,7 @@ import {
   MAX_AUTO_RULES,
   MAX_RULE_KEYWORDS,
   MAX_RULE_KEYWORD_LENGTH,
+  matchesAutoRule,
 } from "@/lib/permissions-constants";
 import {
   recordObedienceEvent,
@@ -3877,6 +3878,272 @@ export async function adminAdjustScore(
   } catch (err) {
     logger.error("[admin] manual adjust failed", err);
     return { error: "Adjust failed." };
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Admin landing dashboard — at-a-glance summary feeding the dashboard
+// strip on `/admin` (pending counts, cron freshness, error count).
+// ──────────────────────────────────────────────────────────────────
+
+export interface AdminLandingSummary {
+  pendingPermissions: number;
+  pendingClaims: number;
+  cronStaleCount: number;
+  cronTotal: number;
+  errorsLast24h: number;
+  warningsLast24h: number;
+  generatedAt: number;
+}
+
+export interface AdminLandingSummaryResult {
+  summary?: AdminLandingSummary;
+  error?: string;
+}
+
+const CRON_FRESH_MS_MAP: Record<string, number> = {
+  "ritual-windows": 5 * 60_000,
+  "obedience-sweep": 26 * 60 * 60_000,
+  "review-window-open": 26 * 60 * 60_000,
+};
+
+export async function getAdminLandingSummary(): Promise<AdminLandingSummaryResult> {
+  const guard = await requireSir();
+  if (!guard.ok) return { error: guard.error };
+  const now = Date.now();
+  try {
+    // Run all reads in parallel — single round-trip-equivalent for the
+    // landing strip.
+    const [
+      permIds,
+      pendingClaimIdsRaw,
+      cronSnapshots,
+      activityRaw,
+    ] = await Promise.all([
+      redis.zrange<string[]>(PERMISSIONS_INDEX, 0, -1).catch(() => []),
+      redis
+        .zrange<unknown[]>("rewards:claims:pending", 0, -1)
+        .catch(() => [] as unknown[]),
+      readAllCronTelemetry().catch(() => []),
+      redis
+        .zrange<unknown[]>(
+          "activity:log",
+          now - 86_400_000,
+          now,
+          { byScore: true },
+        )
+        .catch(() => [] as unknown[]),
+    ]);
+
+    // Pending permissions — mget records and count those still pending.
+    let pendingPermissions = 0;
+    if (permIds.length > 0) {
+      const records = (await redis.mget<PermissionRequest[]>(
+        ...permIds.map((id) => permissionRecordKey(id)),
+      )) ?? [];
+      for (const r of records) {
+        if (r && r.status === "pending") pendingPermissions++;
+      }
+    }
+
+    // Pending claims — the ZSET length is the source-of-truth count.
+    const pendingClaims = (pendingClaimIdsRaw ?? []).length;
+
+    // Cron staleness — compare each cron's last-run ts against its
+    // expected freshness threshold.
+    let cronStaleCount = 0;
+    for (const snap of cronSnapshots) {
+      const expectedFreshMs = CRON_FRESH_MS_MAP[snap.name] ?? 26 * 60 * 60_000;
+      const last = snap.lastRun;
+      const fresh =
+        !!last &&
+        last.ok &&
+        now - last.ts <= expectedFreshMs;
+      if (!fresh) cronStaleCount++;
+    }
+
+    // Severities last 24h — same logic as in getHealthSnapshot.
+    let errorsLast24h = 0;
+    let warningsLast24h = 0;
+    for (const v of activityRaw ?? []) {
+      let parsed: { level?: string } | null = null;
+      if (typeof v === "string") {
+        try {
+          parsed = JSON.parse(v) as { level?: string };
+        } catch {
+          parsed = null;
+        }
+      } else if (v && typeof v === "object") {
+        parsed = v as { level?: string };
+      }
+      if (!parsed) continue;
+      if (parsed.level === "error" || parsed.level === "fatal") {
+        errorsLast24h++;
+      } else if (parsed.level === "warn") {
+        warningsLast24h++;
+      }
+    }
+
+    return {
+      summary: {
+        pendingPermissions,
+        pendingClaims,
+        cronStaleCount,
+        cronTotal: cronSnapshots.length,
+        errorsLast24h,
+        warningsLast24h,
+        generatedAt: now,
+      },
+    };
+  } catch (err) {
+    logger.error("[admin] landing summary read failed", err);
+    return { error: "Failed to read summary." };
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Recent admin actions — filter activity:log to messages prefixed
+// with "[admin]". Surfaces on the /admin landing as a "what did I
+// just do" timeline.
+// ──────────────────────────────────────────────────────────────────
+
+export interface RecentAdminActionsResult {
+  records?: ActivityRecord[];
+  error?: string;
+}
+
+export async function getRecentAdminActions(
+  limit: number = 8,
+): Promise<RecentAdminActionsResult> {
+  const guard = await requireSir();
+  if (!guard.ok) return { error: guard.error };
+  const safeLimit = Math.max(1, Math.min(50, Math.floor(limit)));
+  try {
+    // Pull a wider slice and filter client-side. Activity log is capped
+    // at 500 so worst-case 500 records — cheap.
+    const candidates = await getActivity(500);
+    const filtered = candidates.filter((r) => r.message.startsWith("[admin]"));
+    return { records: filtered.slice(0, safeLimit) };
+  } catch (err) {
+    logger.error("[admin] recent actions read failed", err);
+    return { error: "Failed to read recent actions." };
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Pending claims count — small accessor used by the landing strip.
+// (Already implicitly counted in getAdminLandingSummary; this is for
+// callers who only need that single number.)
+// ──────────────────────────────────────────────────────────────────
+
+export async function getPendingClaimsCount(): Promise<{
+  count?: number;
+  error?: string;
+}> {
+  const guard = await requireSir();
+  if (!guard.ok) return { error: guard.error };
+  try {
+    const ids = await redis.zrange<unknown[]>(
+      "rewards:claims:pending",
+      0,
+      -1,
+    );
+    return { count: (ids ?? []).length };
+  } catch (err) {
+    logger.error("[admin] pending claims count failed", err);
+    return { error: "Failed to count claims." };
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Auto-rule simulator — Sir pastes a fake permission request shape
+// and sees which rule (if any) would fire and what decision the
+// auto-decide path would produce. Pure read; no Redis writes; no FCM.
+// ──────────────────────────────────────────────────────────────────
+
+export interface SimulateAutoRuleArgs {
+  body: string;
+  category?: PermissionCategory;
+  price?: number;
+  expiresAt?: number;
+}
+
+export interface SimulateAutoRuleResult {
+  matched?: boolean;
+  /** When matched, the rule that fired (first-match-wins ordering). */
+  rule?: AutoDecideRule;
+  /** When matched, the decision that would be applied to the request. */
+  decision?: "approved" | "denied";
+  /** Optional reply / terms / denialReason from the matched rule. */
+  reply?: string;
+  terms?: string;
+  denialReason?: DenialReason;
+  /** Total enabled rules considered (helpful when matched=false). */
+  rulesConsidered?: number;
+  error?: string;
+}
+
+export async function simulateAutoRules(
+  args: SimulateAutoRuleArgs,
+): Promise<SimulateAutoRuleResult> {
+  const guard = await requireSir();
+  if (!guard.ok) return { error: guard.error };
+
+  if (typeof args.body !== "string") {
+    return { error: "body must be a string." };
+  }
+  if (args.body.trim().length === 0) {
+    return { error: "body required." };
+  }
+  if (
+    args.category !== undefined &&
+    !PERMISSION_CATEGORIES.includes(args.category)
+  ) {
+    return { error: "invalid category." };
+  }
+  if (args.price !== undefined) {
+    if (typeof args.price !== "number" || !Number.isFinite(args.price) || args.price < 0) {
+      return { error: "price must be a non-negative number." };
+    }
+  }
+  if (args.expiresAt !== undefined) {
+    if (typeof args.expiresAt !== "number" || !Number.isFinite(args.expiresAt)) {
+      return { error: "expiresAt must be a number." };
+    }
+  }
+
+  try {
+    const rules =
+      (await redis.get<AutoDecideRule[]>(AUTO_RULES_KEY)) ?? [];
+    let rulesConsidered = 0;
+    for (const rule of rules) {
+      if (!rule.enabled) continue;
+      rulesConsidered++;
+      if (
+        matchesAutoRule(rule, {
+          body: args.body,
+          category: args.category,
+          price: args.price,
+          expiresAt: args.expiresAt,
+        })
+      ) {
+        return {
+          matched: true,
+          rule,
+          decision: rule.decision,
+          ...(rule.reply !== undefined && { reply: rule.reply }),
+          ...(rule.terms !== undefined && { terms: rule.terms }),
+          ...(rule.denialReason !== undefined && {
+            denialReason: rule.denialReason,
+          }),
+          rulesConsidered,
+        };
+      }
+    }
+    return { matched: false, rulesConsidered };
+  } catch (err) {
+    logger.error("[admin] auto-rule simulation failed", err);
+    return { error: "Simulation failed." };
   }
 }
 

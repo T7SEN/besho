@@ -23,6 +23,7 @@ import {
   MAX_AUTO_RULES,
   MAX_RULE_KEYWORDS,
   MAX_RULE_KEYWORD_LENGTH,
+  matchesAutoRule,
 } from "@/lib/permissions-constants";
 
 export type PermissionStatus =
@@ -450,34 +451,6 @@ export async function saveAutoRules(
  * Disabled rules never match. Lives next to the actions because
  * `createPermission` calls it inline at decide-time.
  */
-function matchesAutoRule(
-  rule: AutoDecideRule,
-  req: {
-    body: string;
-    category?: PermissionCategory;
-    price?: number;
-    expiresAt?: number;
-  },
-): boolean {
-  if (!rule.enabled) return false;
-  if (rule.category !== undefined && rule.category !== req.category) {
-    return false;
-  }
-  if (rule.priceMax !== undefined) {
-    if (req.price === undefined) return false;
-    if (req.price > rule.priceMax) return false;
-  }
-  if (rule.bodyContainsAny && rule.bodyContainsAny.length > 0) {
-    const lower = req.body.toLowerCase();
-    const hit = rule.bodyContainsAny.some((kw) =>
-      lower.includes(kw.toLowerCase()),
-    );
-    if (!hit) return false;
-  }
-  if (rule.noExpiry === true && req.expiresAt !== undefined) return false;
-  return true;
-}
-
 /**
  * Submits a new permission request. Besho-only — only kitten can ask
  * for things through this channel. Notifies Sir via FCM (manual path)

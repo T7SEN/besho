@@ -5,9 +5,11 @@ import Link from "next/link";
 import { motion, AnimatePresence } from "motion/react";
 import {
   ArrowLeft,
+  CheckSquare,
   Loader2,
   RefreshCw,
   RotateCcw,
+  Square,
   Trash2,
 } from "lucide-react";
 import {
@@ -72,6 +74,10 @@ export default function TrashPage() {
     min: number;
     max: number;
   }>({ min: 1, max: 90 });
+  // Multi-select state for bulk operations. Key = `${feature}:${id}`.
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState<"restore" | "purge" | null>(null);
+  const [confirmingBulkPurge, setConfirmingBulkPurge] = useState(false);
 
   const fetchTrash = useCallback(async () => {
     setRefreshing(true);
@@ -93,9 +99,15 @@ export default function TrashPage() {
   }, [filter]);
 
   useEffect(() => {
-    void fetchTrash();
+    // Deferred initial fetch per AGENTS.md § 4 — fetchTrash sets state
+    // synchronously, which trips react-hooks/set-state-in-effect when
+    // called directly inside the effect body.
+    const t = setTimeout(() => void fetchTrash(), 0);
     const id = setInterval(() => void fetchTrash(), POLL_MS);
-    return () => clearInterval(id);
+    return () => {
+      clearTimeout(t);
+      clearInterval(id);
+    };
   }, [fetchTrash]);
 
   useRefreshListener(fetchTrash);
@@ -129,6 +141,22 @@ export default function TrashPage() {
     const id = setTimeout(() => setConfirmingPurge(false), CONFIRM_TIMEOUT_MS);
     return () => clearTimeout(id);
   }, [confirmingPurge]);
+
+  useEffect(() => {
+    if (!confirmingBulkPurge) return;
+    const id = setTimeout(
+      () => setConfirmingBulkPurge(false),
+      CONFIRM_TIMEOUT_MS,
+    );
+    return () => clearTimeout(id);
+  }, [confirmingBulkPurge]);
+
+  // Drop selection when filter changes — selected items may not be
+  // visible anymore. Deferred per AGENTS.md § 4.
+  useEffect(() => {
+    const t = setTimeout(() => setSelected(new Set()), 0);
+    return () => clearTimeout(t);
+  }, [filter]);
 
   const visibleEntries = useMemo(() => {
     if (!entries) return null;
@@ -172,6 +200,97 @@ export default function TrashPage() {
       }
     } finally {
       setBusyKey(null);
+    }
+  };
+
+  const toggleSelect = (key: string) => {
+    void vibrate(15, "light");
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = (visible: TrashEntry[]) => {
+    void vibrate(20, "light");
+    setSelected((prev) => {
+      const visibleKeys = visible.map((e) => `${e.feature}:${e.id}`);
+      const allSelected = visibleKeys.every((k) => prev.has(k));
+      if (allSelected) {
+        const next = new Set(prev);
+        for (const k of visibleKeys) next.delete(k);
+        return next;
+      }
+      const next = new Set(prev);
+      for (const k of visibleKeys) next.add(k);
+      return next;
+    });
+  };
+
+  const handleBulkRestore = async () => {
+    if (selected.size === 0) return;
+    void vibrate([100, 50, 100], "heavy");
+    setBulkBusy("restore");
+    setError(null);
+    const targets = Array.from(selected)
+      .map((key) => {
+        const [feature, ...idParts] = key.split(":");
+        return {
+          key,
+          feature: feature as TrashFeature,
+          id: idParts.join(":"),
+        };
+      });
+    let restored = 0;
+    let failed = 0;
+    for (const t of targets) {
+      try {
+        const result = await restoreTrashEntryAction(t.feature, t.id);
+        if (result.error) failed++;
+        else restored++;
+      } catch {
+        failed++;
+      }
+    }
+    setBulkBusy(null);
+    setSelected(new Set());
+    await fetchTrash();
+    if (failed > 0) {
+      setError(`Restored ${restored}, ${failed} failed.`);
+    }
+  };
+
+  const handleBulkPurge = async () => {
+    if (selected.size === 0) return;
+    void vibrate([120, 60, 120], "heavy");
+    setBulkBusy("purge");
+    setError(null);
+    const targets = Array.from(selected).map((key) => {
+      const [feature, ...idParts] = key.split(":");
+      return {
+        feature: feature as TrashFeature,
+        id: idParts.join(":"),
+      };
+    });
+    let purged = 0;
+    let failed = 0;
+    for (const t of targets) {
+      try {
+        const result = await deleteTrashEntryAction(t.feature, t.id);
+        if (result.error) failed++;
+        else purged++;
+      } catch {
+        failed++;
+      }
+    }
+    setBulkBusy(null);
+    setConfirmingBulkPurge(false);
+    setSelected(new Set());
+    await fetchTrash();
+    if (failed > 0) {
+      setError(`Purged ${purged}, ${failed} failed.`);
     }
   };
 
@@ -265,6 +384,88 @@ export default function TrashPage() {
         </div>
       )}
 
+      {visibleEntries && visibleEntries.length > 0 && (
+        <div className="mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-border/30 bg-card/40 px-3 py-2">
+          <button
+            type="button"
+            onClick={() => toggleSelectAll(visibleEntries)}
+            className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground active:scale-95"
+          >
+            {visibleEntries.every((e) =>
+              selected.has(`${e.feature}:${e.id}`),
+            ) ? (
+              <CheckSquare className="h-3.5 w-3.5" />
+            ) : (
+              <Square className="h-3.5 w-3.5" />
+            )}
+            Select all
+          </button>
+          <span className="text-[10px] tabular-nums text-muted-foreground/70">
+            {selected.size} selected
+          </span>
+          {selected.size > 0 && (
+            <div className="ml-auto flex flex-wrap items-center gap-1.5">
+              {confirmingBulkPurge ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void vibrate(20, "light");
+                      setConfirmingBulkPurge(false);
+                    }}
+                    disabled={bulkBusy !== null}
+                    className="rounded-full border border-border/40 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground active:scale-95 disabled:opacity-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleBulkPurge()}
+                    disabled={bulkBusy !== null}
+                    className="flex items-center gap-1.5 rounded-full bg-destructive px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-white transition-colors hover:bg-destructive/90 active:scale-95 disabled:opacity-60"
+                  >
+                    {bulkBusy === "purge" ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : (
+                      <Trash2 className="h-3 w-3" />
+                    )}
+                    Confirm purge {selected.size}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => void handleBulkRestore()}
+                    disabled={bulkBusy !== null}
+                    className="flex items-center gap-1.5 rounded-full bg-primary px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-primary-foreground transition-colors hover:bg-primary/90 active:scale-95 disabled:opacity-60"
+                  >
+                    {bulkBusy === "restore" ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : (
+                      <RotateCcw className="h-3 w-3" />
+                    )}
+                    Restore {selected.size}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void vibrate(50, "medium");
+                      setConfirmingBulkPurge(true);
+                    }}
+                    disabled={bulkBusy !== null}
+                    className="flex items-center gap-1.5 rounded-full border border-destructive/30 bg-destructive/10 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-destructive transition-colors hover:bg-destructive/20 active:scale-95 disabled:opacity-50"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                    Purge {selected.size}
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       {visibleEntries == null ? (
         <ul className="space-y-2">
           {[0, 1, 2].map((i) => (
@@ -292,9 +493,26 @@ export default function TrashPage() {
                   initial={{ opacity: 0, y: 8 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, x: -8 }}
-                  className="rounded-xl border border-border/40 bg-card p-3"
+                  className={cn(
+                    "rounded-xl border bg-card p-3 transition-colors",
+                    selected.has(key)
+                      ? "border-primary/50 bg-primary/5"
+                      : "border-border/40",
+                  )}
                 >
                   <div className="flex items-start justify-between gap-3">
+                    <button
+                      type="button"
+                      onClick={() => toggleSelect(key)}
+                      aria-label={selected.has(key) ? "Deselect" : "Select"}
+                      className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:text-foreground active:scale-90"
+                    >
+                      {selected.has(key) ? (
+                        <CheckSquare className="h-4 w-4 text-primary" />
+                      ) : (
+                        <Square className="h-4 w-4" />
+                      )}
+                    </button>
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
                         <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-primary">
@@ -446,8 +664,10 @@ function RetentionDial({
   const [err, setErr] = useState<string | null>(null);
 
   // Keep the draft in sync with external updates (initial fetch).
+  // Deferred per AGENTS.md § 4.
   useEffect(() => {
-    setDraft(String(days));
+    const t = setTimeout(() => setDraft(String(days)), 0);
+    return () => clearTimeout(t);
   }, [days]);
 
   const dirty = draft.trim() !== String(days);
