@@ -211,6 +211,7 @@ export default function RitualsPage() {
   const [showForm, setShowForm] = useState(false);
   const [editingRitualId, setEditingRitualId] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [now] = useState(() => Date.now());
 
   const scheduledRemindersRef = useRef<Set<number>>(new Set());
@@ -219,6 +220,8 @@ export default function RitualsPage() {
   const { cancel } = useLocalNotifications();
 
   usePresence("/rituals", !!currentAuthor);
+
+  const { connected } = useNetwork();
 
   const keyboardHeight = useKeyboardHeight();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -250,13 +253,20 @@ export default function RitualsPage() {
     });
   }, []);
 
-  // 30s polling — Phase 1 chose polling over SSE.
+  // 30s polling — Phase 1 chose polling over SSE. Gated on tab
+  // visibility and online status so backgrounded tabs and offline
+  // devices don't burn Upstash REST calls every half-minute.
   useEffect(() => {
     const id = setInterval(() => {
+      const doc = (
+        globalThis as unknown as { document?: { visibilityState?: string } }
+      ).document;
+      if (doc?.visibilityState === "hidden") return;
+      if (!connected) return;
       void handleRefresh();
     }, 30_000);
     return () => clearInterval(id);
-  }, [handleRefresh]);
+  }, [handleRefresh, connected]);
 
   // Local-notification scheduling for rituals was removed. The
   // `/api/cron/ritual-windows` endpoint now fires the window-open FCM
@@ -362,9 +372,19 @@ export default function RitualsPage() {
     const result = await deleteRitual(id);
     if (result.success) {
       setRituals((prev) => prev.filter((r) => r.id !== id));
+    } else if (result.error) {
+      void vibrate([60, 40, 60], "heavy");
+      setActionError(result.error);
     }
     setBusyId(null);
   };
+
+  // Auto-clear action error toast after 3s.
+  useEffect(() => {
+    if (!actionError) return;
+    const t = setTimeout(() => setActionError(null), 3000);
+    return () => clearTimeout(t);
+  }, [actionError]);
 
   const totalCount = rituals.length;
   const openCount = grouped.open.length;
@@ -376,6 +396,27 @@ export default function RitualsPage() {
         <div className="absolute left-[-10%] top-[-10%] h-125 w-125 rounded-full bg-primary/5 blur-[150px]" />
         <div className="absolute bottom-[-10%] right-[-10%] h-125 w-125 rounded-full bg-purple-500/5 blur-[150px]" />
       </div>
+
+      {/* Action error transient banner — mirrors the pinError pattern in /notes. */}
+      <AnimatePresence>
+        {actionError && (
+          <motion.div
+            key="action-error"
+            initial={{ opacity: 0, y: -16 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -16 }}
+            className="fixed left-1/2 top-4 z-50 -translate-x-1/2"
+          >
+            <div
+              role="alert"
+              className="flex items-center gap-2 rounded-full border border-destructive/30 bg-card/90 px-4 py-2 text-xs font-semibold text-destructive shadow-lg backdrop-blur-md"
+            >
+              <X className="h-3 w-3" />
+              {actionError}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <div className="relative z-10 mx-auto max-w-2xl space-y-8 pt-4">
         {/* Header */}

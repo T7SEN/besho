@@ -28,7 +28,7 @@ import {
 } from "@/app/actions/timeline";
 import { getCurrentAuthor } from "@/app/actions/auth";
 import { Button } from "@/components/ui/button";
-import { AUTHOR_COLORS, START_DATE, type Author } from "@/lib/constants";
+import { AUTHOR_COLORS, START_DATE, TITLE_BY_AUTHOR, type Author } from "@/lib/constants";
 import { usePresence } from "@/hooks/use-presence";
 import { useNetwork } from "@/hooks/use-network";
 import { useRefreshListener } from "@/hooks/use-refresh-listener";
@@ -480,7 +480,7 @@ function MilestoneItem({
                   authorColor?.textSoft ?? "text-foreground/40",
                 )}
               >
-                {milestone.author}
+                {milestoneAuthor ? TITLE_BY_AUTHOR[milestoneAuthor] : milestone.author}
               </span>
             </div>
           </div>

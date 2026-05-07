@@ -435,7 +435,8 @@ export default function RewardsPage() {
               void fetchBundle();
             }}
             disabled={refreshing}
-            aria-label="Refresh"
+            aria-busy={refreshing || undefined}
+            aria-label={refreshing ? "Refreshing rewards" : "Refresh rewards"}
             className="rounded-full p-2 text-muted-foreground/50 transition-all hover:bg-primary/10 hover:text-primary disabled:opacity-30"
           >
             <RefreshCw

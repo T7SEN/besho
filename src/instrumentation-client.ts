@@ -27,6 +27,18 @@ import * as Sentry from "@sentry/nextjs";
  *   handler" — bad URL, route moved, or a passive component
  *   (DeviceTracker, refresh listener) firing on a 404 page.
  *
+ * Family 3 — Vercel Toolbar feedback widget Range API misuse:
+ *   `InvalidNodeTypeError: Failed to execute 'selectNode' on 'Range':
+ *   the given Node has no parent.`
+ *   Thrown from `app:///_next-live/feedback/*.js` when the feedback
+ *   widget tries to wrap a DOM range that's been detached or unmounted
+ *   between the user's annotation gesture and the rAF callback. Third-
+ *   party code we don't ship — `<StaffToolbar />` mounts the upstream
+ *   bundle as-is. Sir-only on web (per `staff-toolbar.tsx` gate), so
+ *   only Sir's session ever surfaces this. We can't fix it, can't
+ *   reproduce it on demand, and it's already self-contained inside the
+ *   feedback annotation flow — pure noise on our side.
+ *
  * `ignoreErrors` matches against the exception message string and is
  * invariant under minification — works the same in dev and prod. The
  * earlier `beforeSend`-with-stack-frame-check approach silently failed
@@ -46,7 +58,7 @@ Sentry.init({
   // Add optional integrations for additional features
   integrations: [Sentry.replayIntegration()],
 
-  // Drop the two non-actionable families before transmission. Matches
+  // Drop the three non-actionable families before transmission. Matches
   // against `event.exception.values[*].value` (the message string).
   // Source-map-independent — works in production minified bundles.
   ignoreErrors: [
@@ -55,7 +67,15 @@ Sentry.init({
     /^Load failed$/i,
     /^NetworkError when attempting to fetch resource\.?$/i,
     "An unexpected response was received from the server.",
+    /Failed to execute 'selectNode' on 'Range'/i,
   ],
+
+  // Drop any error originating from the Vercel Toolbar's feedback
+  // chunk — it's third-party code, Sir-only, and we can't fix bugs
+  // inside it. Belt-and-suspenders alongside the Range message regex
+  // above; future variations of the same widget bug will be caught
+  // here without needing additional `ignoreErrors` maintenance.
+  denyUrls: [/\/_next-live\/feedback\//],
 
   // Define how likely traces are sampled. Adjust this value in production, or use tracesSampler for greater control.
   tracesSampleRate: process.env.NODE_ENV === "development" ? 1.0 : 0.1,

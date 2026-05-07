@@ -19,6 +19,7 @@ import { ErrorBoundary } from "@/components/ui/error-boundary";
 import { GlobalLogger } from "@/components/global-logger";
 import { SentryUserProvider } from "@/components/sentry-user-provider";
 import { DeviceTracker } from "@/components/device-tracker";
+import { SessionGuard } from "@/components/session-guard";
 import { StaffToolbar } from "@/components/staff-toolbar";
 
 const sourceSans3 = Source_Sans_3({
@@ -113,6 +114,7 @@ export default function RootLayout({
                 <FCMProvider />
                 <SentryUserProvider />
                 <DeviceTracker />
+                <SessionGuard />
                 <FloatingNavbar />
               </BiometricGate>
             </TooltipProvider>

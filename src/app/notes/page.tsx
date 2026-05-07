@@ -360,27 +360,42 @@ export default function NotesPage() {
     setIsRefreshing(false);
   };
 
+  // ── Load all remaining pages ──────────────────────────────────────────────
+  // Used by filter change AND search focus — both surfaces need the full
+  // corpus loaded so the in-memory filter / substring match is honest.
+  // Re-entrancy guarded by `isLoadingMore`; no-op when already exhausted.
+  const loadAllRemaining = async () => {
+    if (!hasMore || isLoadingMore) return;
+    setIsLoadingMore(true);
+    let currentPage = page;
+    let stillHasMore: boolean = hasMore;
+    const allNotes = [...notes];
+    while (stillHasMore) {
+      currentPage++;
+      const { notes: more, hasMore: moreExists } = await getNotes(currentPage);
+      allNotes.push(...more);
+      stillHasMore = moreExists;
+    }
+    setNotes(allNotes);
+    setHasMore(false);
+    setPage(currentPage);
+    setIsLoadingMore(false);
+  };
+
   // ── Filter change ─────────────────────────────────────────────────────────
   const handleFilterChange = async (newFilter: Filter) => {
     setFilter(newFilter);
     setSearchQuery("");
-    if (newFilter !== "all" && hasMore) {
-      setIsLoadingMore(true);
-      let currentPage = page;
-      let stillHasMore: boolean = hasMore;
-      const allNotes = [...notes];
-      while (stillHasMore) {
-        currentPage++;
-        const { notes: more, hasMore: moreExists } =
-          await getNotes(currentPage);
-        allNotes.push(...more);
-        stillHasMore = moreExists;
-      }
-      setNotes(allNotes);
-      setHasMore(false);
-      setPage(currentPage);
-      setIsLoadingMore(false);
+    if (newFilter !== "all") {
+      await loadAllRemaining();
     }
+  };
+
+  // ── Search focus ─────────────────────────────────────────────────────────
+  // Eagerly drain pagination so substring search hits the full corpus, not
+  // just the first PAGE_SIZE×N already-loaded pages.
+  const handleSearchFocus = () => {
+    void loadAllRemaining();
   };
 
   // ── Load more ─────────────────────────────────────────────────────────────
@@ -611,7 +626,8 @@ export default function NotesPage() {
           <button
             onClick={handleRefresh}
             disabled={isRefreshing || undefined}
-            aria-label="Refresh notes"
+            aria-busy={isRefreshing || undefined}
+            aria-label={isRefreshing ? "Refreshing notes" : "Refresh notes"}
             className="rounded-full p-2 text-muted-foreground/50 transition-all hover:bg-primary/10 hover:text-primary disabled:opacity-30"
           >
             <RefreshCw
@@ -820,6 +836,7 @@ export default function NotesPage() {
                 placeholder="Search notes…"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
+                onFocus={handleSearchFocus}
                 inputMode="search"
                 enterKeyHint="search"
                 autoCorrect="off"
@@ -848,7 +865,7 @@ export default function NotesPage() {
               <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/40">
                 {searchedNotes.length} result
                 {searchedNotes.length !== 1 ? "s" : ""}
-                {hasMore && " (in loaded notes)"}
+                {isLoadingMore && hasMore && " (loading more…)"}
               </p>
             )}
           </div>

@@ -1,8 +1,8 @@
 "use client";
 
-import { useActionState } from "react";
+import { useActionState, useEffect, useState } from "react";
 import { motion } from "motion/react";
-import { Lock, ArrowRight, Loader2 } from "lucide-react";
+import { AlertCircle, Lock, ArrowRight, Loader2 } from "lucide-react";
 import { login } from "@/app/actions/auth";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -35,6 +35,20 @@ function writeSkipFlag() {
 
 export default function LoginPage() {
   const [state, action, isPending] = useActionState(login, null);
+  const [isExpired, setIsExpired] = useState(false);
+
+  // Read `?expired=1` post-mount. Avoids `useSearchParams()` (which
+  // would force a Suspense boundary on this otherwise-simple page) by
+  // parsing `location.search` directly. Deferred per AGENTS.md § 4
+  // set-state-in-effect rule.
+  useEffect(() => {
+    const win = globalThis as unknown as { location?: { search?: string } };
+    const search = win.location?.search ?? "";
+    const t = setTimeout(() => {
+      setIsExpired(new URLSearchParams(search).has("expired"));
+    }, 0);
+    return () => clearTimeout(t);
+  }, []);
 
   return (
     <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-background p-6">
@@ -70,6 +84,18 @@ export default function LoginPage() {
               Enter the passcode to unlock our digital world.
             </p>
           </div>
+
+          {isExpired && (
+            <div
+              role="alert"
+              className="flex w-full items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-300"
+            >
+              <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <span>
+                Your session ended — please sign in again to continue.
+              </span>
+            </div>
+          )}
 
           <form
             action={action}
