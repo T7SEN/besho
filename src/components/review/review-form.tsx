@@ -6,6 +6,7 @@ import { motion } from "motion/react";
 import { Loader2, Send, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { vibrate } from "@/lib/haptic";
+import { useNetwork } from "@/hooks/use-network";
 import { submitReview } from "@/app/actions/reviews";
 import {
   MAX_FIELD_LENGTH,
@@ -73,13 +74,16 @@ export function ReviewForm({
   );
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
+  const { connected } = useNetwork();
+  const isOffline = !connected;
 
   const isEdit = !!existing;
   const overLimit = REVIEW_FIELDS.some(
     (m) => values[m.key].length > MAX_FIELD_LENGTH,
   );
   const hasContent = REVIEW_FIELDS.some((m) => values[m.key].trim().length > 0);
-  const canSubmit = withinWindow && hasContent && !overLimit && !isPending;
+  const canSubmit =
+    withinWindow && hasContent && !overLimit && !isPending && !isOffline;
 
   const setField = (key: ReviewFieldKey, value: string) => {
     setValues((prev) => ({ ...prev, [key]: value }));

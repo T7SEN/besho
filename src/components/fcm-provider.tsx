@@ -67,6 +67,20 @@ export function FCMProvider() {
           vibration: true,
         });
 
+        // Dedicated max-priority channel for safeword + summon. Without
+        // registering this channel by id, FCM's `android.notification.channelId`
+        // hint silently falls back to "default", neutering the priority/sound
+        // semantics — heads-up + ringtone become regular + silent.
+        await PushNotifications.createChannel({
+          id: "safeword",
+          name: "Emergency",
+          description: "Safeword + summon — bypasses focus modes",
+          importance: 5,
+          visibility: 1,
+          sound: "default",
+          vibration: true,
+        });
+
         await PushNotifications.removeAllListeners();
 
         const registrationListener = await PushNotifications.addListener(

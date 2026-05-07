@@ -30,6 +30,7 @@ import { getCurrentAuthor } from "@/app/actions/auth";
 import { Button } from "@/components/ui/button";
 import { AUTHOR_COLORS, START_DATE, type Author } from "@/lib/constants";
 import { usePresence } from "@/hooks/use-presence";
+import { useNetwork } from "@/hooks/use-network";
 import { useRefreshListener } from "@/hooks/use-refresh-listener";
 import { useKeyboardHeight } from "@/hooks/use-keyboard";
 import { logger } from "@/lib/logger";
@@ -98,6 +99,9 @@ export default function TimelinePage() {
   const formRef = useRef<HTMLFormElement>(null);
 
   usePresence("/timeline", !!currentAuthor);
+
+  const { connected } = useNetwork();
+  const isOffline = !connected;
 
   const handleRefresh = useCallback(async () => {
     const items = await getMilestones();
@@ -338,7 +342,7 @@ export default function TimelinePage() {
                   </button>
                   <Button
                     type="submit"
-                    disabled={isPending || undefined}
+                    disabled={isPending || isOffline || undefined}
                     className="rounded-full px-5"
                   >
                     {isPending ? (

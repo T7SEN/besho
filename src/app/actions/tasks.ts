@@ -126,6 +126,8 @@ export async function submitTask(
 ): Promise<{ success?: boolean; error?: string }> {
   const session = await getSession();
   if (!session?.author) return { error: "Not authenticated." };
+  if (session.author !== "Besho")
+    return { error: "Only kitten can submit tasks." };
 
   const block = await assertWriteAllowed(session.author);
   if (block) return block;
@@ -142,14 +144,11 @@ export async function submitTask(
 
     await redis.set(taskKey(id), updated);
 
-    // Notify T7SEN that a task needs his review
-    if (session.author === "Besho") {
-      await sendNotification("T7SEN", {
-        title: "👀 Task Ready for Review",
-        body: `Besho submitted: ${existing.title}`,
-        url: "/tasks",
-      });
-    }
+    await sendNotification("T7SEN", {
+      title: "👀 Task Ready for Review",
+      body: `Besho submitted: ${existing.title}`,
+      url: "/tasks",
+    });
 
     logger.interaction("[tasks] Task submitted for review", {
       id,

@@ -629,6 +629,10 @@ const isOffline = !connected
 
 Pair with an offline banner that informs the user why the button is disabled. The banner is informational only — no queueing happens, the user just retries when online.
 
+### Applied across
+
+All primary form submits in user-facing pages now carry this gate: `/notes`, `/tasks`, `/rules`, `/timeline`, `/ledger`, `/rituals` (both `SubmitForm` and `RitualForm` sub-components call `useNetwork` themselves), `/protocol` (inside `EditForm`), `/permissions` (`RequestForm` + `QuotaModal`), `/review` (`ReviewForm`'s `canSubmit` includes `!isOffline`). Sub-component forms call `useNetwork` directly rather than drilling `isOffline` as a prop — the hook is cheap and avoids prop pollution. The `/login` form is intentionally exempt: if the user is offline they can't authenticate at all, no point disabling the submit.
+
 ---
 
 ## 19. `<TabsContent>` Holding Form Inputs Must `forceMount`

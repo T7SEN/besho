@@ -93,7 +93,7 @@ export async function triggerSafeWord(): Promise<{
     {
       title: "🔴 Safe Word",
       body: `${author} needs you. Stop everything.`,
-      url: "/dashboard",
+      url: "/",
     },
     {
       bypassPresence: true,

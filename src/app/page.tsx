@@ -50,7 +50,7 @@ export default function DashboardPage() {
 
   const { cancel, scheduleMoodNudge } = useLocalNotifications();
 
-  usePresence("/dashboard", !!currentAuthor);
+  usePresence("/", !!currentAuthor);
 
   const handleRefresh = useCallback(() => {
     setTimeout(() => setRefreshKey((k) => k + 1), 0);

@@ -40,6 +40,7 @@ import {
 import { getCurrentAuthor } from "@/app/actions/auth";
 import { TITLE_BY_AUTHOR } from "@/lib/constants";
 import { usePresence } from "@/hooks/use-presence";
+import { useNetwork } from "@/hooks/use-network";
 import { useRefreshListener } from "@/hooks/use-refresh-listener";
 import {
   idToNumeric,
@@ -153,6 +154,9 @@ export default function RulesPage() {
   const { schedule, cancel } = useLocalNotifications();
 
   usePresence("/rules", !!currentAuthor);
+
+  const { connected } = useNetwork();
+  const isOffline = !connected;
 
   const keyboardHeight = useKeyboardHeight();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -451,7 +455,7 @@ export default function RulesPage() {
                   </button>
                   <Button
                     type="submit"
-                    disabled={isPending || undefined}
+                    disabled={isPending || isOffline || undefined}
                     className="rounded-full px-5"
                   >
                     {isPending ? (

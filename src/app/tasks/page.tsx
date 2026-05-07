@@ -39,6 +39,7 @@ import {
 } from "@/app/actions/tasks";
 import { getCurrentAuthor } from "@/app/actions/auth";
 import { usePresence } from "@/hooks/use-presence";
+import { useNetwork } from "@/hooks/use-network";
 import { useRefreshListener } from "@/hooks/use-refresh-listener";
 import {
   idToNumeric,
@@ -112,6 +113,9 @@ export default function TasksPage() {
   const { schedule, cancel } = useLocalNotifications();
 
   usePresence("/tasks", !!currentAuthor);
+
+  const { connected } = useNetwork();
+  const isOffline = !connected;
 
   const handleRefresh = useCallback(async () => {
     const list = await getTasks();
@@ -426,7 +430,7 @@ export default function TasksPage() {
                   </button>
                   <Button
                     type="submit"
-                    disabled={isPending || undefined}
+                    disabled={isPending || isOffline || undefined}
                     className="rounded-full px-5"
                   >
                     {isPending ? (

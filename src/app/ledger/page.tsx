@@ -36,6 +36,7 @@ import {
 import { getCurrentAuthor } from "@/app/actions/auth";
 import { TITLE_BY_AUTHOR } from "@/lib/constants";
 import { usePresence } from "@/hooks/use-presence";
+import { useNetwork } from "@/hooks/use-network";
 import { useRefreshListener } from "@/hooks/use-refresh-listener";
 import { vibrate } from "@/lib/haptic";
 import { hideKeyboard } from "@/lib/keyboard";
@@ -76,6 +77,9 @@ export default function LedgerPage() {
   const formRef = useRef<HTMLFormElement & { reset: () => void }>(null);
 
   usePresence("/ledger", !!currentAuthor);
+
+  const { connected } = useNetwork();
+  const isOffline = !connected;
 
   const handleRefresh = useCallback(async () => {
     const list = await getLedgerEntries();
@@ -368,7 +372,7 @@ export default function LedgerPage() {
                   </button>
                   <Button
                     type="submit"
-                    disabled={isPending || undefined}
+                    disabled={isPending || isOffline || undefined}
                     className="rounded-full px-5"
                   >
                     {isPending ? (

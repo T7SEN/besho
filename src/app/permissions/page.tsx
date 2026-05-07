@@ -68,6 +68,7 @@ import {
 import { getCurrentAuthor } from "@/app/actions/auth";
 import { TITLE_BY_AUTHOR } from "@/lib/constants";
 import { usePresence } from "@/hooks/use-presence";
+import { useNetwork } from "@/hooks/use-network";
 import { useRefreshListener } from "@/hooks/use-refresh-listener";
 import { vibrate } from "@/lib/haptic";
 import { hideKeyboard } from "@/lib/keyboard";
@@ -130,8 +131,6 @@ const EMPTY_STATE_TIPS_BESHO = [
   "Propose a change to the rules",
 ];
 
-const PULL_TO_REFRESH_THRESHOLD = 80;
-
 /**
  * Client-side wrapper around `createPermission` that catches the
  * network-layer family of `TypeError`s (Failed to fetch / network
@@ -188,12 +187,6 @@ export default function PermissionsPage() {
     null,
   );
   const [now] = useState(() => Date.now());
-
-  // Pull-to-refresh — touch-only. Anchors the gesture at scrollY === 0
-  // so it doesn't conflict with the page's normal vertical scroll.
-  const [pullDistance, setPullDistance] = useState(0);
-  const [isRefreshing, setIsRefreshing] = useState(false);
-  const pullStartYRef = useRef<number | null>(null);
 
   // Empty-state tip — picked once on mount, doesn't reshuffle on
   // refresh. Keeps the empty state predictable for a given session.
@@ -385,79 +378,8 @@ export default function PermissionsPage() {
     return Array.from(set);
   }, [requests]);
 
-  const handleTouchStart = useCallback((e: React.TouchEvent) => {
-    const doc = (globalThis as unknown as { document: Document }).document;
-    if (doc.documentElement.scrollTop > 0) return;
-    pullStartYRef.current = e.touches[0].clientY;
-  }, []);
-
-  const handleTouchMove = useCallback((e: React.TouchEvent) => {
-    if (pullStartYRef.current === null) return;
-    const delta = e.touches[0].clientY - pullStartYRef.current;
-    if (delta <= 0) {
-      // User reversed direction or scrolled up — abort the pull.
-      setPullDistance(0);
-      return;
-    }
-    // Clamp at 2x threshold for visual ceiling; resists past that.
-    const clamped = Math.min(delta, PULL_TO_REFRESH_THRESHOLD * 2);
-    setPullDistance(clamped);
-  }, []);
-
-  const handleTouchEnd = useCallback(async () => {
-    if (pullStartYRef.current === null) return;
-    const triggered = pullDistance >= PULL_TO_REFRESH_THRESHOLD;
-    pullStartYRef.current = null;
-    if (triggered && !isRefreshing) {
-      setIsRefreshing(true);
-      void vibrate(60, "medium");
-      try {
-        await handleRefresh();
-      } finally {
-        setTimeout(() => {
-          setIsRefreshing(false);
-          setPullDistance(0);
-        }, 300);
-      }
-    } else {
-      setPullDistance(0);
-    }
-  }, [pullDistance, isRefreshing, handleRefresh]);
-
   return (
-    <div
-      className="relative min-h-screen bg-background p-4 md:p-12"
-      onTouchStart={handleTouchStart}
-      onTouchMove={handleTouchMove}
-      onTouchEnd={handleTouchEnd}
-      onTouchCancel={handleTouchEnd}
-    >
-      {/* Pull-to-refresh indicator — slides down from the top while
-          the user is pulling, locks at threshold, spins during the
-          refresh round-trip. */}
-      {(pullDistance > 0 || isRefreshing) && (
-        <div
-          className="pointer-events-none fixed left-1/2 top-0 z-50 -translate-x-1/2"
-          style={{
-            transform: `translate(-50%, ${Math.min(pullDistance, PULL_TO_REFRESH_THRESHOLD) - 32}px)`,
-            opacity: Math.min(pullDistance / PULL_TO_REFRESH_THRESHOLD, 1),
-          }}
-        >
-          <div
-            className={cn(
-              "flex h-10 w-10 items-center justify-center rounded-full",
-              "border border-white/10 bg-card/80 backdrop-blur-md shadow-lg",
-              pullDistance >= PULL_TO_REFRESH_THRESHOLD
-                ? "text-primary"
-                : "text-muted-foreground/60",
-            )}
-          >
-            <Loader2
-              className={cn("h-4 w-4", isRefreshing && "animate-spin")}
-            />
-          </div>
-        </div>
-      )}
+    <div className="relative min-h-screen bg-background p-4 md:p-12">
       <div className="pointer-events-none fixed inset-0 overflow-hidden">
         <div className="absolute left-[-10%] top-[-10%] h-125 w-125 rounded-full bg-primary/5 blur-[150px]" />
         <div className="absolute bottom-[-10%] right-[-10%] h-125 w-125 rounded-full bg-purple-500/5 blur-[150px]" />
@@ -1523,6 +1445,8 @@ function RequestForm({
 }) {
   const keyboardHeight = useKeyboardHeight();
   const containerRef = useRef<HTMLDivElement>(null);
+  const { connected } = useNetwork();
+  const isOffline = !connected;
 
   // Controlled category — drives schema-conditional fields below.
   const [category, setCategory] = useState<PermissionCategory | "">("");
@@ -1749,7 +1673,7 @@ function RequestForm({
         </button>
         <Button
           type="submit"
-          disabled={isPending || undefined}
+          disabled={isPending || isOffline || undefined}
           className="rounded-full px-5"
         >
           {isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Submit"}
@@ -1909,6 +1833,8 @@ function QuotaModal({
   onSaved: () => Promise<void>;
 }) {
   const [state, dispatch, isPending] = useActionState(setQuotas, null);
+  const { connected } = useNetwork();
+  const isOffline = !connected;
 
   useEffect(() => {
     if (state?.success) {
@@ -2042,7 +1968,7 @@ function QuotaModal({
             </button>
             <Button
               type="submit"
-              disabled={isPending || undefined}
+              disabled={isPending || isOffline || undefined}
               className="rounded-full px-5"
             >
               {isPending ? (

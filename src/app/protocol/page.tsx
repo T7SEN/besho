@@ -35,6 +35,7 @@ import {
 import { getCurrentAuthor } from "@/app/actions/auth";
 import { TITLE_BY_AUTHOR } from "@/lib/constants";
 import { usePresence } from "@/hooks/use-presence";
+import { useNetwork } from "@/hooks/use-network";
 import { useRefreshListener } from "@/hooks/use-refresh-listener";
 import { vibrate } from "@/lib/haptic";
 import { Button } from "@/components/ui/button";
@@ -363,7 +364,6 @@ function ProtocolPageInner() {
               state={updateState}
               isPending={isUpdatePending}
               onCancel={() => setMode("read")}
-              keyboardHeight={keyboardHeight}
               keyboardContainerRef={editContainerRef}
             />
           ) : mode === "diff" && current && previousVersion ? (
@@ -727,7 +727,6 @@ function EditForm({
   state,
   isPending,
   onCancel,
-  keyboardHeight,
   keyboardContainerRef,
 }: {
   initialContent: string;
@@ -735,9 +734,11 @@ function EditForm({
   state: { success?: boolean; error?: string } | null;
   isPending: boolean;
   onCancel: () => void;
-  keyboardHeight: number;
   keyboardContainerRef: React.RefObject<HTMLDivElement | null>;
 }) {
+  const { connected } = useNetwork();
+  const isOffline = !connected;
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 8 }}
@@ -790,7 +791,7 @@ function EditForm({
           </button>
           <Button
             type="submit"
-            disabled={isPending || undefined}
+            disabled={isPending || isOffline || undefined}
             className="rounded-full px-5"
           >
             {isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}

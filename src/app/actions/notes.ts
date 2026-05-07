@@ -304,6 +304,17 @@ export async function togglePinNote(
   const block = await assertWriteAllowed(author);
   if (block) return block;
 
+  // Per-author lock around count-then-write. Upstash REST has no
+  // WATCH/MULTI, so two concurrent toggles can both observe count=4
+  // and each write to land at 5. SETNX with a 5s TTL serializes the
+  // critical section without a schema change; auto-expiry guards
+  // against orphan locks if the request crashes mid-flight.
+  const lockKey = `notes:pin-lock:${author}`;
+  const lockAcquired = await redis.set(lockKey, "1", { nx: true, ex: 5 });
+  if (!lockAcquired) {
+    return { error: "Another pin operation is in progress. Try again." };
+  }
+
   try {
     const existing = await redis.get<Note>(noteKey(id));
     if (!existing) return { error: "Note not found." };
@@ -352,6 +363,9 @@ export async function togglePinNote(
   } catch (error) {
     logger.error("[notes] Failed to toggle pin:", error);
     return { error: "Failed to pin note." };
+  } finally {
+    // Best-effort unlock; if this fails the TTL auto-clears in 5s.
+    await redis.del(lockKey).catch(() => {});
   }
 }
 

@@ -64,6 +64,7 @@ import {
 } from "@/lib/rituals";
 import { dateKeyInTz } from "@/lib/cairo-time";
 import { usePresence } from "@/hooks/use-presence";
+import { useNetwork } from "@/hooks/use-network";
 import { useRefreshListener } from "@/hooks/use-refresh-listener";
 import { vibrate } from "@/lib/haptic";
 import { hideKeyboard } from "@/lib/keyboard";
@@ -878,6 +879,8 @@ function SubmitForm({
   onSuccess: () => Promise<void> | void;
 }) {
   const [state, action, isPending] = useActionState(submitOccurrence, null);
+  const { connected } = useNetwork();
+  const isOffline = !connected;
 
   useEffect(() => {
     if (state?.success) {
@@ -926,7 +929,7 @@ function SubmitForm({
           </button>
           <Button
             type="submit"
-            disabled={isPending || isBusy || undefined}
+            disabled={isPending || isBusy || isOffline || undefined}
             className="rounded-full px-5"
           >
             {isPending ? (
@@ -976,6 +979,8 @@ function RitualForm({
       ? updateRitual.bind(null, existingRitual.id)
       : createRitual;
   const [state, dispatch, isPending] = useActionState(action, null);
+  const { connected } = useNetwork();
+  const isOffline = !connected;
 
   useEffect(() => {
     if (state?.success) {
@@ -1244,7 +1249,7 @@ function RitualForm({
         </button>
         <Button
           type="submit"
-          disabled={isPending || undefined}
+          disabled={isPending || isOffline || undefined}
           className="rounded-full px-5"
         >
           {isPending ? (
