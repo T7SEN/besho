@@ -30,7 +30,7 @@ import {
   readRestraintRaw,
   setRestraintRaw,
 } from "@/lib/restraint";
-import { todayKeyCairo } from "@/lib/cairo-time";
+import { addDaysCairo, todayKeyCairo } from "@/lib/cairo-time";
 import { sendNotification } from "./notifications";
 import type { NotificationRecord } from "./notifications";
 import type { AuthFailureRecord } from "./auth";
@@ -2629,6 +2629,204 @@ export async function repairObedienceDrift(): Promise<RepairObedienceDriftResult
   } catch (err) {
     logger.error("[admin] obedience drift repair failed", err);
     return { error: "Repair failed." };
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────
+// One-time bucket migration: the rewards system used to bucket events
+// by the just-completed week (via `currentReviewWeekDate`) instead of
+// the containing week. After fixing `currentWeekKey` to use the
+// correct semantic, every existing bucket is shifted back by one
+// week relative to its actual content. This action shifts each
+// bucket forward by 7 days so labels match content.
+//
+// Idempotent: gated by `obedience:bucket-shift-migration:done`
+// sentinel. Re-runs are no-ops once the sentinel is set.
+//
+// Patterns migrated (all suffixed with `{author}:{weekKey}`):
+//   - obedience:events:*       (ZSET — score = points, member = type:eventId)
+//   - obedience:audit:*        (ZSET — score = ts, member = type:eventId)
+//   - obedience:finalized:*    (STRING — "1")
+//   - obedience:multiplier:*   (NUMBER — frozen multiplier)
+//   - obedience:tier-notified:*(NUMBER — highest threshold notified)
+//
+// Scope: scans up to 1000 keys per pattern via SCAN. Two-user app
+// realistic count is ~tens.
+// ──────────────────────────────────────────────────────────────────
+
+const BUCKET_SHIFT_SENTINEL = "obedience:bucket-shift-migration:done";
+const BUCKET_KEY_PREFIXES = [
+  "obedience:events:",
+  "obedience:audit:",
+  "obedience:finalized:",
+  "obedience:multiplier:",
+  "obedience:tier-notified:",
+] as const;
+
+export interface BucketShiftMigrationResult {
+  success?: boolean;
+  error?: string;
+  alreadyDone?: boolean;
+  scannedKeys?: number;
+  migratedKeys?: number;
+  skippedKeys?: number;
+  perPattern?: Record<string, { scanned: number; migrated: number; skipped: number }>;
+}
+
+/** Match `{prefix}{author}:{YYYY-MM-DD}` and split. */
+function parseBucketKey(
+  key: string,
+  prefix: string,
+): { author: Author; weekKey: string } | null {
+  if (!key.startsWith(prefix)) return null;
+  const rest = key.slice(prefix.length);
+  const colon = rest.indexOf(":");
+  if (colon < 0) return null;
+  const author = rest.slice(0, colon);
+  const weekKey = rest.slice(colon + 1);
+  if (author !== "T7SEN" && author !== "Besho") return null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(weekKey)) return null;
+  return { author: author as Author, weekKey };
+}
+
+async function scanByPrefix(prefix: string): Promise<string[]> {
+  const seen = new Set<string>();
+  let cursor: string | number = 0;
+  let safety = 0;
+  do {
+    const [next, keys] = (await redis.scan(cursor, {
+      match: `${prefix}*`,
+      count: 200,
+    })) as [string | number, string[]];
+    for (const k of keys ?? []) seen.add(k);
+    cursor = next;
+    safety++;
+    if (seen.size >= 1000 || safety > 100) break;
+  } while (cursor !== 0 && cursor !== "0");
+  return Array.from(seen);
+}
+
+/**
+ * Copy a single key to a new key name, regardless of type. Returns
+ * true if the source existed and was copied successfully. Uses
+ * `redis.type` to dispatch.
+ */
+async function copyKey(src: string, dst: string): Promise<boolean> {
+  const type = await redis.type(src);
+  if (type === "none") return false;
+  if (type === "string") {
+    const value = await redis.get(src);
+    if (value === null || value === undefined) return false;
+    await redis.set(dst, value);
+    return true;
+  }
+  if (type === "zset") {
+    const raw =
+      ((await redis.zrange<(string | number)[]>(src, 0, -1, {
+        withScores: true,
+      })) ?? []) as (string | number)[];
+    if (raw.length === 0) return false;
+    const members: { score: number; member: string }[] = [];
+    for (let i = 0; i < raw.length; i += 2) {
+      members.push({
+        score: Number(raw[i + 1]) || 0,
+        member: String(raw[i]),
+      });
+    }
+    if (members.length === 0) return false;
+    // ZADD batch.
+    for (const m of members) {
+      await redis.zadd(dst, { score: m.score, member: m.member });
+    }
+    return true;
+  }
+  // Other types not used by obedience buckets — skip defensively.
+  return false;
+}
+
+export async function migrateObedienceBucketShift(): Promise<BucketShiftMigrationResult> {
+  const guard = await requireSir();
+  if (!guard.ok) return { error: guard.error };
+  try {
+    const sentinel = await redis.get<string>(BUCKET_SHIFT_SENTINEL);
+    if (sentinel) {
+      return { success: true, alreadyDone: true };
+    }
+
+    let totalScanned = 0;
+    let totalMigrated = 0;
+    let totalSkipped = 0;
+    const perPattern: Record<
+      string,
+      { scanned: number; migrated: number; skipped: number }
+    > = {};
+
+    for (const prefix of BUCKET_KEY_PREFIXES) {
+      const keys = await scanByPrefix(prefix);
+      let migrated = 0;
+      let skipped = 0;
+      for (const key of keys) {
+        const parsed = parseBucketKey(key, prefix);
+        if (!parsed) {
+          skipped++;
+          continue;
+        }
+        const newWeekKey = addDaysCairo(parsed.weekKey, 7);
+        const dst = `${prefix}${parsed.author}:${newWeekKey}`;
+        if (dst === key) {
+          skipped++;
+          continue;
+        }
+        // Don't overwrite an existing destination — bail loudly.
+        const dstType = await redis.type(dst);
+        if (dstType !== "none") {
+          logger.warn("[admin] bucket shift: destination exists, skipping", {
+            src: key,
+            dst,
+            dstType,
+          });
+          skipped++;
+          continue;
+        }
+        const copied = await copyKey(key, dst);
+        if (copied) {
+          await redis.del(key);
+          migrated++;
+        } else {
+          skipped++;
+        }
+      }
+      perPattern[prefix] = {
+        scanned: keys.length,
+        migrated,
+        skipped,
+      };
+      totalScanned += keys.length;
+      totalMigrated += migrated;
+      totalSkipped += skipped;
+    }
+
+    await redis.set(BUCKET_SHIFT_SENTINEL, String(Date.now()));
+    logger.interaction("[admin] obedience bucket shift completed", {
+      by: guard.session.author,
+      scanned: totalScanned,
+      migrated: totalMigrated,
+      skipped: totalSkipped,
+    });
+    revalidatePath("/admin/health");
+    revalidatePath("/admin/rewards");
+    revalidatePath("/rewards");
+    return {
+      success: true,
+      alreadyDone: false,
+      scannedKeys: totalScanned,
+      migratedKeys: totalMigrated,
+      skippedKeys: totalSkipped,
+      perPattern,
+    };
+  } catch (err) {
+    logger.error("[admin] obedience bucket shift failed", err);
+    return { error: "Bucket shift failed." };
   }
 }
 

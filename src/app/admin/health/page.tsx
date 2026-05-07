@@ -15,8 +15,10 @@ import {
 import {
   getCronTelemetry,
   getHealthSnapshot,
+  migrateObedienceBucketShift,
   repairIndexes,
   repairObedienceDrift,
+  type BucketShiftMigrationResult,
   type CronTelemetryResult,
   type HealthSnapshot,
   type ObedienceDriftRepairSummary,
@@ -51,6 +53,11 @@ export default function HealthPage() {
   const [obedienceRepairing, setObedienceRepairing] = useState(false);
   const [obedienceResult, setObedienceResult] =
     useState<ObedienceDriftRepairSummary | null>(null);
+
+  const [confirmingShift, setConfirmingShift] = useState(false);
+  const [shifting, setShifting] = useState(false);
+  const [shiftResult, setShiftResult] =
+    useState<BucketShiftMigrationResult | null>(null);
 
   const [now, setNow] = useState(() => Date.now());
 
@@ -103,6 +110,12 @@ export default function HealthPage() {
     return () => clearTimeout(id);
   }, [confirmingObedience]);
 
+  useEffect(() => {
+    if (!confirmingShift) return;
+    const id = setTimeout(() => setConfirmingShift(false), CONFIRM_TIMEOUT_MS);
+    return () => clearTimeout(id);
+  }, [confirmingShift]);
+
   const handleRepair = async () => {
     void vibrate([100, 50, 100], "heavy");
     setRepairing(true);
@@ -136,6 +149,24 @@ export default function HealthPage() {
       }
     } finally {
       setObedienceRepairing(false);
+    }
+  };
+
+  const handleBucketShift = async () => {
+    void vibrate([120, 50, 120], "heavy");
+    setShifting(true);
+    setError(null);
+    try {
+      const result = await migrateObedienceBucketShift();
+      if (result.error) {
+        setError(result.error);
+      } else {
+        setShiftResult(result);
+        setConfirmingShift(false);
+        await fetchHealth();
+      }
+    } finally {
+      setShifting(false);
     }
   };
 
@@ -322,7 +353,74 @@ export default function HealthPage() {
             </div>
           )}
 
+          {shiftResult && (
+            <div
+              className={cn(
+                "rounded-lg border p-3 text-xs",
+                shiftResult.alreadyDone
+                  ? "border-zinc-500/40 bg-zinc-500/10 text-zinc-300"
+                  : "border-emerald-400/40 bg-emerald-400/10 text-emerald-400",
+              )}
+            >
+              {shiftResult.alreadyDone ? (
+                <span>
+                  Bucket shift migration already completed — sentinel
+                  present, no-op.
+                </span>
+              ) : (
+                <>
+                  Bucket shift migration completed:
+                  <ul className="mt-1 space-y-0.5">
+                    <li>Scanned: {shiftResult.scannedKeys ?? 0}</li>
+                    <li>Migrated (shifted +7d): {shiftResult.migratedKeys ?? 0}</li>
+                    <li>Skipped: {shiftResult.skippedKeys ?? 0}</li>
+                  </ul>
+                </>
+              )}
+            </div>
+          )}
+
           <div className="flex flex-wrap items-center justify-end gap-2">
+            {confirmingShift ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void vibrate(20, "light");
+                    setConfirmingShift(false);
+                  }}
+                  disabled={shifting}
+                  className="rounded-full border border-border/40 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground active:scale-95 disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleBucketShift()}
+                  disabled={shifting}
+                  className="flex items-center gap-1.5 rounded-full bg-rose-500 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-white transition-colors hover:bg-rose-500/90 active:scale-95 disabled:opacity-60"
+                >
+                  {shifting ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <Wrench className="h-3 w-3" />
+                  )}
+                  Confirm bucket shift (+7d)
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  void vibrate(50, "medium");
+                  setConfirmingShift(true);
+                }}
+                className="flex items-center gap-1.5 rounded-full border border-rose-500/40 bg-rose-500/10 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-rose-400 transition-colors hover:bg-rose-500/20 active:scale-95"
+              >
+                <Wrench className="h-3 w-3" />
+                Bucket shift (one-time)
+              </button>
+            )}
             {confirmingObedience ? (
               <>
                 <button

@@ -23,12 +23,12 @@
 
 import { Redis } from "@upstash/redis";
 import type { Author } from "./constants";
+import { formatWeekLabel, weekRangeMs } from "./review-utils";
 import {
-  currentReviewWeekDate,
-  formatWeekLabel,
-  weekRangeMs,
-} from "./review-utils";
-import { addDaysCairo } from "./cairo-time";
+  addDaysCairo,
+  todayKeyCairo,
+  weekdayOfDateKey,
+} from "./cairo-time";
 import {
   DEFAULT_OBEDIENCE_WEIGHTS,
   DEFAULT_REWARD_TIERS,
@@ -254,9 +254,30 @@ export async function setTestModeRaw(on: boolean): Promise<void> {
 
 // ── Week-key helper ──────────────────────────────────────────────────────
 
-/** Aligns with /review week-key (Sun→Sat Cairo). */
+/**
+ * Sunday-`YYYY-MM-DD` (Cairo) of the week CONTAINING `now`. The rewards
+ * system buckets events by the week they occurred in, so on Thursday
+ * `currentWeekKey()` must return *this Sunday*, not last Sunday.
+ *
+ * Historical caveat: this used to delegate to `currentReviewWeekDate`,
+ * which has a different semantic — it returns the Sunday of the
+ * most-recently-completed reflection week (i.e. last Sunday on a
+ * Thursday). That semantic is correct for `/review` (you reflect on
+ * the just-completed week) but wrong for `/rewards`, where event
+ * bucketing follows the calendar week containing the event timestamp.
+ *
+ * The off-by-one bug shipped with the rewards system; it manifested
+ * as week-wrap notifications firing for two-weeks-back labels and
+ * events bucketing into the prior Sunday's key. Buckets created
+ * under the buggy semantic must be migrated forward by 7 days — see
+ * `migrateObedienceBucketShift` in `admin.ts`. Don't reintroduce the
+ * delegation to `currentReviewWeekDate`; the helpers serve different
+ * features with the same input shape but different output semantics.
+ */
 export function currentWeekKey(now: number = Date.now()): string {
-  return currentReviewWeekDate(now);
+  const todayStr = todayKeyCairo(now);
+  const dow = weekdayOfDateKey(todayStr); // 0=Sun .. 6=Sat
+  return addDaysCairo(todayStr, -dow);
 }
 
 /** N weeks before `weekKey`. */

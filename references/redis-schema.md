@@ -381,6 +381,7 @@ Score-based reward system on top of `/ledger` (which stays as Sir's manual log).
 | `obedience:longest-streak:{author}`          | INT    | none | Lifetime record — longest consecutive high-score streak ever. Updated at finalize when surpassed                                            |
 | `obedience:weeks-tracked:{author}`           | INT    | none | Counter — incremented once per finalize. Reflects how many weeks the score system has been observing                                       |
 | `obedience:test-mode`                        | "on"   | none | Sir-only flag. When present, `claimReward` accepts the current week (in addition to the immediately prior week) so the full claim → deliver flow can be exercised without ending the week |
+| `obedience:bucket-shift-migration:done`      | STRING | none | One-time sentinel set by `migrateObedienceBucketShift`. Stores the `Date.now()` at migration time. Presence makes the migration a no-op on subsequent runs. |
 | `review:fcm:opener:{weekDate}`               | "1"    | 25h  | Dedup sentinel for the Saturday review-window-open FCM. Set by `/api/cron/review-window-open` via `SET NX EX`                              |
 | `rewards:tiers`                              | JSON   | none | Sir-authored tier catalog — fixed 5 entries, ascending thresholds                    |
 | `reward:claim:{id}`                          | JSON   | none | One claim record (one per Besho-week)                                                |
