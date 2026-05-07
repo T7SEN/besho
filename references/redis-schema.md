@@ -436,6 +436,15 @@ Both `RewardItem` and `RewardTier` carry an optional `emoji` field (≤8 chars t
 - The `/rewards` page renders a `TestModeBanner` and a `CurrentWeekClaimSection` that pre-empts the prior-week section.
 - Toggle: `/admin/rewards` → Status tab → Test mode card. 5s in-process cache mirrors the restraint pattern; toggling propagates within the cache window.
 
+**Test claims are flagged.** Claims created via the test path get `testMode: true` set on the `RewardClaim` record. They're filtered out of:
+- `listClaimsForAuthor` (so `ClaimHistoryCard` doesn't show them)
+- `getRewardsHistory` (so the score history archive doesn't surface them as if real claims)
+- `RewardsBundle.priorClaim` (so a leftover test claim from when the prior week was current doesn't trigger the "Last week's claim" path)
+
+They're still readable from `RewardsBundle.currentClaim` (so the test status card renders during the test cycle) and from `readMostRecentPendingClaim` (so Sir can deliver/deny during testing).
+
+**Cleanup.** `adminPurgeTestClaims` (Sir-only) hard-deletes every claim where `testMode === true` OR `weekKey >= currentWeekKey()` (legacy fallback for claims created before the flag existed). Wipes from all three index keys. Surfaced as a "Purge test claims" button in the Test mode card on `/admin/rewards`.
+
 Don't propose a per-author or per-author-and-week test mode — it's a single global Sir-controlled flag for diagnostic flow verification.
 
 ### Manual adjustment
@@ -519,8 +528,8 @@ Add a sentinel for any back-fill. Idempotency matters because every cold-start c
 - `src/lib/device-id.ts` — `getOrCreateDeviceId`, `buildFingerprint`
 - `src/components/device-tracker.tsx` — mounted once in `src/app/layout.tsx` after `BiometricGate`
 - `src/lib/restraint.ts` — `assertWriteAllowed`, `isRestrained`, `setRestraintRaw`, `readRestraintRaw`
-- `src/app/actions/admin.ts` — `getStats`, `getHealthSnapshot`, `repairIndexes`, `getActivityHeatmap`, `adminSetMoodForAuthor`, `adminClearMoodForAuthor`, `getRelationshipDates`, `setRelationshipDates`, `getAuthFailures`, `clearAuthFailures`, `getRestraintState`, `setRestraintState`, `getRewardTiers`, `setRewardTiers`, `getObedienceWeights`, `setObedienceWeights`, `getStreakSettings`, `setStreakSettings`, `recomputeWeek`, `getObedienceAdminSnapshot`, `adminSetStreakRaw`, `adminAdjustScore`, `getObedienceEventLog`, `adminDeleteObedienceEvent`, `getTestModeState`, `setTestModeState`, `inspectRedisKey`, `getDeployInfo`, `getTrashRetention`, `setTrashRetention`
+- `src/app/actions/admin.ts` — `getStats`, `getHealthSnapshot`, `repairIndexes`, `getActivityHeatmap`, `adminSetMoodForAuthor`, `adminClearMoodForAuthor`, `getRelationshipDates`, `setRelationshipDates`, `getAuthFailures`, `clearAuthFailures`, `getRestraintState`, `setRestraintState`, `getRewardTiers`, `setRewardTiers`, `getObedienceWeights`, `setObedienceWeights`, `getStreakSettings`, `setStreakSettings`, `recomputeWeek`, `getObedienceAdminSnapshot`, `adminSetStreakRaw`, `adminAdjustScore`, `getObedienceEventLog`, `adminDeleteObedienceEvent`, `getTestModeState`, `setTestModeState`, `adminPurgeTestClaims`, `inspectRedisKey`, `getDeployInfo`, `getTrashRetention`, `setTrashRetention`
 - `src/lib/obedience.ts` — `recordObedienceEvent`, `recordObedienceEventForWeek`, `getWeekState`, `computeWeekScore`, `currentWeekKey`, `finalizeWeek`, `catchUpFinalizations`, `getEventLog`, `deleteObedienceEvent`, weight/tier/streak/multiplier read+write helpers (5s in-process cache mirroring `restraint.ts`)
 - `src/lib/reward-types.ts` — `ObedienceEventType`, `RewardTier`, `RewardItem`, `RewardClaim`, `ObedienceWeights`, `ObedienceWeekState`, default seeds + validation bounds
-- `src/app/actions/rewards.ts` — `getRewardsBundle`, `getRewardsHistory`, `claimReward`, `deliverClaim`, `denyClaim`, `listPendingClaims`, `listClaimsForAuthor`, `previewMultiplierForStreak`
+- `src/app/actions/rewards.ts` — `getRewardsBundle`, `getRewardsHistory`, `claimReward`, `deliverClaim`, `denyClaim`, `listPendingClaims`, `listClaimsForAuthor`, `previewMultiplierForStreak`, `purgeTestClaimsRaw`
 - `src/app/api/cron/obedience-sweep/route.ts` — daily missed-event sweep + week finalization; bearer-auth, no `vercel.json`

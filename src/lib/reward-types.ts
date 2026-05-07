@@ -113,6 +113,12 @@ export interface RewardClaim {
   /** Audit snapshot — score + tier threshold at claim time. */
   claimedScore: number;
   claimedTierThreshold: number;
+  /** Set on claims made via test mode (current-week claim path).
+   *  Filtered out of `ClaimHistoryCard` and `HistorySection` so they
+   *  don't pollute the permanent history view. Persisted so the
+   *  full flow (Sir delivery, status card) still works during the
+   *  test cycle. Sir can wipe these via `adminPurgeTestClaims`. */
+  testMode?: boolean;
 }
 
 // ── Default tunables ─────────────────────────────────────────────────────

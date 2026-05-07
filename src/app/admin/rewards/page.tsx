@@ -15,6 +15,7 @@ import {
 import {
   adminAdjustScore,
   adminDeleteObedienceEvent,
+  adminPurgeTestClaims,
   getObedienceAdminSnapshot,
   getObedienceEventLog,
   getTestModeState,
@@ -255,6 +256,9 @@ function TestModeToggle() {
   const [on, setOn] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [purging, setPurging] = useState(false);
+  const [purgeMsg, setPurgeMsg] = useState<string | null>(null);
+  const [confirmingPurge, setConfirmingPurge] = useState(false);
 
   useEffect(() => {
     const t = setTimeout(() => {
@@ -265,6 +269,13 @@ function TestModeToggle() {
     }, 0);
     return () => clearTimeout(t);
   }, []);
+
+  // Auto-cancel the purge confirm after 5s, matching the trash pattern.
+  useEffect(() => {
+    if (!confirmingPurge) return;
+    const t = setTimeout(() => setConfirmingPurge(false), 5_000);
+    return () => clearTimeout(t);
+  }, [confirmingPurge]);
 
   const toggle = async () => {
     if (on === null) return;
@@ -281,6 +292,27 @@ function TestModeToggle() {
     if (typeof result.on === "boolean") setOn(result.on);
   };
 
+  const purge = async () => {
+    if (!confirmingPurge) {
+      setConfirmingPurge(true);
+      void vibrate(40, "medium");
+      return;
+    }
+    setPurging(true);
+    setPurgeMsg(null);
+    void vibrate([100, 50, 100], "heavy");
+    const result = await adminPurgeTestClaims();
+    setPurging(false);
+    setConfirmingPurge(false);
+    if (result.error) {
+      setPurgeMsg(`Failed: ${result.error}`);
+      return;
+    }
+    setPurgeMsg(
+      `Removed ${result.removed ?? 0} test claim${result.removed === 1 ? "" : "s"}.`,
+    );
+  };
+
   return (
     <section
       className={cn(
@@ -293,13 +325,14 @@ function TestModeToggle() {
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <h2 className="text-sm font-semibold">Test mode</h2>
-          <p className="mt-1 text-xs text-muted-foreground">
+          <p className="mt-1 text-sm text-muted-foreground">
             When ON, kitten can claim a reward against the{" "}
             <span className="font-semibold text-foreground">current</span>{" "}
-            week without ending it. Streak counter and frozen multiplier are
-            untouched. The claim still goes through normal{" "}
-            deliver/deny — useful for verifying the full flow before a real
-            week-close.
+            week without ending it. Streak counter and frozen multiplier
+            are untouched. The claim still goes through normal
+            deliver/deny — useful for verifying the full flow before a
+            real week-close. Test claims are filtered out of her
+            permanent history.
           </p>
         </div>
         <button
@@ -317,8 +350,34 @@ function TestModeToggle() {
           {on === null ? "…" : on ? "Disable" : "Enable"}
         </button>
       </div>
-      {err && (
-        <p className="mt-2 text-xs text-destructive">{err}</p>
+      {err && <p className="mt-2 text-sm text-destructive">{err}</p>}
+
+      <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-border/30 pt-4">
+        <button
+          type="button"
+          onClick={() => void purge()}
+          disabled={purging}
+          className={cn(
+            "flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-bold uppercase tracking-wider transition-colors active:scale-95 disabled:opacity-50",
+            confirmingPurge
+              ? "border-rose-500/60 bg-rose-500/15 text-rose-400"
+              : "border-rose-500/30 bg-rose-500/10 text-rose-400 hover:border-rose-500/60",
+          )}
+        >
+          {purging ? (
+            <Loader2 className="h-3 w-3 animate-spin" />
+          ) : (
+            <Trash2 className="h-3 w-3" />
+          )}
+          {confirmingPurge ? "Confirm purge" : "Purge test claims"}
+        </button>
+        <p className="text-sm text-muted-foreground">
+          Wipes every claim flagged as test mode (and any current/future
+          week claim — legacy fallback). Hard delete, no trash.
+        </p>
+      </div>
+      {purgeMsg && (
+        <p className="mt-2 text-sm text-emerald-400">{purgeMsg}</p>
       )}
     </section>
   );

@@ -94,7 +94,7 @@ export async function getRewardsBundle(): Promise<{
       threshold,
       mults,
       myClaims,
-      priorClaim,
+      priorClaimRaw,
       currentClaim,
       testModeOn,
     ] = await Promise.all([
@@ -107,6 +107,13 @@ export async function getRewardsBundle(): Promise<{
       readClaimForWeek("Besho", current),
       getTestMode(),
     ]);
+    // Prior-week claim must be a real one. A leftover test claim from
+    // when the prior week was current shouldn't trigger the
+    // "Last week's claim" path — it pollutes the real claim flow.
+    const priorClaim =
+      priorClaimRaw && priorClaimRaw.testMode === true
+        ? null
+        : priorClaimRaw;
 
     let pendingClaim: RewardClaim | null = null;
     if (session.author === "T7SEN") {
@@ -195,6 +202,10 @@ export async function claimReward(
     if (!reward) return { error: "Reward not found." };
 
     const now = Date.now();
+    // Identify test-path claims by their weekKey at claim time. The
+    // current week is only acceptable when test mode is on (gated
+    // above), so weekKey === current is a reliable test signal.
+    const isTestClaim = args.weekKey === current;
     const claim: RewardClaim = {
       id: crypto.randomUUID(),
       author: "Besho",
@@ -210,6 +221,7 @@ export async function claimReward(
       requestedAt: now,
       claimedScore: state.displayedScore,
       claimedTierThreshold: tier.threshold,
+      ...(isTestClaim && { testMode: true }),
     };
 
     const pipeline = redis.pipeline();
@@ -348,7 +360,20 @@ export async function listClaimsForAuthor(
     const records = (await redis.mget<RewardClaim[]>(
       ...ids.map((id) => claimKey(id)),
     )) ?? [];
-    return records.filter((r): r is RewardClaim => !!r);
+    // Test-path claims are filtered from the history view. They still
+    // exist (so deliver/deny works during the test cycle); they just
+    // don't count as part of her permanent history.
+    const current = currentWeekKey();
+    return records.filter((r): r is RewardClaim => {
+      if (!r) return false;
+      if (r.testMode === true) return false;
+      // Legacy fallback for claims created before `testMode` was a
+      // field — anything for the current week or a future week is by
+      // definition a test claim, since the normal flow only accepts
+      // the immediately prior week.
+      if (r.weekKey >= current) return false;
+      return true;
+    });
   } catch (err) {
     logger.error("[rewards] list failed", err);
     return [];
@@ -411,6 +436,64 @@ export async function previewMultiplierForStreak(
   return multiplierForStreak(streak, mults);
 }
 
+// ── Test-claim cleanup (admin) ───────────────────────────────────────────
+
+/**
+ * Purges every test-path claim across both authors. Called from the
+ * Sir-only admin tooling (UI in `/admin/rewards`). Identifies a claim
+ * as a test claim if either:
+ *  - `claim.testMode === true` (modern flag), or
+ *  - `claim.weekKey >= currentWeekKey()` (legacy fallback for claims
+ *    created before the flag existed; the normal claim flow only
+ *    accepts the immediately prior week, so a current/future weekKey
+ *    is necessarily a test artifact).
+ *
+ * Hard-delete (no soft-delete via trash) — these are diagnostic
+ * artifacts, not restorable user content.
+ *
+ * Caller must verify Sir before invoking; this helper does no auth.
+ */
+export async function purgeTestClaimsRaw(): Promise<{
+  removed: number;
+}> {
+  const current = currentWeekKey();
+  const authors: Author[] = ["T7SEN", "Besho"];
+  let removed = 0;
+
+  for (const author of authors) {
+    const ids = ((await redis.zrange<unknown[]>(
+      claimsByAuthorKey(author),
+      0,
+      -1,
+    )) ?? []).map(String);
+    if (!ids.length) continue;
+    const records =
+      (await redis.mget<RewardClaim[]>(...ids.map((id) => claimKey(id)))) ??
+      [];
+
+    const toDelete: { claim: RewardClaim; id: string }[] = [];
+    for (let i = 0; i < ids.length; i++) {
+      const r = records[i];
+      if (!r) continue;
+      const isTest = r.testMode === true || r.weekKey >= current;
+      if (isTest) toDelete.push({ claim: r, id: ids[i] });
+    }
+    if (!toDelete.length) continue;
+
+    const pipeline = redis.pipeline();
+    for (const { claim, id } of toDelete) {
+      pipeline.del(claimKey(id));
+      pipeline.zrem(claimsByAuthorKey(author), id);
+      pipeline.zrem(CLAIMS_PENDING_KEY, id);
+      pipeline.del(claimByWeekKey(author, claim.weekKey));
+    }
+    await pipeline.exec();
+    removed += toDelete.length;
+  }
+
+  return { removed };
+}
+
 // ── Score history archive ────────────────────────────────────────────────
 
 export interface RewardsHistoryEntry {
@@ -453,10 +536,14 @@ export async function getRewardsHistory(
     const out: RewardsHistoryEntry[] = [];
     for (let i = 1; i <= safeLimit; i++) {
       const weekKey = shiftWeekKey(current, -i);
-      const [state, claim] = await Promise.all([
+      const [state, rawClaim] = await Promise.all([
         getWeekState("Besho", weekKey),
         readClaimForWeek("Besho", weekKey),
       ]);
+      // Test claims are excluded from the history view. See
+      // `listClaimsForAuthor` for the same filter rationale.
+      const claim =
+        rawClaim && rawClaim.testMode === true ? null : rawClaim;
       const isEmpty =
         state.breakdown.length === 0 && state.displayedScore === 0 && !claim;
       const isFirstPrior = i === 1;

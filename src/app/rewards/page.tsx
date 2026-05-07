@@ -240,10 +240,10 @@ function TestModeBanner() {
       <div className="flex items-start gap-3">
         <FlaskConical className="h-4 w-4 flex-none text-amber-400" />
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-semibold text-amber-400">
+          <p className="text-base font-semibold text-amber-400">
             Test mode is on
           </p>
-          <p className="mt-0.5 text-xs text-muted-foreground">
+          <p className="mt-1 text-sm text-muted-foreground">
             Current-week claims are open. The week itself isn&apos;t
             ending — streak and multiplier stay untouched.
           </p>
@@ -371,7 +371,7 @@ function ScoreCard({
         )}
       </div>
 
-      <div className="mt-4 space-y-2 text-xs text-muted-foreground">
+      <div className="mt-4 space-y-2 text-sm text-muted-foreground">
         <div>
           High-score threshold:{" "}
           <span className="font-semibold text-foreground">
@@ -492,7 +492,7 @@ function TierLadderCard({ weekState }: { weekState: ObedienceWeekState }) {
               {isOpen && (
                 <div className="border-t border-border/30 px-3 py-3">
                   {!hasRewards && (
-                    <p className="text-xs text-muted-foreground/70">
+                    <p className="text-sm text-muted-foreground/70">
                       No rewards in this tier yet.
                     </p>
                   )}
@@ -540,7 +540,7 @@ function TierLadderCard({ weekState }: { weekState: ObedienceWeekState }) {
                        *  the catalog — the description reveals only when
                        *  Besho commits to a claim. Picking is blind by
                        *  design; the gamble is the point. */}
-                      <p className="mt-3 text-xs italic text-muted-foreground/70">
+                      <p className="mt-3 text-sm italic text-muted-foreground/70">
                         Descriptions reveal after you claim.
                       </p>
                     </>
@@ -552,29 +552,29 @@ function TierLadderCard({ weekState }: { weekState: ObedienceWeekState }) {
         })}
       </div>
       {weekState.unlockedTier && (
-        <div className="mt-4 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2.5">
-          <p className="text-sm font-semibold text-primary">
+        <div className="mt-4 rounded-lg border border-primary/30 bg-primary/10 px-3 py-3">
+          <p className="text-base font-semibold text-primary">
             {weekState.unlockedTier.emoji ?? "🎁"}{" "}
             {weekState.unlockedTier.name} unlocked this week.
           </p>
-          <p className="mt-1 text-xs text-muted-foreground">
+          <p className="mt-1 text-sm text-muted-foreground">
             Claim opens once this week wraps (after Sat 23:59 Cairo). Push
             higher before then if you can.
           </p>
         </div>
       )}
       {nextTier && (
-        <p className="mt-3 text-xs text-muted-foreground">
+        <p className="mt-3 text-sm text-muted-foreground">
           <span className="font-semibold text-foreground">{gap}</span> more pts
           to {nextTier.name}.
         </p>
       )}
       {!nextTier && score > 0 && (
-        <p className="mt-3 text-xs text-muted-foreground">
+        <p className="mt-3 text-sm text-muted-foreground">
           Top tier reached. Hold the line.
         </p>
       )}
-      <p className="mt-2 text-xs text-muted-foreground/60">
+      <p className="mt-2 text-sm text-muted-foreground/70">
         Tap any tier to preview what&apos;s inside.
       </p>
     </section>
@@ -754,7 +754,7 @@ function ClaimPicker({
         {tier.emoji && <span className="mr-1">{tier.emoji}</span>}
         {tier.name} unlocked. Pick a reward at this tier or any below.
       </p>
-      <p className="mb-4 text-xs italic text-muted-foreground/70">
+      <p className="mb-4 text-sm italic text-muted-foreground/70">
         Pick blind. The description reveals once you commit.
       </p>
 
@@ -890,7 +890,7 @@ function ClaimStatusCard({ claim }: { claim: RewardClaim }) {
         <Gift className="h-4 w-4 text-primary/70" />
         Last week&apos;s claim
       </h2>
-      <p className="text-xs text-muted-foreground">
+      <p className="text-sm text-muted-foreground">
         {formatWeekRange(claim.weekKey)} •{" "}
         {claim.tierEmoji && <span className="mr-1">{claim.tierEmoji}</span>}
         {claim.tierName}
@@ -904,7 +904,7 @@ function ClaimStatusCard({ claim }: { claim: RewardClaim }) {
       {claim.rewardBody && (
         <p
           dir="auto"
-          className="mt-1 whitespace-pre-wrap text-sm text-muted-foreground"
+          className="mt-2 whitespace-pre-wrap text-base leading-relaxed text-muted-foreground"
         >
           {claim.rewardBody}
         </p>
@@ -959,7 +959,7 @@ function PendingClaimCard({
         <Award className="h-4 w-4 text-amber-400" />
         Pending claim
       </h2>
-      <p className="text-xs text-muted-foreground">
+      <p className="text-sm text-muted-foreground">
         {formatWeekRange(claim.weekKey)} •{" "}
         {claim.tierEmoji && <span className="mr-1">{claim.tierEmoji}</span>}
         {claim.tierName} • {claim.claimedScore} pts
@@ -973,7 +973,7 @@ function PendingClaimCard({
       {claim.rewardBody && (
         <p
           dir="auto"
-          className="mt-1 whitespace-pre-wrap text-sm text-muted-foreground"
+          className="mt-2 whitespace-pre-wrap text-base leading-relaxed text-muted-foreground"
         >
           {claim.rewardBody}
         </p>
@@ -1072,7 +1072,7 @@ function ClaimHistoryCard({ claims }: { claims: RewardClaim[] }) {
                 )}
                 <span dir="auto">{c.rewardLabel}</span>
               </div>
-              <div className="mt-1 text-xs text-muted-foreground/70">
+              <div className="mt-1 text-sm text-muted-foreground/70">
                 Claimed {formatRelative(c.requestedAt, now)}
               </div>
               {c.sirNote && (

@@ -2335,6 +2335,29 @@ export async function setTestModeState(
   }
 }
 
+export async function adminPurgeTestClaims(): Promise<{
+  success?: boolean;
+  error?: string;
+  removed?: number;
+}> {
+  const guard = await requireSir();
+  if (!guard.ok) return { error: guard.error };
+  try {
+    const { purgeTestClaimsRaw } = await import("@/app/actions/rewards");
+    const result = await purgeTestClaimsRaw();
+    logger.warn("[admin] test claims purged", {
+      by: guard.session.author,
+      removed: result.removed,
+    });
+    revalidatePath("/admin/rewards");
+    revalidatePath("/rewards");
+    return { success: true, removed: result.removed };
+  } catch (err) {
+    logger.error("[admin] test claim purge failed", err);
+    return { error: "Purge failed." };
+  }
+}
+
 export interface DeleteObedienceEventArgs {
   author: Author;
   weekKey: string;
