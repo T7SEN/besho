@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { Source_Sans_3, Tajawal } from "next/font/google";
+import { Suspense } from "react";
 import "./globals.css";
 import { cn } from "@/lib/utils";
 import { ThemeProvider } from "@/components/theme-provider";
@@ -18,6 +19,7 @@ import { ErrorBoundary } from "@/components/ui/error-boundary";
 import { GlobalLogger } from "@/components/global-logger";
 import { SentryUserProvider } from "@/components/sentry-user-provider";
 import { DeviceTracker } from "@/components/device-tracker";
+import { StaffToolbar } from "@/components/staff-toolbar";
 
 const sourceSans3 = Source_Sans_3({
   subsets: ["latin"],
@@ -118,6 +120,9 @@ export default function RootLayout({
         </ErrorBoundary>
         <SpeedInsights />
         <Analytics />
+        <Suspense fallback={null}>
+          <StaffToolbar />
+        </Suspense>
       </body>
     </html>
   );
