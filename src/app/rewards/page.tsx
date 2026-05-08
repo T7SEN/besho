@@ -1061,14 +1061,25 @@ function BreakdownCard({ weekState }: { weekState: ObedienceWeekState }) {
       <ul className="space-y-1.5">
         {weekState.breakdown.map((entry) => {
           const positive = entry.points >= 0;
+          // `manual_adjust` rows are split per-event server-side and
+          // each carries its own reason. Other types still aggregate
+          // by type, so `entry.eventId` is undefined and the type is
+          // a stable React key. Falls back to the generic label when
+          // a manual_adjust pre-dates the reasons HASH (legacy events).
+          const isManual = entry.type === "manual_adjust";
+          const label =
+            isManual && entry.reason
+              ? entry.reason
+              : (OBEDIENCE_EVENT_LABELS[entry.type] ?? entry.type);
+          const key = entry.eventId ?? entry.type;
           return (
             <li
-              key={entry.type}
+              key={key}
               className="flex items-center justify-between gap-3 text-sm"
             >
-              <span className="text-muted-foreground">
-                {OBEDIENCE_EVENT_LABELS[entry.type] ?? entry.type}{" "}
-                {entry.count > 1 && (
+              <span className="min-w-0 flex-1 truncate text-muted-foreground">
+                {label}{" "}
+                {!isManual && entry.count > 1 && (
                   <span className="text-[10px] text-muted-foreground/70">
                     × {entry.count}
                   </span>
@@ -1076,7 +1087,7 @@ function BreakdownCard({ weekState }: { weekState: ObedienceWeekState }) {
               </span>
               <span
                 className={cn(
-                  "tabular-nums font-semibold",
+                  "shrink-0 tabular-nums font-semibold",
                   positive ? "text-emerald-400" : "text-rose-400",
                 )}
               >

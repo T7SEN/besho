@@ -1961,7 +1961,9 @@ function EventRow({
         {entry.points}
       </span>
       <span className="truncate">
-        {OBEDIENCE_EVENT_LABELS[entry.type] ?? entry.type}
+        {entry.type === "manual_adjust" && entry.reason
+          ? entry.reason
+          : (OBEDIENCE_EVENT_LABELS[entry.type] ?? entry.type)}
         {err && (
           <span className="ml-2 text-rose-400">{err}</span>
         )}

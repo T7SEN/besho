@@ -27,6 +27,7 @@ import {
   deleteObedienceEvent,
   getTestMode,
   setTestModeRaw,
+  setManualAdjustReason,
   type ObedienceAuditEntry,
 } from "@/lib/obedience";
 import {
@@ -687,6 +688,7 @@ export async function adminAdjustScore(
   try {
     const ts = Date.now();
     const eventId = crypto.randomUUID();
+    const targetWeekKey = args.weekKey ?? currentWeekKey(ts);
     // Pass `reason` as the obedience helper's `note` arg — it rides
     // into the `[obedience] event` activity-log entry next to the
     // points/eventId. Mirrors the `setRestraintState(on, note?)` shape.
@@ -709,6 +711,10 @@ export async function adminAdjustScore(
         reason,
       );
     }
+    // Persist the reason so the Event log row + Breakdown row can
+    // render with the actual reason instead of the generic "Manual
+    // adjustment" label. See `manualReasonsKey` for the storage shape.
+    await setManualAdjustReason(args.author, targetWeekKey, eventId, reason);
     // Activity-log headline uses the reason directly so Sir scanning
     // /admin/logs sees the WHY first, not a generic "manual obedience
     // adjust" string. The `[admin]` prefix keeps it filtered alongside

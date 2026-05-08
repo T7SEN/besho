@@ -89,6 +89,16 @@ export const staleClaimNudgeSentKey = (claimId: string) =>
  *  identical and the ZADD updates the score to the latest emit ts. */
 export const auditKey = (author: Author, weekKey: string) =>
   `obedience:audit:${author}:${weekKey}`;
+/** HASH — manual_adjust reasons, keyed by eventId (the part after the
+ *  colon in the audit/events member). Field-level TTL isn't possible
+ *  on Redis HASHes; cleanup is per-event via `HDEL` in
+ *  `deleteObedienceEvent` and a full `DEL` when the week is purged.
+ *  Orphan entries (event deleted but reason left behind) don't break
+ *  reads since the merge join is by eventId. Other obedience event
+ *  types (rule_acked, ritual_done, etc.) do NOT use this HASH — they
+ *  aggregate by type in the breakdown and don't carry per-event prose. */
+export const manualReasonsKey = (author: Author, weekKey: string) =>
+  `obedience:manual-reasons:${author}:${weekKey}`;
 /** Lifetime stats — updated at finalize. Only ever overwritten when the
  *  new value beats the stored one, so they're append-style records of
  *  her best-ever performance. */
@@ -416,6 +426,68 @@ export function multiplierForStreak(
   return mults[idx];
 }
 
+// ── Manual-adjust reason side-channel ────────────────────────────────────
+//
+// `manual_adjust` events carry a free-form Sir-supplied reason (e.g.
+// "kept her promise", "skipped the chore"). The reason needs to render
+// in two surfaces — the per-event row in the Event log AND the
+// per-event row in the Breakdown — both of which read from the audit /
+// events ZSETs whose member format is `{type}:{eventId}` and can't
+// carry prose. So the reason lives in a per-week HASH keyed by
+// eventId, joined into the audit/breakdown reads.
+//
+// Other event types (rule_acked, ritual_done, etc.) do NOT use this
+// HASH — they aggregate by type in the breakdown and don't carry
+// per-event prose. Only manual_adjust gets a reason.
+
+/** Persists the reason for a manual_adjust event. Idempotent — same
+ *  eventId overwrites. Best-effort: a failure here doesn't undo the
+ *  event itself, the row will just render with its fallback label. */
+export async function setManualAdjustReason(
+  author: Author,
+  weekKey: string,
+  eventId: string,
+  reason: string,
+): Promise<void> {
+  try {
+    await redis.hset(manualReasonsKey(author, weekKey), {
+      [eventId]: reason,
+    });
+  } catch {
+    // Best-effort — caller already has the obedience event in place.
+  }
+}
+
+/** Removes a single manual_adjust reason. Called from
+ *  `deleteObedienceEvent` for `type === "manual_adjust"`. */
+export async function removeManualAdjustReason(
+  author: Author,
+  weekKey: string,
+  eventId: string,
+): Promise<void> {
+  try {
+    await redis.hdel(manualReasonsKey(author, weekKey), eventId);
+  } catch {
+    // Best-effort — orphans are harmless (read-side join is by eventId).
+  }
+}
+
+/** Reads every manual_adjust reason for a given (author, weekKey).
+ *  Returns an empty record on read failure or empty HASH. */
+async function readManualAdjustReasons(
+  author: Author,
+  weekKey: string,
+): Promise<Record<string, string>> {
+  try {
+    const raw = await redis.hgetall<Record<string, string>>(
+      manualReasonsKey(author, weekKey),
+    );
+    return raw ?? {};
+  } catch {
+    return {};
+  }
+}
+
 // ── Score computation ────────────────────────────────────────────────────
 
 interface RawEvent {
@@ -455,10 +527,11 @@ export async function computeWeekScore(
   const todayKey = currentWeekKey();
   const isPastWeek = weekKey < todayKey;
 
-  const [events, mults, streakStored] = await Promise.all([
+  const [events, mults, streakStored, reasons] = await Promise.all([
     readWeekEvents(author, weekKey),
     getMultipliers(),
     getStreak(author),
+    readManualAdjustReasons(author, weekKey),
   ]);
 
   // Past weeks: use frozen multiplier when available. Current week:
@@ -481,23 +554,42 @@ export async function computeWeekScore(
   }
 
   let rawScore = 0;
-  const buckets = new Map<ObedienceEventType, ObedienceBreakdownEntry>();
+  // `manual_adjust` events get one breakdown row per event (each carries
+  // its own reason as the label); every other type aggregates by type
+  // as before. Mixing the two approaches in the same buckets map would
+  // collapse manual_adjust events under one row — we want them split.
+  const aggregateBuckets = new Map<ObedienceEventType, ObedienceBreakdownEntry>();
+  const manualEntries: ObedienceBreakdownEntry[] = [];
   for (const ev of events) {
     rawScore += ev.score;
     const colon = ev.member.indexOf(":");
     const typeStr = colon > 0 ? ev.member.slice(0, colon) : ev.member;
+    const eventId = colon > 0 ? ev.member.slice(colon + 1) : "";
     const type = typeStr as ObedienceEventType;
-    const entry = buckets.get(type);
+
+    if (type === "manual_adjust") {
+      manualEntries.push({
+        type,
+        count: 1,
+        points: ev.score,
+        eventId,
+        reason: reasons[eventId],
+      });
+      continue;
+    }
+
+    const entry = aggregateBuckets.get(type);
     if (entry) {
       entry.count++;
       entry.points += ev.score;
     } else {
-      buckets.set(type, { type, count: 1, points: ev.score });
+      aggregateBuckets.set(type, { type, count: 1, points: ev.score });
     }
   }
-  const breakdown = Array.from(buckets.values()).sort(
-    (a, b) => Math.abs(b.points) - Math.abs(a.points),
-  );
+  const breakdown = [
+    ...Array.from(aggregateBuckets.values()),
+    ...manualEntries,
+  ].sort((a, b) => Math.abs(b.points) - Math.abs(a.points));
 
   const displayedScore = Math.round(rawScore * multiplier);
 
@@ -782,7 +874,13 @@ export async function deleteObedienceEvent(
   const pipeline = redis.pipeline();
   pipeline.zrem(eventsKey(author, weekKey), member);
   pipeline.zrem(auditKey(author, weekKey), member);
-  const results = (await pipeline.exec()) as [number, number];
+  // For manual_adjust events, also drop the reason field. Orphans are
+  // harmless (read-side join is by eventId, missing → no reason →
+  // fallback label), but cleaning up keeps the HASH bounded.
+  if (type === "manual_adjust") {
+    pipeline.hdel(manualReasonsKey(author, weekKey), eventId);
+  }
+  const results = (await pipeline.exec()) as [number, number, ...number[]];
   return {
     removedFromEvents: results[0] ?? 0,
     removedFromAudit: results[1] ?? 0,
@@ -797,6 +895,11 @@ export interface ObedienceAuditEntry {
   eventId: string;
   points: number;
   ts: number;
+  /** For `manual_adjust` only — the reason supplied at adjustment
+   *  time, looked up from the per-week reasons HASH. Renders in place
+   *  of the generic "Manual adjustment" label. Absent for legacy
+   *  events recorded before the reasons HASH shipped. */
+  reason?: string;
 }
 
 export interface ObedienceEventLogPage {
@@ -831,7 +934,11 @@ export async function getEventLog(
     const safeOffset = Math.max(0, Math.floor(offset));
     const start = safeOffset;
     const stop = safeOffset + safeLimit - 1;
-    const [auditRaw, eventsRaw, total] = await Promise.all([
+    // Reasons HASH joins on eventId for `manual_adjust` rows. Fetched
+    // unconditionally — the cost of an HGETALL on a small per-week
+    // hash is negligible vs the cost of detecting whether any
+    // manual_adjust entry is in the page first.
+    const [auditRaw, eventsRaw, total, reasons] = await Promise.all([
       redis.zrange<(string | number)[]>(
         auditKey(author, weekKey),
         start,
@@ -845,6 +952,7 @@ export async function getEventLog(
         { withScores: true },
       ),
       redis.zcard(auditKey(author, weekKey)),
+      readManualAdjustReasons(author, weekKey),
     ]);
     const points = new Map<string, number>();
     if (eventsRaw) {
@@ -862,7 +970,16 @@ export async function getEventLog(
         if (colon < 0) continue;
         const type = member.slice(0, colon) as ObedienceEventType;
         const eventId = member.slice(colon + 1);
-        entries.push({ type, eventId, points: points.get(member)!, ts });
+        const entry: ObedienceAuditEntry = {
+          type,
+          eventId,
+          points: points.get(member)!,
+          ts,
+        };
+        if (type === "manual_adjust" && reasons[eventId]) {
+          entry.reason = reasons[eventId];
+        }
+        entries.push(entry);
       }
     }
     return { entries, total: Number(total) || 0 };

@@ -70,6 +70,14 @@ export interface ObedienceBreakdownEntry {
   type: ObedienceEventType;
   count: number;
   points: number;
+  /** For `manual_adjust` only — each event becomes its own breakdown
+   *  row (not aggregated by type) so the reason can label it. Other
+   *  types keep `count > 1` aggregation. Stable React key. */
+  eventId?: string;
+  /** For `manual_adjust` only — the reason supplied at adjustment
+   *  time. Renders in place of the generic "Manual adjustment" label.
+   *  Absent for legacy events recorded before the reasons HASH shipped. */
+  reason?: string;
 }
 
 export interface ObedienceWeekScore {
