@@ -99,6 +99,17 @@ export const auditKey = (author: Author, weekKey: string) =>
  *  aggregate by type in the breakdown and don't carry per-event prose. */
 export const manualReasonsKey = (author: Author, weekKey: string) =>
   `obedience:manual-reasons:${author}:${weekKey}`;
+/** Sentinel — set NX EX 60d once the "📊 Week wrapped" recap FCM has
+ *  fired for this (author, weekKey). Independent of `finalizedKey` so
+ *  the recap stays once-per-week even if the finalize sentinel is
+ *  re-acquired (e.g., admin `recomputeWeek` after a transient failure
+ *  released the lock, OR the legacy "1" sentinel was lost to Upstash
+ *  JSON-parse weirdness). Mirrors the established pattern of
+ *  `review:fcm:opener:{weekDate}`, `streak-risk:fcm:sent:*`,
+ *  `reward:claim:nudge-sent:*`. 60d TTL is comfortably longer than any
+ *  catch-up horizon `catchUpFinalizations` walks (currently 4 weeks). */
+export const weekWrappedFcmSentKey = (author: Author, weekKey: string) =>
+  `obedience:week-wrapped-fcm:${author}:${weekKey}`;
 /** Lifetime stats — updated at finalize. Only ever overwritten when the
  *  new value beats the stored one, so they're append-style records of
  *  her best-ever performance. */
@@ -635,8 +646,14 @@ export async function isWeekFinalized(
   weekKey: string,
 ): Promise<boolean> {
   try {
-    const v = await redis.get<string>(finalizedKey(author, weekKey));
-    return v === "1";
+    const v = await redis.get<string | number>(finalizedKey(author, weekKey));
+    // Truthy check instead of `=== "1"` because:
+    // (a) `finalizeWeek` now writes a timestamp string (`String(Date.now())`)
+    //     instead of `"1"`, and
+    // (b) Upstash auto-parses "1" → number 1 on read for keys whose
+    //     value is JSON-valid, which silently broke the strict equality
+    //     check against `"1"` for legacy sentinels.
+    return v != null && v !== "" && v !== 0;
   } catch {
     return false;
   }
@@ -659,63 +676,97 @@ export async function finalizeWeek(
   if (weekKey >= currentWeekKey()) {
     return { finalized: false, reason: "not_in_past" };
   }
-  if (await isWeekFinalized(author, weekKey)) {
+
+  // Atomic lock acquisition. The earlier read-then-write pattern (an
+  // `isWeekFinalized` check followed by ~5 awaits, then a pipeline
+  // that finally wrote the sentinel) had a multi-second race window
+  // where two concurrent invocations could both pass the guard and
+  // both fire the recap FCM — observed in production as duplicate
+  // "Week wrapped" notifications when cron-job.org retried within
+  // seconds, OR when Sir hit `recomputeWeek` while the cron was
+  // running. SET NX collapses the entire window to a single Redis
+  // op: the first caller wins the lock, the second sees the sentinel
+  // already exists and bails.
+  //
+  // The sentinel value carries the finalize timestamp instead of "1"
+  // so post-mortem debugging can answer "when did this week
+  // finalize" without trawling activity log; `isWeekFinalized` only
+  // checks truthiness so any non-empty string works.
+  const acquired = await redis.set(
+    finalizedKey(author, weekKey),
+    String(Date.now()),
+    { nx: true },
+  );
+  if (!acquired) {
     return { finalized: false, reason: "already_finalized" };
   }
-  const score = await computeWeekScore(author, weekKey);
-  const threshold = await getStreakThreshold();
-  const isHighScore = score.displayedScore >= threshold;
-  const newStreak = isHighScore ? score.streakEntering + 1 : 0;
 
-  // Lifetime records — read first so we know whether to overwrite.
-  // Race-safe enough at two-user scale (single finalize per author per
-  // week, gated by the sentinel).
-  const [prevBestRaw, prevLongestRaw] = await Promise.all([
-    (async () => {
-      try {
-        return await redis.get<{
-          weekKey: string;
-          displayedScore: number;
-        }>(bestWeekKey(author));
-      } catch {
-        return null;
-      }
-    })(),
-    (async () => {
-      try {
-        return await redis.get<number | string>(longestStreakRecordKey(author));
-      } catch {
-        return null;
-      }
-    })(),
-  ]);
-  const prevBestScore = prevBestRaw?.displayedScore ?? -Infinity;
-  const prevLongest = Number(prevLongestRaw) || 0;
-  const isNewBest = score.displayedScore > prevBestScore;
-  const isNewLongest = newStreak > prevLongest;
+  try {
+    const score = await computeWeekScore(author, weekKey);
+    const threshold = await getStreakThreshold();
+    const isHighScore = score.displayedScore >= threshold;
+    const newStreak = isHighScore ? score.streakEntering + 1 : 0;
 
-  const pipeline = redis.pipeline();
-  pipeline.set(multiplierFrozenKey(author, weekKey), score.multiplier);
-  pipeline.set(finalizedKey(author, weekKey), "1");
-  if (newStreak <= 0) pipeline.del(streakKey(author));
-  else pipeline.set(streakKey(author), newStreak);
-  pipeline.incr(weeksTrackedKey(author));
-  if (isNewBest) {
-    pipeline.set(bestWeekKey(author), {
-      weekKey,
-      displayedScore: score.displayedScore,
-    });
+    // Lifetime records — read first so we know whether to overwrite.
+    // Race-safe at two-user scale (single finalize per author per
+    // week, gated by the SET NX above).
+    const [prevBestRaw, prevLongestRaw] = await Promise.all([
+      (async () => {
+        try {
+          return await redis.get<{
+            weekKey: string;
+            displayedScore: number;
+          }>(bestWeekKey(author));
+        } catch {
+          return null;
+        }
+      })(),
+      (async () => {
+        try {
+          return await redis.get<number | string>(
+            longestStreakRecordKey(author),
+          );
+        } catch {
+          return null;
+        }
+      })(),
+    ]);
+    const prevBestScore = prevBestRaw?.displayedScore ?? -Infinity;
+    const prevLongest = Number(prevLongestRaw) || 0;
+    const isNewBest = score.displayedScore > prevBestScore;
+    const isNewLongest = newStreak > prevLongest;
+
+    // Note: the finalized sentinel was already written by the SET NX
+    // above; the pipeline below covers everything else.
+    const pipeline = redis.pipeline();
+    pipeline.set(multiplierFrozenKey(author, weekKey), score.multiplier);
+    if (newStreak <= 0) pipeline.del(streakKey(author));
+    else pipeline.set(streakKey(author), newStreak);
+    pipeline.incr(weeksTrackedKey(author));
+    if (isNewBest) {
+      pipeline.set(bestWeekKey(author), {
+        weekKey,
+        displayedScore: score.displayedScore,
+      });
+    }
+    if (isNewLongest) {
+      pipeline.set(longestStreakRecordKey(author), newStreak);
+    }
+    await pipeline.exec();
+    cache.clear();
+
+    // Recap FCM to both authors — best-effort.
+    void notifyWeekClosed(author, weekKey, score, newStreak).catch(() => {});
+
+    return { finalized: true, displayedScore: score.displayedScore };
+  } catch (err) {
+    // Release the lock on catastrophic failure so a retry can
+    // re-attempt the work. Without this, a one-off Upstash hiccup mid
+    // pipeline would leave the week stuck "finalized" with no data
+    // updates and Sir would have to manually clear the sentinel.
+    await redis.del(finalizedKey(author, weekKey)).catch(() => {});
+    throw err;
   }
-  if (isNewLongest) {
-    pipeline.set(longestStreakRecordKey(author), newStreak);
-  }
-  await pipeline.exec();
-  cache.clear();
-
-  // Recap FCM to both authors — best-effort.
-  void notifyWeekClosed(author, weekKey, score, newStreak).catch(() => {});
-
-  return { finalized: true, displayedScore: score.displayedScore };
 }
 
 // ── Tier-unlock + week-close notifications ───────────────────────────────
@@ -762,7 +813,7 @@ async function notifyWeekClosed(
   score: ObedienceWeekScore,
   newStreak: number,
 ): Promise<void> {
-  // Two gates that BOTH must pass to fire the recap:
+  // Three gates that ALL must pass to fire the recap:
   //
   // 1. Only the immediately prior week notifies. Older weeks (caught
   //    up after a deploy or a long absence) finalize silently — the
@@ -774,13 +825,26 @@ async function notifyWeekClosed(
   //    immediately prior week. "0 pts • no tier" for a week neither
   //    author engaged with is also noise.
   //
-  // The sentinel from `finalizeWeek` already prevents repeat
-  // finalizations per week, so these checks run at most once per
-  // (author, weekKey) lifetime regardless of how many times
-  // `/rewards` is loaded.
+  // 3. **The FCM-sent sentinel** must be acquirable. Independent of
+  //    `finalizedKey`'s correctness — observed in production
+  //    (2026-05-08 onward) as a daily duplicate "Week wrapped"
+  //    notification when the finalize lock was somehow re-acquired
+  //    each cron run (legacy `"1"` sentinel value vs Upstash
+  //    auto-parse, OR the SETNX release-on-error path firing). This
+  //    sentinel is single-purpose dedup for the FCM only; it never
+  //    releases on error and survives 60 days. Mirrors the existing
+  //    pattern used by review-window-open, streak-risk, stale-claim,
+  //    ritual-windows.
   const immediatelyPriorKey = shiftWeekKey(currentWeekKey(), -1);
   if (weekKey !== immediatelyPriorKey) return;
   if (score.breakdown.length === 0 && score.rawScore === 0) return;
+  const sentinelAcquired = await redis.set(
+    weekWrappedFcmSentKey(author, weekKey),
+    String(Date.now()),
+    { nx: true, ex: 60 * 24 * 60 * 60 },
+  );
+  if (!sentinelAcquired) return;
+
   const tiers = await getTiers();
   const tier = unlockedTierFor(score.displayedScore, tiers);
   const label = formatWeekLabel(weekKey);
@@ -806,7 +870,9 @@ async function notifyWeekClosed(
       }),
     ]);
   } catch {
-    // best-effort
+    // best-effort — sentinel stays set, no retry. This is intentional:
+    // a partial-failure FCM (e.g., one author's token expired) is
+    // better than re-firing both notifications later.
   }
 }
 
