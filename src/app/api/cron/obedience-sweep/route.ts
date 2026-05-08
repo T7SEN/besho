@@ -20,7 +20,7 @@
 // safe but wasteful.
 
 import { NextRequest } from "next/server";
-import { Redis } from "@upstash/redis";
+import { redis } from "@/lib/redis";
 import { logger } from "@/lib/logger";
 import {
   catchUpFinalizations,
@@ -46,11 +46,6 @@ import type { RewardClaim } from "@/lib/reward-types";
 import type { Task } from "@/app/actions/tasks";
 import type { Rule } from "@/app/actions/rules";
 import type { Ritual } from "@/app/actions/rituals";
-
-const redis = new Redis({
-  url: process.env.KV_REST_API_URL!,
-  token: process.env.KV_REST_API_TOKEN!,
-});
 
 function unauthorized() {
   return new Response("Unauthorized", { status: 401 });

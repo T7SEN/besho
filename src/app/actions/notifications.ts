@@ -1,7 +1,7 @@
 // src/app/actions/notifications.ts
 "use server";
 
-import { Redis } from "@upstash/redis";
+import { redis } from "@/lib/redis";
 import { cookies } from "next/headers";
 import { decrypt } from "@/lib/auth-utils";
 import { logger } from "@/lib/logger";
@@ -14,11 +14,6 @@ export interface NotificationRecord {
   timestamp: number;
   read: boolean;
 }
-
-const redis = new Redis({
-  url: process.env.KV_REST_API_URL!,
-  token: process.env.KV_REST_API_TOKEN!,
-});
 
 const MAX_HISTORY = 50;
 const historyKey = (author: string) => `notifications:${author}`;

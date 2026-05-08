@@ -1,7 +1,7 @@
 // src/app/actions/permissions.ts
 "use server";
 
-import { Redis } from "@upstash/redis";
+import { redis } from "@/lib/redis";
 import { cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { decrypt } from "@/lib/auth-utils";
@@ -114,11 +114,6 @@ export interface CategoryUsage {
   used: number;
   limit?: number;
 }
-
-const redis = new Redis({
-  url: process.env.KV_REST_API_URL!,
-  token: process.env.KV_REST_API_TOKEN!,
-});
 
 const INDEX_KEY = "permissions:index";
 const QUOTAS_KEY = "permissions:quotas";

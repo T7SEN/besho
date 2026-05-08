@@ -28,7 +28,7 @@ import { vibrate } from "@/lib/haptic";
 import { cn } from "@/lib/utils";
 import { useRefreshListener } from "@/hooks/use-refresh-listener";
 
-const POLL_MS = 5_000;
+const POLL_MS = 15_000;
 const CONFIRM_TIMEOUT_MS = 5_000;
 
 function formatRelative(ts: number, now: number): string {
@@ -107,9 +107,23 @@ export default function DevicesPage() {
   }, []);
 
   useEffect(() => {
-    void fetchAll();
-    const id = setInterval(() => void fetchAll(), POLL_MS);
-    return () => clearInterval(id);
+    // Initial fetch deferred per AGENTS.md § 4 — direct setState in
+    // an effect body trips react-hooks/set-state-in-effect.
+    const t = setTimeout(() => void fetchAll(), 0);
+    const id = setInterval(() => {
+      // Skip the network round-trip when the tab is backgrounded —
+      // saves Upstash REST calls and battery on Sir's phone. The tick
+      // below still updates relative-time labels regardless.
+      const doc = (
+        globalThis as unknown as { document?: { visibilityState?: string } }
+      ).document;
+      if (doc?.visibilityState === "hidden") return;
+      void fetchAll();
+    }, POLL_MS);
+    return () => {
+      clearTimeout(t);
+      clearInterval(id);
+    };
   }, [fetchAll]);
 
   useRefreshListener(fetchAll);

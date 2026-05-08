@@ -48,6 +48,9 @@ const CRON_FRESH_MS = {
   "ritual-windows": 5 * 60_000,
   "obedience-sweep": 26 * 60 * 60_000,
   "review-window-open": 26 * 60 * 60_000,
+  // 2h fresh — cron-job.org should fire heartbeat-watch every ~30m,
+  // so anything older than 2h means the watcher itself has stopped.
+  "heartbeat-watch": 2 * 60 * 60_000,
 } as const;
 
 export default function HealthPage() {
@@ -113,9 +116,16 @@ export default function HealthPage() {
   useRefreshListener(fetchAll);
 
   // Once-per-second tick drives both cooldown countdowns AND the live
-  // time tab.
+  // time tab. Gated on tab visibility — when the page is backgrounded
+  // there's nothing to re-render and the per-second wakeup is wasted.
   useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 1000);
+    const id = setInterval(() => {
+      const doc = (
+        globalThis as unknown as { document?: { visibilityState?: string } }
+      ).document;
+      if (doc?.visibilityState === "hidden") return;
+      setNow(Date.now());
+    }, 1000);
     return () => clearInterval(id);
   }, []);
 

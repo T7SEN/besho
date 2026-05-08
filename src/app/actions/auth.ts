@@ -1,15 +1,10 @@
 "use server";
 
-import { Redis } from "@upstash/redis";
+import { redis } from "@/lib/redis";
 import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { encrypt, decrypt } from "@/lib/auth-utils";
 import { logger } from "@/lib/logger";
-
-const redis = new Redis({
-  url: process.env.KV_REST_API_URL!,
-  token: process.env.KV_REST_API_TOKEN!,
-});
 
 const AUTH_FAILURES_KEY = "auth:failures";
 const AUTH_FAILURES_CAP = 100;

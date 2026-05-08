@@ -18,17 +18,13 @@
 // work has already completed by the time we write — losing the
 // telemetry bit is annoying but not actionable.
 
-import { Redis } from "@upstash/redis";
-
-const redis = new Redis({
-  url: process.env.KV_REST_API_URL!,
-  token: process.env.KV_REST_API_TOKEN!,
-});
+import { redis } from "@/lib/redis";
 
 export const CRON_NAMES = [
   "obedience-sweep",
   "ritual-windows",
   "review-window-open",
+  "heartbeat-watch",
 ] as const;
 
 export type CronName = (typeof CRON_NAMES)[number];

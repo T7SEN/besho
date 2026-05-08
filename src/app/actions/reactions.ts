@@ -1,16 +1,11 @@
 "use server";
 
-import { Redis } from "@upstash/redis";
+import { redis } from "@/lib/redis";
 import { cookies } from "next/headers";
 import { decrypt } from "@/lib/auth-utils";
 import { type ReactionEmoji } from "@/lib/reaction-constants";
 import { logger } from "@/lib/logger";
 import { assertWriteAllowed } from "@/lib/restraint";
-
-const redis = new Redis({
-  url: process.env.KV_REST_API_URL!,
-  token: process.env.KV_REST_API_TOKEN!,
-});
 
 // reactions:{noteId} → Redis HASH { author: emoji }
 const reactionsKey = (noteId: string) => `reactions:${noteId}`;
@@ -54,7 +49,11 @@ export async function reactToNote(
     }
 
     const all = await redis.hgetall<Record<string, string>>(key);
-    logger.interaction("[reactions] Reaction toggled", {
+    // Reaction toggles are high-frequency, low-signal — every emoji
+    // tap. Downgraded from `interaction` to `info` so they don't flood
+    // `activity:log` (capped at 500) and evict useful [admin]/[auth]
+    // entries. Console + Sentry breadcrumbs still capture them.
+    logger.info("[reactions] Reaction toggled", {
       author,
       noteId,
       emoji,

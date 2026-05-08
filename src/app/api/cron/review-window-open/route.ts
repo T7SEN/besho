@@ -13,7 +13,7 @@
 // out per Saturday.
 
 import { NextRequest } from "next/server";
-import { Redis } from "@upstash/redis";
+import { redis } from "@/lib/redis";
 import { sendNotification } from "@/app/actions/notifications";
 import { logger } from "@/lib/logger";
 import {
@@ -22,11 +22,6 @@ import {
 } from "@/lib/review-utils";
 import { todayKeyCairo, weekdayOfDateKey } from "@/lib/cairo-time";
 import { writeCronTelemetry } from "@/lib/cron-telemetry";
-
-const redis = new Redis({
-  url: process.env.KV_REST_API_URL!,
-  token: process.env.KV_REST_API_TOKEN!,
-});
 
 /** Cover the full Sat→Sun window plus a bit of slack so a hot redeploy
  *  on Sunday morning doesn't re-fire the opener for the same week. */

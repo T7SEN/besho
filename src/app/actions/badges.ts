@@ -1,7 +1,7 @@
 // src/app/actions/badges.ts
 "use server";
 
-import { Redis } from "@upstash/redis";
+import { redis } from "@/lib/redis";
 import { cookies } from "next/headers";
 import { decrypt } from "@/lib/auth-utils";
 import type { Task } from "@/app/actions/tasks";
@@ -9,11 +9,6 @@ import type { Rule } from "@/app/actions/rules";
 import type { Ritual, RitualOwner } from "@/app/actions/rituals";
 import type { PermissionRequest } from "@/app/actions/permissions";
 import { computeRitualTodayState } from "@/lib/rituals";
-
-const redis = new Redis({
-  url: process.env.KV_REST_API_URL!,
-  token: process.env.KV_REST_API_TOKEN!,
-});
 
 export interface NavBadges {
   pendingTasks: number;

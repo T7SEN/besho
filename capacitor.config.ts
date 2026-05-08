@@ -8,7 +8,15 @@ const config: CapacitorConfig = {
   server: {
     url: "https://t7senlovesbesho.me",
     cleartext: false,
+    // Explicit allowlist — any link that resolves outside this host
+    // opens in the system browser instead of the WebView. For a
+    // hosted-webapp APK this is mostly defensive (we control the
+    // origin), but it makes the boundary auditable.
+    allowNavigation: ["t7senlovesbesho.me"],
   },
+  // Distinguish APK from web in Sentry user-agent + server access
+  // logs. Sentry tags `browser` will read this verbatim.
+  appendUserAgent: "OurSpaceAPK",
   plugins: {
     SplashScreen: {
       launchShowDuration: 1500,
@@ -19,9 +27,6 @@ const config: CapacitorConfig = {
     StatusBar: {
       style: "DARK",
       backgroundColor: "#09090b",
-    },
-    PushNotifications: {
-      presentationOptions: ["badge", "sound", "alert"],
     },
     LocalNotifications: {
       smallIcon: "ic_launcher_foreground",

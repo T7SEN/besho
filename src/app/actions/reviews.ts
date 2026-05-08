@@ -1,7 +1,7 @@
 // src/app/actions/reviews.ts
 "use server";
 
-import { Redis } from "@upstash/redis";
+import { redis } from "@/lib/redis";
 import { cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { decrypt } from "@/lib/auth-utils";
@@ -32,11 +32,6 @@ import {
   weekDays,
   weekRangeMs,
 } from "@/lib/review-utils";
-
-const redis = new Redis({
-  url: process.env.KV_REST_API_URL!,
-  token: process.env.KV_REST_API_TOKEN!,
-});
 
 const REVEALED_INDEX = "reviews:revealed";
 const reviewKey = (weekDate: string, author: ReviewAuthor) =>

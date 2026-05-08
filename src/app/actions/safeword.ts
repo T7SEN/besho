@@ -1,15 +1,10 @@
 "use server";
 
-import { Redis } from "@upstash/redis";
+import { redis } from "@/lib/redis";
 import { cookies } from "next/headers";
 import { decrypt } from "@/lib/auth-utils";
 import { sendNotification } from "@/app/actions/notifications";
 import { logger } from "@/lib/logger";
-
-const redis = new Redis({
-  url: process.env.KV_REST_API_URL!,
-  token: process.env.KV_REST_API_TOKEN!,
-});
 
 const COOLDOWN_SECONDS = 300; // 5 minutes
 const cooldownKey = (author: string) => `safeword:cooldown:${author}`;

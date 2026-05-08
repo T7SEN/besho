@@ -20,6 +20,26 @@ Sentry.init({
   // https://docs.sentry.io/platforms/javascript/guides/nextjs/configuration/options/#sendDefaultPii
   sendDefaultPii: true,
 
+  // Drop non-actionable noise on the server. The client config
+  // (`src/instrumentation-client.ts`) filters its own browser-level
+  // patterns; these are server-side equivalents:
+  //   - `AbortError` — request canceled, common on SSE disconnect
+  //   - `fetch failed` / `UND_ERR_SOCKET` / `Connection terminated` —
+  //     undici (Node fetch) transient TLS / socket churn talking to
+  //     Upstash REST or Firebase HTTP v1
+  //   - `socket hang up` / `ECONNRESET` — same family
+  //   - `Failed to fetch` — Capacitor SSR boundary noise
+  // Source-map-independent (matches event.exception.values[*].value).
+  ignoreErrors: [
+    /^AbortError$/i,
+    /UND_ERR_SOCKET/i,
+    /^Connection terminated$/i,
+    /^fetch failed$/i,
+    /^socket hang up$/i,
+    /^ECONNRESET$/i,
+    /^Failed to fetch$/i,
+  ],
+
   /**
    * Tag every server-side Sentry event with the current author. Reads
    * the session cookie inside `beforeSend` because that hook fires

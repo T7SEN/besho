@@ -11,16 +11,11 @@
 // and Capacitor / FCM channels render distinct heads-up banners.
 
 import { NextRequest } from "next/server";
-import { Redis } from "@upstash/redis";
+import { redis } from "@/lib/redis";
 import { getRituals } from "@/app/actions/rituals";
 import { sendNotification } from "@/app/actions/notifications";
 import { logger } from "@/lib/logger";
 import { writeCronTelemetry } from "@/lib/cron-telemetry";
-
-const redis = new Redis({
-  url: process.env.KV_REST_API_URL!,
-  token: process.env.KV_REST_API_TOKEN!,
-});
 
 /** Cron tick is 60s; allow 5 minutes of slack for missed ticks (Vercel
  *  pauses crons during deploys, etc.). Anything older is considered

@@ -21,7 +21,7 @@
 //    idempotent. Driven by the obedience cron and as a fallback by
 //    lazy on-read attempts in `getWeekState`.
 
-import { Redis } from "@upstash/redis";
+import { redis } from "@/lib/redis";
 import type { Author } from "./constants";
 import { formatWeekLabel, weekRangeMs } from "./review-utils";
 import {
@@ -44,11 +44,6 @@ import {
 } from "./reward-types";
 import { sendNotification } from "@/app/actions/notifications";
 import { logger } from "./logger";
-
-const redis = new Redis({
-  url: process.env.KV_REST_API_URL!,
-  token: process.env.KV_REST_API_TOKEN!,
-});
 
 // ── Key helpers ──────────────────────────────────────────────────────────
 

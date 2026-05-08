@@ -1,7 +1,7 @@
 // src/app/actions/rules.ts
 "use server";
 
-import { Redis } from "@upstash/redis";
+import { redis } from "@/lib/redis";
 import { cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { decrypt } from "@/lib/auth-utils";
@@ -24,11 +24,6 @@ export interface Rule {
   completedAt?: number;
   acknowledgeDeadline?: number;
 }
-
-const redis = new Redis({
-  url: process.env.KV_REST_API_URL!,
-  token: process.env.KV_REST_API_TOKEN!,
-});
 
 const INDEX_KEY = "rules:index";
 const ruleKey = (id: string) => `rule:${id}`;

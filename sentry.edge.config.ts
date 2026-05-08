@@ -21,6 +21,21 @@ Sentry.init({
   // https://docs.sentry.io/platforms/javascript/guides/nextjs/configuration/options/#sendDefaultPii
   sendDefaultPii: true,
 
+  // Drop non-actionable Edge-runtime noise. The Edge SSE route
+  // (`/api/notes/stream`) routinely surfaces `AbortError` when the
+  // WebView pauses or the user navigates away mid-stream — that's
+  // expected client-disconnect behavior, not a bug. Same shape as
+  // `sentry.server.config.ts`'s ignoreErrors.
+  ignoreErrors: [
+    /^AbortError$/i,
+    /UND_ERR_SOCKET/i,
+    /^Connection terminated$/i,
+    /^fetch failed$/i,
+    /^socket hang up$/i,
+    /^ECONNRESET$/i,
+    /^Failed to fetch$/i,
+  ],
+
   /**
    * Tag every Edge-runtime Sentry event with the current author.
    * Same shape as `sentry.server.config.ts` — Edge supports

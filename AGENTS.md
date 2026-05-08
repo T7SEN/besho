@@ -207,8 +207,13 @@ src/
 │   │   └── devices.ts          # pingDevice (any authenticated user, own device), forgetDevice (Sir-only)
 │   └── api/
 │       ├── presence/route.ts
-│       ├── notes/stream/       # Edge SSE
-│       └── push/subscribe-fcm/ # FCM token registration
+│       ├── notes/stream/                    # Edge SSE
+│       ├── push/subscribe-fcm/              # FCM token registration
+│       └── cron/                            # cron-job.org-driven (Bearer ${CRON_SECRET})
+│           ├── obedience-sweep/             # Daily — finalize weeks, emit missed-event penalties, stale-claim nudge
+│           ├── ritual-windows/              # Minute cadence — fire window-open FCM with sentinel dedup
+│           ├── review-window-open/          # Daily, short-circuits non-Saturdays Cairo
+│           └── heartbeat-watch/             # Watches the other 3; FCMs Sir if any go stale
 ├── components/
 │   ├── biometric-gate.tsx
 │   ├── fcm-provider.tsx

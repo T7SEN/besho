@@ -1,5 +1,5 @@
 import { SignJWT, jwtVerify } from "jose";
-import { Redis } from "@upstash/redis";
+import { redis } from "./redis";
 
 const secretKey = process.env.AUTH_SECRET_KEY;
 const encodedKey = new TextEncoder().encode(secretKey);
@@ -8,16 +8,6 @@ export interface SessionPayload {
   isAuthenticated: boolean;
   author: "T7SEN" | "Besho";
   expiresAt: string;
-}
-
-let _redis: Redis | null = null;
-function getRedis(): Redis | null {
-  if (_redis) return _redis;
-  const url = process.env.KV_REST_API_URL;
-  const token = process.env.KV_REST_API_TOKEN;
-  if (!url || !token) return null;
-  _redis = new Redis({ url, token });
-  return _redis;
 }
 
 interface EpochCacheEntry {
@@ -33,10 +23,8 @@ async function readSessionEpoch(
   const now = Date.now();
   const cached = epochCache.get(author);
   if (cached && cached.until > now) return cached.value;
-  const r = getRedis();
-  if (!r) return 0;
   try {
-    const raw = await r.get<number | string>(`session:epoch:${author}`);
+    const raw = await redis.get<number | string>(`session:epoch:${author}`);
     const value =
       typeof raw === "number" ? raw : raw == null ? 0 : Number(raw);
     const safe = Number.isFinite(value) ? value : 0;
@@ -86,10 +74,8 @@ export async function decrypt(
 export async function revokeAuthorSessions(
   author: "T7SEN" | "Besho",
 ): Promise<void> {
-  const r = getRedis();
-  if (!r) return;
   const at = Date.now();
-  await r.set(`session:epoch:${author}`, at);
+  await redis.set(`session:epoch:${author}`, at);
   epochCache.set(author, { value: at, until: at + EPOCH_CACHE_MS });
 }
 
@@ -100,11 +86,9 @@ export async function revokeAuthorSessions(
 export async function readAllSessionEpochs(): Promise<
   Record<"T7SEN" | "Besho", number>
 > {
-  const r = getRedis();
-  if (!r) return { T7SEN: 0, Besho: 0 };
   const [t, b] = await Promise.all([
-    r.get<number | string>("session:epoch:T7SEN"),
-    r.get<number | string>("session:epoch:Besho"),
+    redis.get<number | string>("session:epoch:T7SEN"),
+    redis.get<number | string>("session:epoch:Besho"),
   ]);
   const toN = (v: number | string | null) => {
     if (v == null) return 0;

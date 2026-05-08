@@ -1,6 +1,6 @@
 "use server";
 
-import { Redis } from "@upstash/redis";
+import { redis } from "@/lib/redis";
 import { cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { decrypt } from "@/lib/auth-utils";
@@ -23,11 +23,6 @@ export interface LedgerEntry {
   timestamp: number;
   author: "T7SEN" | "Besho";
 }
-
-const redis = new Redis({
-  url: process.env.KV_REST_API_URL!,
-  token: process.env.KV_REST_API_TOKEN!,
-});
 
 const INDEX_KEY = "ledger:index";
 const entryKey = (id: string) => `ledger:${id}`;

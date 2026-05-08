@@ -1,7 +1,7 @@
 // src/app/actions/rituals.ts
 "use server";
 
-import { Redis } from "@upstash/redis";
+import { redis } from "@/lib/redis";
 import { cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { decrypt } from "@/lib/auth-utils";
@@ -99,11 +99,6 @@ export interface RitualWithToday extends Ritual {
    */
   history: RitualHistoryEntry[];
 }
-
-const redis = new Redis({
-  url: process.env.KV_REST_API_URL!,
-  token: process.env.KV_REST_API_TOKEN!,
-});
 
 const INDEX_KEY = "rituals:index";
 const ritualKey = (id: string) => `ritual:${id}`;

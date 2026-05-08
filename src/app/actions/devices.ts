@@ -1,7 +1,7 @@
 // src/app/actions/devices.ts
 "use server";
 
-import { Redis } from "@upstash/redis";
+import { redis } from "@/lib/redis";
 import { cookies } from "next/headers";
 import { decrypt } from "@/lib/auth-utils";
 import { logger } from "@/lib/logger";
@@ -9,11 +9,6 @@ import type {
   DeviceRecord,
   PingDeviceInput,
 } from "@/lib/device-types";
-
-const redis = new Redis({
-  url: process.env.KV_REST_API_URL!,
-  token: process.env.KV_REST_API_TOKEN!,
-});
 
 const deviceKey = (id: string) => `device:${id}`;
 const deviceListKey = (author: "T7SEN" | "Besho") =>

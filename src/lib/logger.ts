@@ -69,6 +69,9 @@ class Logger {
     // --- PRODUCTION (Sentry Logs + Exception Capture) ---
     // Side-channel: persist `interaction` / `warn` / `error` / `fatal`
     // events to the Redis-backed activity feed for the Sir-only viewer.
+    // `recordActivity` is null-safe on the client (env vars are
+    // undefined → it no-ops), so the call from client-bundled paths
+    // is harmless even though `activity.ts` ships in the bundle.
     if (
       level === "interaction" ||
       level === "warn" ||

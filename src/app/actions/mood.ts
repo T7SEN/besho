@@ -1,7 +1,7 @@
 // src/app/actions/mood.ts
 "use server";
 
-import { Redis } from "@upstash/redis";
+import { redis } from "@/lib/redis";
 import { cookies } from "next/headers";
 import { decrypt } from "@/lib/auth-utils";
 import { addDaysCairo, todayKeyCairo } from "@/lib/cairo-time";
@@ -26,11 +26,6 @@ export interface MoodHistoryEntry {
   myState: string | null;
   partnerState: string | null;
 }
-
-const redis = new Redis({
-  url: process.env.KV_REST_API_URL!,
-  token: process.env.KV_REST_API_TOKEN!,
-});
 
 // Mood, state, and hug keys persist permanently. The previous 7-day TTL
 // was vestigial — at two-user scale, storage cost is invisible (≈2,200

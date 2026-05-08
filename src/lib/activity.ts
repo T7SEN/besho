@@ -1,4 +1,19 @@
 // src/lib/activity.ts
+//
+// CANNOT use the `@/lib/redis` singleton because this module is
+// transitively reachable from client components (logger imports it,
+// `error-boundary.tsx` and other client components import logger).
+// Adding `import "server-only"` would fail the build, and importing
+// `./redis` (which IS server-only) would fail it via the dependency
+// graph — Turbopack tracks dynamic imports for chunk graphs, so even
+// `await import("./activity")` from logger doesn't break the chain.
+//
+// Instead: lazy null-safe pattern. Module-load is harmless (no
+// `new Redis(...)` until called); env vars are undefined client-side
+// so `getRedis()` returns null and `recordActivity` no-ops. Only the
+// server path actually instantiates a client. This is the lone
+// exception to the singleton; every other module uses `@/lib/redis`.
+
 import { Redis } from "@upstash/redis";
 
 const ACTIVITY_KEY = "activity:log";

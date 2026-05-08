@@ -1,13 +1,8 @@
 import type { NextRequest } from "next/server";
-import { Redis } from "@upstash/redis";
+import { redis } from "@/lib/redis";
 import { decrypt } from "@/lib/auth-utils";
 
 export const runtime = "edge";
-
-const redis = new Redis({
-  url: process.env.KV_REST_API_URL!,
-  token: process.env.KV_REST_API_TOKEN!,
-});
 
 const INDEX_KEY = "notes:index";
 const POLL_INTERVAL_MS = 10_000;
