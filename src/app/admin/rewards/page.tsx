@@ -419,6 +419,7 @@ function ManualAdjustEditor({
   const [author, setAuthor] = useState<Author>("Besho");
   const [pointsText, setPointsText] = useState<string>("");
   const [reason, setReason] = useState<string>("");
+  const [notify, setNotify] = useState<boolean>(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -449,15 +450,22 @@ function ManualAdjustEditor({
       author,
       points: Math.round(points),
       reason: reason.trim(),
+      notify,
     });
     setBusy(false);
     if (result.error) {
       setErr(result.error);
       return;
     }
-    setMsg(`Applied ${points > 0 ? "+" : ""}${Math.round(points)} pts.`);
+    setMsg(
+      `Applied ${points > 0 ? "+" : ""}${Math.round(points)} pts${
+        notify ? " · pushed" : ""
+      }.`,
+    );
     setPointsText("");
     setReason("");
+    // Leave `notify` sticky between adjustments — if Sir toggled it on
+    // for a session, he probably wants the next adjustment to push too.
     void onSaved();
   };
 
@@ -506,7 +514,7 @@ function ManualAdjustEditor({
         </Field>
       </div>
 
-      <div className="mt-4 flex flex-wrap items-center gap-2">
+      <div className="mt-4 flex flex-wrap items-center gap-3">
         <button
           type="button"
           onClick={() => void handleSubmit()}
@@ -516,6 +524,20 @@ function ManualAdjustEditor({
           {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
           Apply
         </button>
+        {/* FCM toggle — when on, the recipient gets a push titled with
+            the signed points and the reason as the body. Default off
+            so silent adjustments stay silent. */}
+        <label className="flex cursor-pointer items-center gap-2 text-xs text-muted-foreground select-none">
+          <input
+            type="checkbox"
+            checked={notify}
+            onChange={(e) => setNotify(e.target.checked)}
+            disabled={busy}
+            className="h-3.5 w-3.5 cursor-pointer accent-primary"
+          />
+          Send FCM to{" "}
+          <span className="font-semibold text-foreground/80">{author}</span>
+        </label>
         {msg && <span className="text-xs text-emerald-400">{msg}</span>}
         {err && <span className="text-xs text-destructive">{err}</span>}
       </div>

@@ -4,6 +4,7 @@
 import { revalidatePath } from "next/cache";
 import { logger } from "@/lib/logger";
 import type { Author } from "@/lib/constants";
+import { sendNotification } from "@/app/actions/notifications";
 import {
   recordObedienceEvent,
   recordObedienceEventForWeek,
@@ -469,6 +470,10 @@ export interface AdjustScoreArgs {
   reason: string;
   /** Optional override; defaults to the current week. */
   weekKey?: string;
+  /** When true, also fire an FCM to the affected author with the
+   *  reason as the body. Default false — Sir often makes silent
+   *  adjustments and shouldn't be forced to ping every time. */
+  notify?: boolean;
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -682,6 +687,9 @@ export async function adminAdjustScore(
   try {
     const ts = Date.now();
     const eventId = crypto.randomUUID();
+    // Pass `reason` as the obedience helper's `note` arg — it rides
+    // into the `[obedience] event` activity-log entry next to the
+    // points/eventId. Mirrors the `setRestraintState(on, note?)` shape.
     if (args.weekKey) {
       await recordObedienceEventForWeek(
         args.author,
@@ -689,6 +697,7 @@ export async function adminAdjustScore(
         eventId,
         args.weekKey,
         rounded,
+        reason,
       );
     } else {
       await recordObedienceEvent(
@@ -697,16 +706,43 @@ export async function adminAdjustScore(
         eventId,
         ts,
         rounded,
+        reason,
       );
     }
-    logger.interaction("[admin] manual obedience adjust", {
+    // Activity-log headline uses the reason directly so Sir scanning
+    // /admin/logs sees the WHY first, not a generic "manual obedience
+    // adjust" string. The `[admin]` prefix keeps it filtered alongside
+    // other admin actions.
+    logger.interaction(`[admin] ${reason}`, {
       by: guard.session.author,
       author: args.author,
       points: rounded,
-      reason,
       weekKey: args.weekKey ?? "current",
       eventId,
+      notified: !!args.notify,
     });
+
+    // Optional FCM. The toggle defaults off in the UI — Sir frequently
+    // makes silent adjustments. When on, the recipient sees a push
+    // titled with the signed points and the reason as the body.
+    if (args.notify) {
+      const sign = rounded >= 0 ? "+" : "";
+      try {
+        await sendNotification(args.author, {
+          title: `${sign}${rounded} pts`,
+          body: reason,
+          url: "/rewards",
+        });
+      } catch (err) {
+        // Best-effort — the obedience event already landed. Don't
+        // surface this to the caller; activity log captures the failure.
+        logger.error("[admin] manual adjust notify failed", err, {
+          eventId,
+          author: args.author,
+        });
+      }
+    }
+
     revalidatePath("/admin/rewards");
     revalidatePath("/rewards");
     return { success: true, eventId };
