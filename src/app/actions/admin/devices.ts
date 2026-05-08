@@ -130,7 +130,7 @@ export async function forceLogoutAuthor(
       author,
       by: guard.session.author,
     });
-    revalidatePath("/admin/sessions");
+    revalidatePath("/admin/devices");
     return { success: true };
   } catch (err) {
     logger.error("[admin] revoke failed", err, { author });
@@ -274,7 +274,7 @@ export async function setRestraintState(
       ...(trimmedNote ? { note: trimmedNote } : {}),
     });
     revalidatePath("/admin");
-    revalidatePath("/admin/restraint-history");
+    revalidatePath("/admin/logs");
     return { success: true, on };
   } catch (err) {
     logger.error("[admin] restraint toggle failed", err);

@@ -82,7 +82,12 @@ export default function StatsPage() {
 
   useRefreshListener(fetchAll);
 
-  const now = stats?.generatedAt ?? Date.now();
+  // `Date.now()` is impure and would trip `react-hooks/purity` if
+  // called at render time. `useState`'s lazy initializer runs once at
+  // mount, exempting it from the rule. Once stats arrive, the
+  // snapshot's `generatedAt` takes precedence.
+  const [mountedAt] = useState(() => Date.now());
+  const now = stats?.generatedAt ?? mountedAt;
 
   return (
     <main className="mx-auto max-w-3xl p-4 pb-28 md:p-12 md:pb-32">

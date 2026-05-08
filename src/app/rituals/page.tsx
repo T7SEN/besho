@@ -272,25 +272,56 @@ export default function RitualsPage() {
   // `/api/cron/ritual-windows` endpoint now fires the window-open FCM
   // server-side; running on-device LocalNotifications in parallel was
   // delivering a second buzz for every window, which the user
-  // experienced as "double FCM." This effect now only blanket-cancels
-  // the ritual reminder ID band [3000, 3895] once on mount to clear
-  // any stale reminders persisted by previous app versions.
+  // experienced as "double FCM." This effect blanket-cancels the
+  // ritual reminder ID band [3000, 3895] to clear any stale reminders
+  // persisted by previous app versions.
+  //
+  // Gated on a persistent Capacitor Preferences flag — once cancelled
+  // on a given install, subsequent mounts skip the work entirely. The
+  // earlier `firstReconcileRef` only suppressed re-runs within a
+  // single page load, so every cold start did the same blanket cancel
+  // forever. Migration cleanup is one-shot per install by definition.
   useEffect(() => {
     if (!currentAuthor) return;
     if (!firstReconcileRef.current) return;
     let cancelled = false;
     void (async () => {
-      const bandSize =
-        NOTIF_ID.RITUAL_BAND_END - NOTIF_ID.RITUAL_BAND_START + 1;
-      const bandIds = Array.from(
-        { length: bandSize },
-        (_, i) => NOTIF_ID.RITUAL_BAND_START + i,
-      );
+      const FLAG_KEY = "rituals:reminder-band-cleared";
       try {
-        await cancel(bandIds);
+        const { Preferences } = await import("@capacitor/preferences");
+        const { value } = await Preferences.get({ key: FLAG_KEY });
+        if (value === "1") {
+          if (!cancelled) {
+            firstReconcileRef.current = false;
+            scheduledRemindersRef.current = new Set();
+          }
+          return;
+        }
+
+        const bandSize =
+          NOTIF_ID.RITUAL_BAND_END - NOTIF_ID.RITUAL_BAND_START + 1;
+        const bandIds = Array.from(
+          { length: bandSize },
+          (_, i) => NOTIF_ID.RITUAL_BAND_START + i,
+        );
+        try {
+          await cancel(bandIds);
+        } catch {
+          // Best-effort. A failed cancel just leaves a stale local
+          // reminder in place; it'll fire once and then go away.
+        }
+        // Set the flag even if cancel() threw — re-running won't
+        // recover anything, and we want the in-memory ref + the
+        // persistent flag to converge so the effect stays inert.
+        try {
+          await Preferences.set({ key: FLAG_KEY, value: "1" });
+        } catch {
+          // Preferences write failed — accept that the next launch
+          // will re-attempt the cancel. Cheap operation.
+        }
       } catch {
-        // Best-effort. A failed cancel just leaves a stale local
-        // reminder in place; it'll fire once and then go away.
+        // Capacitor Preferences unavailable (web, plugin missing) —
+        // keep the legacy in-memory ref behavior so dev still works.
       }
       if (!cancelled) {
         firstReconcileRef.current = false;

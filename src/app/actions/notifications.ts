@@ -50,27 +50,42 @@ export async function getNotificationHistory(): Promise<NotificationRecord[]> {
   }
 }
 
+// Lua: atomic read-modify-write of the drawer LIST. Inside an EVAL
+// the entire script runs uninterrupted (Redis is single-threaded), so
+// a concurrent `pushNotificationToHistory` LPUSH cannot land between
+// our LRANGE and DEL/RPUSH cycle. Without this, the previous JS
+// pipeline leaked: read snapshot → DEL clears the list → re-push the
+// stale snapshot, dropping any LPUSH that arrived in the window.
+//
+// String mutation: Upstash JSON-stringifies stored objects via the
+// canonical `JSON.stringify` form (no whitespace), so `"read":false`
+// is the exact byte sequence to swap. The `1` arg to `gsub` caps at
+// one replacement per record — defensive against any future field
+// that happens to contain the same substring nested in user content.
+const MARK_ALL_READ_LUA = `
+local items = redis.call("LRANGE", KEYS[1], 0, -1)
+if #items == 0 then return 0 end
+redis.call("DEL", KEYS[1])
+for i = 1, #items do
+  redis.call("RPUSH", KEYS[1], string.gsub(items[i], '"read":false', '"read":true', 1))
+end
+return #items
+`;
+
 export async function markAllNotificationsRead(): Promise<void> {
   const author = await getSessionAuthor();
   if (!author) return;
 
   try {
-    const records = await redis.lrange<NotificationRecord>(
-      historyKey(author),
-      0,
-      -1,
+    const updated = await redis.eval(
+      MARK_ALL_READ_LUA,
+      [historyKey(author)],
+      [],
     );
-    if (!records?.length) return;
-
-    const updated = records.map((r) => ({ ...r, read: true }));
-
-    const pipeline = redis.pipeline();
-    pipeline.del(historyKey(author));
-    for (const record of updated) {
-      pipeline.rpush(historyKey(author), record);
-    }
-    await pipeline.exec();
-    logger.interaction("[notifications] All marked as read", { author });
+    logger.interaction("[notifications] All marked as read", {
+      author,
+      updated,
+    });
   } catch (error) {
     logger.error("[notifications] Failed to mark read:", error);
   }

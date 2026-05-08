@@ -154,6 +154,13 @@ export interface HealthSnapshot {
     credentialsPresent: boolean;
     tokensRegistered: Record<Author, boolean>;
   };
+  cron: {
+    /** Whether `CRON_SECRET` is set in the runtime env. Without it,
+     *  every `/api/cron/*` route refuses to run (returns 401), which
+     *  is silent from cron-job.org's perspective and easy to miss
+     *  until telemetry goes stale. */
+    secretSet: boolean;
+  };
   errorsLast24h: number;
   warningsLast24h: number;
   pinnedSetSize: number;
@@ -266,6 +273,10 @@ export async function getHealthSnapshot(): Promise<HealthResult> {
     fcm: {
       credentialsPresent: credsPresent,
       tokensRegistered: { T7SEN: tokensT, Besho: tokensB },
+    },
+    cron: {
+      secretSet: typeof process.env.CRON_SECRET === "string" &&
+        process.env.CRON_SECRET.length > 0,
     },
     errorsLast24h,
     warningsLast24h,

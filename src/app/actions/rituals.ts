@@ -945,15 +945,20 @@ export async function purgeAllRituals(): Promise<{
       );
     }
 
+    // Fetch every ritual's occurrence index in parallel — was a
+    // sequential `for await` loop with one round-trip per ritual,
+    // which scaled linearly with ritual count. `Promise.all` lifts
+    // the per-ritual ZRANGEs into a single Upstash REST wave.
+    const occurrenceLists = await Promise.all(
+      ids.map((id) =>
+        redis.zrange(occurrencesIndexKey(id), 0, -1) as Promise<string[]>,
+      ),
+    );
     const allOccurrenceDateKeys: { ritualId: string; dateKey: string }[] = [];
-    for (const id of ids) {
-      const dks = (await redis.zrange(
-        occurrencesIndexKey(id),
-        0,
-        -1,
-      )) as string[];
-      for (const dk of dks) {
-        allOccurrenceDateKeys.push({ ritualId: id, dateKey: dk });
+    for (let i = 0; i < ids.length; i++) {
+      const ritualId = ids[i];
+      for (const dk of occurrenceLists[i] ?? []) {
+        allOccurrenceDateKeys.push({ ritualId, dateKey: dk });
       }
     }
 

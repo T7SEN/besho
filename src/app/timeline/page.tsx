@@ -38,33 +38,7 @@ import { hideKeyboard } from "@/lib/keyboard";
 import { PurgeButton } from "@/components/admin/purge-button";
 import { RichTextEditor } from "@/components/ui/rich-text-editor";
 import { MarkdownRenderer } from "@/components/ui/markdown-renderer";
-
-const EMOJI_OPTIONS = [
-  "✨",
-  "❤️",
-  "📞",
-  "✈️",
-  "🏠",
-  "🎉",
-  "🎂",
-  "🌹",
-  "💌",
-  "📸",
-  "☕",
-  "🎬",
-  "🌙",
-  "🥂",
-  "🤝",
-  "🌅",
-  "🎵",
-  "📖",
-  "🗺️",
-  "💍",
-  "🌊",
-  "🏖️",
-  "🎭",
-  "👋",
-];
+import { EMOJI_OPTIONS } from "@/lib/timeline-constants";
 
 function formatEventDate(timestamp: number): string {
   return new Intl.DateTimeFormat("en-US", {
@@ -236,26 +210,73 @@ export default function TimelinePage() {
                 </h2>
 
                 <div>
-                  <p className="mb-2 text-[10px] font-bold uppercase tracking-widest text-muted-foreground/50">
+                  <p
+                    id="timeline-emoji-label"
+                    className="mb-2 text-[10px] font-bold uppercase tracking-widest text-muted-foreground/50"
+                  >
                     Emoji
                   </p>
                   <input type="hidden" name="emoji" value={selectedEmoji} />
-                  <div className="flex flex-wrap gap-2">
-                    {EMOJI_OPTIONS.map((emoji) => (
-                      <button
-                        key={emoji}
-                        type="button"
-                        onClick={() => setSelectedEmoji(emoji)}
-                        className={cn(
-                          "flex h-9 w-9 items-center justify-center rounded-xl text-lg transition-all",
-                          selectedEmoji === emoji
-                            ? "bg-primary/20 ring-1 ring-primary/40"
-                            : "bg-black/20 hover:bg-black/40",
-                        )}
-                      >
-                        {emoji}
-                      </button>
-                    ))}
+                  <div
+                    role="radiogroup"
+                    aria-labelledby="timeline-emoji-label"
+                    className="flex flex-wrap gap-2"
+                    onKeyDown={(e) => {
+                      // Roving-tabindex keyboard nav. Arrows wrap;
+                      // Home/End jump to first/last. Native radiogroup
+                      // semantics — but since each option is a button
+                      // (not a radio input), we wire the equivalent
+                      // behavior manually.
+                      const idx = EMOJI_OPTIONS.indexOf(
+                        selectedEmoji as (typeof EMOJI_OPTIONS)[number],
+                      );
+                      if (idx < 0) return;
+                      const last = EMOJI_OPTIONS.length - 1;
+                      let next = idx;
+                      switch (e.key) {
+                        case "ArrowRight":
+                        case "ArrowDown":
+                          next = idx === last ? 0 : idx + 1;
+                          break;
+                        case "ArrowLeft":
+                        case "ArrowUp":
+                          next = idx === 0 ? last : idx - 1;
+                          break;
+                        case "Home":
+                          next = 0;
+                          break;
+                        case "End":
+                          next = last;
+                          break;
+                        default:
+                          return;
+                      }
+                      e.preventDefault();
+                      setSelectedEmoji(EMOJI_OPTIONS[next]);
+                    }}
+                  >
+                    {EMOJI_OPTIONS.map((emoji) => {
+                      const isSelected = selectedEmoji === emoji;
+                      return (
+                        <button
+                          key={emoji}
+                          type="button"
+                          role="radio"
+                          aria-checked={isSelected}
+                          aria-label={`Emoji ${emoji}`}
+                          tabIndex={isSelected ? 0 : -1}
+                          onClick={() => setSelectedEmoji(emoji)}
+                          className={cn(
+                            "flex h-9 w-9 items-center justify-center rounded-xl text-lg transition-all",
+                            isSelected
+                              ? "bg-primary/20 ring-1 ring-primary/40"
+                              : "bg-black/20 hover:bg-black/40",
+                          )}
+                        >
+                          {emoji}
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
 

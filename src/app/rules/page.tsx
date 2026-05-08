@@ -158,6 +158,17 @@ export default function RulesPage() {
   const { connected } = useNetwork();
   const isOffline = !connected;
 
+  // Floor for the ack-deadline datetime input. `useState`'s lazy
+  // initializer runs once at mount, which the `react-hooks/purity`
+  // rule treats as pure (vs. a `useMemo` factory which re-runs on
+  // render). Locked at first render — mildly stale after a few
+  // minutes is fine; server is the authority on whether the deadline
+  // is valid.
+  const [ackDeadlineMin] = useState(() => {
+    const tzOffsetMs = new Date().getTimezoneOffset() * 60_000;
+    return new Date(Date.now() - tzOffsetMs).toISOString().slice(0, 16);
+  });
+
   const keyboardHeight = useKeyboardHeight();
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -429,6 +440,11 @@ export default function RulesPage() {
                     id="rule-ack-deadline"
                     name="acknowledgeDeadline"
                     type="datetime-local"
+                    // Floor at "now" in local time so picking a past
+                    // deadline is impossible at the UI layer. Server
+                    // accepts anything, but past deadlines are
+                    // nonsensical (already-missed before submit).
+                    min={ackDeadlineMin}
                     disabled={isPending || undefined}
                     className={cn(
                       "w-full rounded-xl border border-white/10 bg-black/20 px-4 py-2.5 text-sm",

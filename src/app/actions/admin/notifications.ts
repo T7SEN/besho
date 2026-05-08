@@ -152,17 +152,13 @@ const NOTIFICATION_AUDIT_LIMIT = 200;
 const NOTIFICATION_HISTORY_MAX = 50;
 const notificationHistoryKey = (author: Author) => `notifications:${author}`;
 
+// Upstash auto-deserializes JSON-encoded ZSET members back to objects
+// on read, so `raw` is always an object here. The earlier branch that
+// JSON.parsed string members was defensive code that never executed —
+// removed.
 function parseAuditEntry(raw: unknown): OutboundNotificationAuditEntry | null {
-  let parsed: unknown = raw;
-  if (typeof raw === "string") {
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      return null;
-    }
-  }
-  if (!parsed || typeof parsed !== "object") return null;
-  const entry = parsed as Partial<OutboundNotificationAuditEntry>;
+  if (!raw || typeof raw !== "object") return null;
+  const entry = raw as Partial<OutboundNotificationAuditEntry>;
   if (
     typeof entry.id !== "string" ||
     (entry.to !== "T7SEN" && entry.to !== "Besho") ||

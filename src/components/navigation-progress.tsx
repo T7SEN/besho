@@ -25,8 +25,11 @@ export function NavigationProgress() {
   const [isLoading, setIsLoading] = useState(false);
 
   useEffect(() => {
-    // Pathname just changed — we landed. Snap-and-hide handled by exit anim.
-    setIsLoading(false);
+    // Pathname just changed — we landed. Snap-and-hide handled by exit
+    // anim. Deferred via setTimeout(0) per AGENTS.md § 4 — synchronous
+    // setState in an effect body trips react-hooks/set-state-in-effect.
+    const t = setTimeout(() => setIsLoading(false), 0);
+    return () => clearTimeout(t);
   }, [pathname]);
 
   useEffect(() => {
@@ -68,7 +71,7 @@ export function NavigationProgress() {
             opacity: { duration: 0.2 },
           }}
           className={cn(
-            "pointer-events-none fixed left-0 z-[60] h-0.5 bg-primary",
+            "pointer-events-none fixed left-0 z-60 h-0.5 bg-primary",
             "shadow-[0_0_8px_hsl(var(--primary)/0.6)]",
           )}
           style={{ top: "env(safe-area-inset-top)" }}

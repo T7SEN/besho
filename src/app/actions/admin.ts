@@ -68,7 +68,7 @@ export async function clearActivityFeed(): Promise<{
       by: guard.session.author,
       deletedCount: n,
     });
-    revalidatePath("/admin/activity");
+    revalidatePath("/admin/logs");
     return { success: true, deletedCount: n };
   } catch (err) {
     logger.error("[admin] activity clear failed", err);
@@ -527,7 +527,7 @@ export async function clearAuthFailures(): Promise<{
       by: guard.session.author,
       deletedCount: count,
     });
-    revalidatePath("/admin/auth-log");
+    revalidatePath("/admin/logs");
     return {
       success: true,
       deletedCount: typeof count === "number" ? count : 0,

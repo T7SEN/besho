@@ -53,12 +53,19 @@ export default function DatesPage() {
 
   useEffect(() => {
     if (state.success) {
-      setFlash("Saved.");
-      void hideKeyboard();
-      void vibrate(50, "medium");
-      void refresh();
-      const id = setTimeout(() => setFlash(null), 2_500);
-      return () => clearTimeout(id);
+      // Deferred per AGENTS.md § 4 — synchronous setState in an
+      // effect body trips react-hooks/set-state-in-effect.
+      const setT = setTimeout(() => {
+        setFlash("Saved.");
+        void hideKeyboard();
+        void vibrate(50, "medium");
+        void refresh();
+      }, 0);
+      const clearT = setTimeout(() => setFlash(null), 2_500);
+      return () => {
+        clearTimeout(setT);
+        clearTimeout(clearT);
+      };
     }
     if (state.error) {
       void vibrate(80, "medium");

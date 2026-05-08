@@ -35,6 +35,7 @@ import {
 } from "@/lib/ledger-constants";
 import { getCurrentAuthor } from "@/app/actions/auth";
 import { TITLE_BY_AUTHOR } from "@/lib/constants";
+import { MY_TZ } from "@/lib/constants";
 import { usePresence } from "@/hooks/use-presence";
 import { useNetwork } from "@/hooks/use-network";
 import { useRefreshListener } from "@/hooks/use-refresh-listener";
@@ -58,10 +59,27 @@ function formatDateTime(timestamp: number): string {
   }).format(new Date(timestamp));
 }
 
+// `<input type="datetime-local">` expects `YYYY-MM-DDTHH:MM` in the
+// user's intended wall-clock timezone. We format in Cairo (`MY_TZ`)
+// so both Sir (Tabuk +03) and kitten (Cairo) see the same default
+// when picking a ledger entry's "happened at" — entries are anchored
+// to the relationship's home timezone, not the device's local. The
+// previous implementation used `Date.getTimezoneOffset()` which was
+// device-local: Sir picked Tabuk-time, kitten picked Cairo-time, and
+// the same instant rendered differently between them.
 function dateInputDefault() {
-  const d = new Date();
-  const tzOffset = d.getTimezoneOffset() * 60_000;
-  return new Date(d.getTime() - tzOffset).toISOString().slice(0, 16);
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: MY_TZ,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(new Date());
+  const byType: Record<string, string> = {};
+  for (const p of parts) byType[p.type] = p.value;
+  return `${byType.year}-${byType.month}-${byType.day}T${byType.hour}:${byType.minute}`;
 }
 
 export default function LedgerPage() {

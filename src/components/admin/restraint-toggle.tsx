@@ -40,7 +40,11 @@ export function RestraintToggle() {
   }, []);
 
   useEffect(() => {
-    void refresh();
+    // Deferred per AGENTS.md § 4 — `refresh` calls setState
+    // (setOn/setError); a synchronous call from the effect body trips
+    // react-hooks/set-state-in-effect.
+    const t = setTimeout(() => void refresh(), 0);
+    return () => clearTimeout(t);
   }, [refresh]);
 
   useEffect(() => {

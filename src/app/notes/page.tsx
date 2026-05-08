@@ -74,9 +74,6 @@ import { logger } from "@/lib/logger";
 import { RichTextEditor } from "@/components/ui/rich-text-editor";
 import { MarkdownRenderer } from "@/components/ui/markdown-renderer";
 
-declare let window: any;
-declare let document: any;
-
 type Filter = "all" | "T7SEN" | "Besho";
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
