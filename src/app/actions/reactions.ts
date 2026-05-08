@@ -49,11 +49,7 @@ export async function reactToNote(
     }
 
     const all = await redis.hgetall<Record<string, string>>(key);
-    // Reaction toggles are high-frequency, low-signal — every emoji
-    // tap. Downgraded from `interaction` to `info` so they don't flood
-    // `activity:log` (capped at 500) and evict useful [admin]/[auth]
-    // entries. Console + Sentry breadcrumbs still capture them.
-    logger.info("[reactions] Reaction toggled", {
+    logger.interaction("[reactions] Reaction toggled", {
       author,
       noteId,
       emoji,
