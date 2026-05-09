@@ -15,7 +15,7 @@ The two highest-value sections are kept inline below: the **anti-hallucination i
 
 Before writing code or proposing changes, complete this checklist:
 
-1. **Banned scope check** → Does the request mention `gallery`, `bucket list`, or `voice notes`/audio recording on `/permissions`? If yes → refuse, propose `/notes`/`/timeline`/`/tasks`/`/rules`/`/ledger` for the first two, or text + markdown body for the third.
+1. **Banned scope check** → Does the request mention `gallery`, `bucket list`, `voice notes`/audio recording on `/permissions`, or **Telegram / WhatsApp / Signal / any third-party messenger as a notification channel**? If yes → refuse, propose `/notes`/`/timeline`/`/tasks`/`/rules`/`/ledger` for the first two, text + markdown body for the third, and FCM-only (existing `pushNotificationToHistory` path) for the fourth — there is no sanctioned out-of-band messenger.
 2. **Architecture conflict check** → Does the request imply offline support, PWA features, service workers, web push, or removing `server.url`? If yes → refuse with rationale from `AGENTS.md` Section 3.7. Do not implement.
 3. **Anti-hallucination check** → Read Section 2 below before writing imports or env-var references.
 4. **Role-context identification** → Does this involve a state mutation? If yes → identify which author (`T7SEN`/`Besho`) is allowed and ensure server-side role check (`AGENTS.md` Section 3.1; `references/auth-and-security.md`). For `/permissions` specifically, `getAutoRules` is Sir-only and must return `[]` for Besho — don't relax.
@@ -89,6 +89,7 @@ These were removed or never existed. Do not import them, reference them, or writ
 | `tailwind.config.ts` / `tailwind.config.js`                                                                                                   | Tailwind v4 is CSS-first; tokens live in `src/app/globals.css`                             |
 | `pages/` directory, `getServerSideProps`, `getStaticProps`                                                                                    | App Router only                                                                            |
 | `VoiceNote` type, `voiceNote` field, `MediaRecorder` + `RECORD_AUDIO` permission for `/permissions`                                           | None — voice notes prototyped on permissions and explicitly removed                        |
+| Telegram bot, Telegram fallback push, `TELEGRAM_BOT_TOKEN` / `TELEGRAM_*_CHAT_ID` env vars, WhatsApp / Signal / any third-party messenger as a notification channel | None — FCM is the sole sanctioned push transport (§ 3.2). Out-of-band messenger fallbacks were considered and explicitly banned |
 | TZ primitives in `@/lib/rituals` (`dateKeyInTz`, `todayKeyCairo`, `tzWallClockToUtcMs`, `previousDateKey`, `nextDateKey`, `weekdayOfDateKey`) | `@/lib/cairo-time` — the migration relocated all TZ math; importing from rituals will fail |
 | Inline `todayInCairo()`, `secondsUntilMidnight()`, or per-callsite `Intl.DateTimeFormat` date-key helpers                                     | `@/lib/cairo-time` exports the canonical versions — never reinvent                         |
 | Standalone routes `/admin/inspector`, `/admin/sessions`, `/admin/cooldowns`, `/admin/time`, `/admin/timezone`, `/admin/activity`, `/admin/notifications`, `/admin/restraint-history`, `/admin/auth-log` | `/admin/devices` (Right now + Sessions sections) for inspector + sessions; `/admin/health` (Cooldowns + Time tabs; Time tab also hosts the Cairo↔Tabuk converter) for the three time/cooldown routes; `/admin/logs` (Activity / Outbound / Restraint / Auth failures tabs) for the four append-only log routes |
@@ -107,6 +108,7 @@ Refuse these immediately with a one-line rationale. Do not implement, do not ask
 | Request pattern                                         | Why refuse                                                      |
 | ------------------------------------------------------- | --------------------------------------------------------------- |
 | Add a gallery / photo feature, or bucket list           | Banned feature surface                                          |
+| Add Telegram / WhatsApp / Signal / any third-party messenger as a push channel | Banned — FCM is the sole sanctioned push transport (§ 3.2)      |
 | Re-add PWA / Serwist / service worker                   | Removed intentionally; conflicts with `server.url`              |
 | Re-add Web Push / VAPID / `web-push` package            | Removed with PWA; conflicts with `server.url`                   |
 | Re-suggest voice notes on `/permissions`                | Prototyped and explicitly removed                               |

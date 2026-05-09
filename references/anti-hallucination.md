@@ -19,6 +19,7 @@ This file mirrors `SKILL.md` Section 2. Loaded on demand by tools that read refe
 | `tailwind.config.ts` / `tailwind.config.js`                                                                                                                   | Tailwind v4 is CSS-first; tokens live in `src/app/globals.css`                          |
 | `pages/` directory, `getServerSideProps`, `getStaticProps`                                                                                                    | App Router only                                                                         |
 | `VoiceNote` type, `voiceNote` field on `PermissionRequest`, `MediaRecorder` usage in permissions, `RECORD_AUDIO` Android permission, `VOICE_NOTE_*` constants | None — voice notes were prototyped on permissions and explicitly removed                |
+| Telegram bot, Telegram fallback push, `TELEGRAM_BOT_TOKEN` / `TELEGRAM_*_CHAT_ID` env vars, `src/lib/telegram.ts`, WhatsApp / Signal / any third-party messenger as a push channel | None — FCM is the sole sanctioned push transport. Out-of-band messenger fallback was considered (proposed against Honor / OEM FCM flakiness) and explicitly banned; the durable `notifications:{author}` history record is the FCM-defensive backstop (§ 3.3) |
 
 ---
 
@@ -31,6 +32,7 @@ Training data for current LLMs predates several intentional removals from this c
 - Referencing `process.env.VAPID_PUBLIC_KEY` because the agent assumed Web Push must be configured.
 - Reading from `pages/api/...` because the agent's training cutoff predates App Router maturity.
 - Re-suggesting voice notes for `/permissions` because audio attachments seem like a natural fit for emotional context. They were prototyped and removed — don't re-propose without explicit user instruction.
+- Proposing a Telegram bot / Telegram fallback push / any third-party messenger as a notification channel because Honor / EMUI / no-GMS devices throttle FCM. The FCM defensive design (§ 3.3) — registration tolerance + the durable `notifications:{author}` history LIST + per-token failure pruning — is the sanctioned answer. Out-of-band messenger channels are explicitly banned; do not re-propose under any framing including "fallback," "sidecar," "parallel send," or "reliability hardening."
 
 Every entry above produces a runtime failure, a bundle that won't compile, or a refused PR. Stop the moment you find yourself typing one.
 

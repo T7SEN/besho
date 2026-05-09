@@ -4,12 +4,14 @@ Detailed reference for the presence-aware push notification routing in Our Space
 
 ## Architecture Note
 
-**FCM is the only push transport.** There is no Web Push, no Service Worker, no VAPID. Web Push and PWA infrastructure were removed because:
+**FCM is the only push transport.** There is no Web Push, no Service Worker, no VAPID. There is also no Telegram / WhatsApp / Signal / any other third-party messenger as a fallback or sidecar channel — these are explicitly banned (see `references/refusal-catalog.md` + `references/anti-hallucination.md`). Web Push and PWA infrastructure were removed because:
 
 1. The app runs as a hosted-webapp Capacitor shell (`server.url`) — the WebView doesn't run service workers reliably.
 2. Maintaining two transport stacks (FCM + Web Push) for a two-user app was cost-disproportionate.
 
-If a future contributor proposes adding Web Push back, they must read [`./capacitor-native.md`](./capacitor-native.md) Section "Why No Web Push" and explain why the prior reasoning no longer applies.
+The third-party-messenger ban exists for the same cost-disproportion reason plus an additional one: out-of-band messenger fallbacks duplicate the channel and add an unlocked third-party dependency outside the deliberate Vercel + Upstash + Firebase + Capacitor stack. The defensive design in § 3.3 of `AGENTS.md` (FCM registration tolerance + durable `notifications:{author}` history LIST + per-token failure pruning) IS the sanctioned answer to OEM / Honor / no-GMS reliability concerns.
+
+If a future contributor proposes adding Web Push back, they must read [`./capacitor-native.md`](./capacitor-native.md) Section "Why No Web Push" and explain why the prior reasoning no longer applies. The same bar applies to any proposal to add a third-party messenger as a push channel — refuse on sight unless the user explicitly retracts the ban.
 
 ## The Four-Step Algorithm
 

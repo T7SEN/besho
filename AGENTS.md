@@ -29,7 +29,7 @@ This file is the entry point — short, dense, with pointers. Detailed guidance 
 | Users           | Exactly two: `T7SEN` (dom), `Besho` (sub/kitten)     |
 | Devices         | T7SEN: Samsung Android. Besho: Honor phone + tablet. |
 
-**Banned features.** Never suggest, scaffold, or reference: `gallery`, `bucket list`. Reject any framing that implies them and propose alternatives using `/notes`, `/timeline`, `/tasks`, `/rules`, or `/ledger`.
+**Banned features.** Never suggest, scaffold, or reference: `gallery`, `bucket list`, or **Telegram / WhatsApp / Signal / any third-party messenger as a notification channel**. Reject any framing that implies them and propose alternatives using `/notes`, `/timeline`, `/tasks`, `/rules`, or `/ledger`. The third-party-messenger ban exists because FCM is the sole sanctioned push transport (see § 3.2 + `references/push-routing.md`); reintroducing a parallel out-of-band messenger duplicates the channel and adds an unlocked third-party dependency.
 
 ---
 
@@ -248,7 +248,7 @@ When in doubt:
 4. Respects dom/sub permissions? → Re-check `session.author` server-side.
 5. Will this fire a duplicate notification? → Add a presence check.
 6. PWA / Web Push reintroduction proposal? → Refuse (Section 3.7).
-7. Banned (gallery, bucket list)? → Refuse.
+7. Banned (gallery, bucket list, Telegram / third-party messenger as push channel)? → Refuse.
 8. Violates any rule above? → Refuse and explain.
 
 ### Decisions deliberately deferred
