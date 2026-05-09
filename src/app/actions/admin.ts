@@ -23,6 +23,7 @@ import { todayKeyCairo } from "@/lib/cairo-time";
 import type { AuthFailureRecord } from "./auth";
 import type { PermissionRequest } from "./permissions";
 import { readAllCronTelemetry } from "@/lib/cron-telemetry";
+import { readFcmTokens } from "@/lib/fcm-tokens";
 import { redis, requireSir } from "./admin/_shared";
 
 // Local copies of the permissions key constants — used by
@@ -239,8 +240,8 @@ export async function exportSnapshot(): Promise<ExportResult> {
     const [presenceT, presenceB, pushT, pushB, epochs] = await Promise.all([
       redis.get("presence:T7SEN"),
       redis.get("presence:Besho"),
-      redis.get<string>("push:fcm:T7SEN"),
-      redis.get<string>("push:fcm:Besho"),
+      readFcmTokens(redis, "T7SEN"),
+      readFcmTokens(redis, "Besho"),
       readAllSessionEpochs(),
     ]);
 
@@ -261,9 +262,11 @@ export async function exportSnapshot(): Promise<ExportResult> {
         presence: { T7SEN: presenceT ?? null, Besho: presenceB ?? null },
         // Push tokens are masked in the inspector but retained in full
         // here so a backup can re-seed FCM. The export is Sir-only.
+        // Multi-token after the SET migration — both Honor + tablet
+        // tokens land in the array on Besho's side.
         push: {
-          T7SEN: pushT ?? null,
-          Besho: pushB ?? null,
+          T7SEN: pushT,
+          Besho: pushB,
         },
         sessionEpochs: epochs,
       },

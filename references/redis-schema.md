@@ -179,7 +179,7 @@ Written every 8 seconds by `usePresence` while a page is open. The 6-second TTL 
 
 | Key                 | Type   | Description                |
 | ------------------- | ------ | -------------------------- |
-| `push:fcm:{author}` | STRING | FCM device token (Android) |
+| `push:fcm:{author}` | SET    | FCM device tokens — one SET member per registered device (multi-device per author) |
 
 > **Removed:** `push:subscription:{author}` (Web Push subscription) is no longer used. PWA infrastructure was removed; Web Push delivery is gone. If your Redis still has these keys from the old codebase, drop them:
 >
@@ -187,7 +187,7 @@ Written every 8 seconds by `usePresence` while a page is open. The 6-second TTL 
 > DEL push:subscription:T7SEN push:subscription:Besho
 > ```
 
-Both devices register an FCM token on app launch. `FCMProvider` catches any registration error and continues silently (see Section 3.3 of `AGENTS.md`), so consumers must still treat `push:fcm:{author}` as nullable.
+Both devices register an FCM token on app launch. `FCMProvider` catches any registration error and continues silently (see Section 3.3 of `AGENTS.md`), so consumers must still treat `push:fcm:{author}` as possibly-empty (returns `[]` from `readFcmTokens` rather than null). The SET shape supports multi-device per author — Besho's phone + tablet each hold their own member; `sendEachForMulticast` fans out, and `pruneStaleFcmTokens` SREMs members that FCM rejects with `messaging/registration-token-not-registered` / `messaging/invalid-registration-token` / `messaging/invalid-argument`. Helpers in `@/lib/fcm-tokens`: `addFcmToken`, `readFcmTokens`, `countFcmTokens`, `pruneStaleFcmTokens`, plus the `PERMANENTLY_DEAD_FCM_ERROR_CODES` allowlist. The `addFcmToken` helper auto-migrates legacy STRING values to SET on the first write after deploy — don't write a one-shot migration cron.
 
 ---
 

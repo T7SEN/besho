@@ -66,7 +66,7 @@ Algorithm: (1) `pushNotificationToHistory(target, payload)` first, (2) read `pre
 
 ### 3.3 FCM Registration Defensive Handling
 
-Both devices register an FCM token on app launch. Registration can still fail for ordinary reasons — permissions denied, network unavailable, OEM quirks. `FCMProvider` (`src/components/fcm-provider.tsx`) catches `registrationError` and logs without throwing. Server-side push code must therefore treat `push:fcm:{author}` as nullable: if absent, return silently; the `notifications:{author}` history record is the durable artifact, surfaced via `NotificationDrawer` and `useNavBadges`. Do not reintroduce PWA/Web Push as a fallback — rationale in Section 3.7 and `references/capacitor-native.md`.
+Both devices register an FCM token on app launch. Registration can still fail for ordinary reasons — permissions denied, network unavailable, OEM quirks. `FCMProvider` (`src/components/fcm-provider.tsx`) catches `registrationError` and logs without throwing. Server-side push code therefore treats `push:fcm:{author}` (a SET — multi-device per author, see § 3.6 + `references/push-routing.md`) as possibly-empty: if `readFcmTokens` returns `[]`, the send returns silently and the `notifications:{author}` history record is the durable artifact, surfaced via `NotificationDrawer` and `useNavBadges`. Sends fan out via `getMessaging().sendEachForMulticast` and per-token failures with `messaging/registration-token-not-registered` / `messaging/invalid-registration-token` / `messaging/invalid-argument` trigger `pruneStaleFcmTokens` so the SET self-cleans after token rotation. Do not reintroduce PWA/Web Push as a fallback — rationale in Section 3.7 and `references/capacitor-native.md`.
 
 ### 3.4 BiometricGate
 
@@ -78,7 +78,7 @@ Both devices register an FCM token on app launch. Registration can still fail fo
 
 ### 3.6 Redis (Upstash) Data Model
 
-Single Redis instance. Flat colon-namespaced keys: `note:{id}`, `notes:index` (ZSET), `reactions:{noteId}` (HASH), `rule:{id}`, `task:{id}`, `ledger:{id}`, `permission:{id}`, `permissions:index` (ZSET), `permissions:auto-rules` (Sir-only JSON array), `permissions:quotas` (JSON), `mood:{YYYY-MM-DD}:{author}`, `presence:{author}` (TTL 6s), `push:fcm:{author}`, `notifications:{author}` (LIST capped at 50). Permissions has additional sub-keys for re-ask blocking, audit history, and denied-hash detection — see the reference. Always pipeline dependent writes. Use `MY_TZ` (Cairo) from `src/lib/constants.ts` for date-derived keys — never the server's local time. Full schema and anti-patterns: `references/redis-schema.md`. Permissions feature spec: `references/permissions.md`.
+Single Redis instance. Flat colon-namespaced keys: `note:{id}`, `notes:index` (ZSET), `reactions:{noteId}` (HASH), `rule:{id}`, `task:{id}`, `ledger:{id}`, `permission:{id}`, `permissions:index` (ZSET), `permissions:auto-rules` (Sir-only JSON array), `permissions:quotas` (JSON), `mood:{YYYY-MM-DD}:{author}`, `presence:{author}` (TTL 6s), `push:fcm:{author}` (SET — one member per registered device), `notifications:{author}` (LIST capped at 50). Permissions has additional sub-keys for re-ask blocking, audit history, and denied-hash detection — see the reference. Always pipeline dependent writes. Use `MY_TZ` (Cairo) from `src/lib/constants.ts` for date-derived keys — never the server's local time. Full schema and anti-patterns: `references/redis-schema.md`. Permissions feature spec: `references/permissions.md`.
 
 ### 3.7 Hosted-Webapp Capacitor Architecture
 

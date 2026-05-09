@@ -312,12 +312,27 @@ export default function DevicesPage() {
                           : "bg-destructive/10 text-destructive",
                       )}
                     >
-                      {p.hasToken ? "registered" : "missing"}
+                      {p.hasToken
+                        ? `${p.tokenCount} device${p.tokenCount === 1 ? "" : "s"}`
+                        : "missing"}
                     </span>
                   </div>
-                  <p className="mt-3 truncate font-mono text-xs text-muted-foreground">
-                    {p.preview ?? "—"}
-                  </p>
+                  {p.previews.length > 0 ? (
+                    <ul className="mt-3 space-y-1">
+                      {p.previews.map((preview, i) => (
+                        <li
+                          key={`${p.author}:${preview}:${i}`}
+                          className="truncate font-mono text-xs text-muted-foreground"
+                        >
+                          {preview}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="mt-3 truncate font-mono text-xs text-muted-foreground">
+                      —
+                    </p>
+                  )}
                 </div>
               ))}
             </div>

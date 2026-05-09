@@ -201,21 +201,25 @@ export default function HealthPage() {
                   }
                 />
                 <Diag
-                  label={`${TITLE_BY_AUTHOR.T7SEN} token`}
-                  ok={health.fcm.tokensRegistered.T7SEN}
+                  label={`${TITLE_BY_AUTHOR.T7SEN} tokens`}
+                  ok={health.fcm.tokenCount.T7SEN > 0}
                   detail={
-                    health.fcm.tokensRegistered.T7SEN
-                      ? "registered"
-                      : "missing"
+                    health.fcm.tokenCount.T7SEN > 0
+                      ? `${health.fcm.tokenCount.T7SEN} device${
+                          health.fcm.tokenCount.T7SEN === 1 ? "" : "s"
+                        }`
+                      : "none registered"
                   }
                 />
                 <Diag
-                  label={`${TITLE_BY_AUTHOR.Besho} token`}
-                  ok={health.fcm.tokensRegistered.Besho}
+                  label={`${TITLE_BY_AUTHOR.Besho} tokens`}
+                  ok={health.fcm.tokenCount.Besho > 0}
                   detail={
-                    health.fcm.tokensRegistered.Besho
-                      ? "registered"
-                      : "missing"
+                    health.fcm.tokenCount.Besho > 0
+                      ? `${health.fcm.tokenCount.Besho} device${
+                          health.fcm.tokenCount.Besho === 1 ? "" : "s"
+                        }`
+                      : "none registered"
                   }
                 />
               </Section>

@@ -13,6 +13,7 @@ import {
   readAllCronTelemetry,
   type CronTelemetrySnapshot,
 } from "@/lib/cron-telemetry";
+import { countFcmTokens } from "@/lib/fcm-tokens";
 import { redis, requireSir } from "./_shared";
 
 // ──────────────────────────────────────────────────────────────────
@@ -152,7 +153,10 @@ export interface HealthSnapshot {
   };
   fcm: {
     credentialsPresent: boolean;
-    tokensRegistered: Record<Author, boolean>;
+    /** Per-author FCM token count. Multi-token after the SET migration —
+     *  Honor + tablet on Besho's side land in the same SET. 0 means no
+     *  device has registered (Honor / no-GMS / fresh install). */
+    tokenCount: Record<Author, number>;
   };
   cron: {
     /** Whether `CRON_SECRET` is set in the runtime env. Without it,
@@ -202,8 +206,8 @@ export async function getHealthSnapshot(): Promise<HealthResult> {
     process.env.FIREBASE_PRIVATE_KEY
   );
 
-  let tokensT = false;
-  let tokensB = false;
+  let tokenCountT = 0;
+  let tokenCountB = 0;
   let errorsLast24h = 0;
   let warningsLast24h = 0;
   let pinnedSetSize = 0;
@@ -215,15 +219,15 @@ export async function getHealthSnapshot(): Promise<HealthResult> {
   try {
     const day1Ago = now - 86_400_000;
     const [tT, tB, pinned, indexIds, ctT, ctB] = await Promise.all([
-      redis.get<string>("push:fcm:T7SEN"),
-      redis.get<string>("push:fcm:Besho"),
+      countFcmTokens(redis, "T7SEN"),
+      countFcmTokens(redis, "Besho"),
       redis.smembers("notes:pinned"),
       redis.zrange<unknown[]>("notes:index", 0, -1),
       redis.get<number | string>("notes:count:T7SEN"),
       redis.get<number | string>("notes:count:Besho"),
     ]);
-    tokensT = typeof tT === "string" && tT.length > 0;
-    tokensB = typeof tB === "string" && tB.length > 0;
+    tokenCountT = tT;
+    tokenCountB = tB;
     pinnedSetSize = (pinned ?? []).length;
     const ids = (indexIds ?? []).map(String);
     indexTotal = ids.length;
@@ -272,7 +276,7 @@ export async function getHealthSnapshot(): Promise<HealthResult> {
     redis: { ok: redisOk, latencyMs: redisLatency },
     fcm: {
       credentialsPresent: credsPresent,
-      tokensRegistered: { T7SEN: tokensT, Besho: tokensB },
+      tokenCount: { T7SEN: tokenCountT, Besho: tokenCountB },
     },
     cron: {
       secretSet: typeof process.env.CRON_SECRET === "string" &&

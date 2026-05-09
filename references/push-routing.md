@@ -62,12 +62,15 @@ if (currentPage === payload.url) {
 
 The recipient sees the update via SSE (`/notes`) or the `useRefreshListener` hook on other pages. A push at this point would double-notify.
 
-### Step 4 — FCM delivery
+### Step 4 — FCM delivery (multi-token fan-out)
 
 ```ts
-const fcmToken = await redis.get<string>(`push:fcm:${targetAuthor}`);
-if (!fcmToken) {
-  logger.info(`[push] No FCM token for ${targetAuthor}.`);
+import { readFcmTokens, pruneStaleFcmTokens, PERMANENTLY_DEAD_FCM_ERROR_CODES }
+  from "@/lib/fcm-tokens";
+
+const tokens = await readFcmTokens(redis, targetAuthor);
+if (tokens.length === 0) {
+  logger.info(`[push] No FCM tokens for ${targetAuthor}.`);
   return;
 }
 
@@ -87,48 +90,69 @@ try {
     });
   }
 
-  await getMessaging().send({
-    token: fcmToken,
-    ...(isAppOpen
-      ? {
-          // Foreground: data-only payload — Capacitor intercepts,
-          // FCMProvider dispatches PushToast in-app.
-          data: {
-            url: payload.url,
-            title: payload.title,
-            body: payload.body,
-          },
-        }
-      : {
-          // Background/closed: full notification payload —
-          // the OS draws the heads-up banner natively.
-          notification: {
-            title: payload.title,
-            body: payload.body,
-          },
-          data: { url: payload.url },
-          android: { priority: "high" },
-        }),
+  const multicast = isAppOpen
+    ? {
+        // Foreground: data-only payload — Capacitor intercepts,
+        // FCMProvider dispatches PushToast in-app.
+        tokens,
+        data: {
+          url: payload.url,
+          title: payload.title,
+          body: payload.body,
+        },
+      }
+    : {
+        // Background/closed: full notification payload —
+        // the OS draws the heads-up banner natively.
+        tokens,
+        notification: {
+          title: payload.title,
+          body: payload.body,
+        },
+        data: { url: payload.url },
+        android: { priority: "high" as const },
+      };
+
+  const result = await getMessaging().sendEachForMulticast(multicast);
+
+  // Per-token failure inspection. Permanently-dead error codes
+  // trigger SREM so the SET self-cleans; transient failures are
+  // logged and the token is kept for the next attempt.
+  const stale: string[] = [];
+  result.responses.forEach((resp, i) => {
+    if (resp.success) return;
+    const code = resp.error?.code ?? "";
+    if (PERMANENTLY_DEAD_FCM_ERROR_CODES.has(code)) {
+      stale.push(tokens[i]);
+    }
   });
+  if (stale.length > 0) {
+    await pruneStaleFcmTokens(redis, targetAuthor, stale);
+  }
 } catch (err) {
   logger.error("[push] FCM send failed:", err);
   // No fallback. The notification record in history is the only artifact.
 }
 ```
 
-**Critical detail:** the `notification` field must NOT be present in the foreground payload. If it is, Android draws a system banner _and_ the in-app `PushToast` — the user sees the same message twice.
+**Critical details:**
 
-The `firebase-admin` SDK is imported dynamically. Top-level imports inflate the Edge bundle and break runtime detection.
+- The `notification` field must NOT be present in the foreground payload. If it is, Android draws a system banner _and_ the in-app `PushToast` — the user sees the same message twice.
+- `sendEachForMulticast` is the canonical multi-token API on `firebase-admin`. It returns a `BatchResponse` with `responses[]` — one entry per input token, each carrying `success` or `error`. Don't loop with single-token `send()` calls; that's N round-trips for the same payload.
+- Token rotation is real (Play Services updates, app reinstalls, security events). Without the per-token failure inspection + SREM, a dead token stays in the SET forever and the device it represented goes silent until the user opens the app and triggers a fresh registration.
+- The `firebase-admin` SDK is imported dynamically. Top-level imports inflate the Edge bundle and break runtime detection.
 
 ---
 
 ## Storage Keys
 
-| Key                      | Type   | TTL  | Purpose                                |
-| ------------------------ | ------ | ---- | -------------------------------------- |
-| `presence:{author}`      | STRING | 6s   | `{ page, ts }` JSON — heartbeat target |
-| `push:fcm:{author}`      | STRING | none | FCM device token (Android with GMS)    |
-| `notifications:{author}` | LIST   | none | Last 50 records (LPUSH + LTRIM)        |
+| Key                      | Type   | TTL  | Purpose                                                                    |
+| ------------------------ | ------ | ---- | -------------------------------------------------------------------------- |
+| `presence:{author}`      | STRING | 6s   | `{ page, ts }` JSON — heartbeat target                                     |
+| `push:fcm:{author}`      | SET    | none | FCM device tokens (one entry per registered device — Android with GMS)     |
+| `notifications:{author}` | LIST   | none | Last 50 records (LPUSH + LTRIM)                                            |
+
+> **Migration note:** `push:fcm:{author}` was a STRING in the original implementation. It's now a SET to support multi-device per author (Besho has phone + tablet — each device's token is its own SET member; sends fan out via `sendEachForMulticast`). The read path in `@/lib/fcm-tokens` tolerates legacy STRING values during the transition; the first registration after deploy migrates the key shape.
 
 > **Note:** `push:subscription:{author}` (formerly Web Push subscription) is removed. If your Redis still has dead entries, clean them: `DEL push:subscription:T7SEN push:subscription:Besho`.
 
@@ -177,12 +201,15 @@ Copy the `sendRuleNotification` function in `src/app/actions/rules.ts` as a temp
 
 ## Failure Modes & Diagnostics
 
-| Symptom                                     | Cause                                       | Fix                                         |
-| ------------------------------------------- | ------------------------------------------- | ------------------------------------------- |
-| Duplicate banner + toast on Android         | `notification` field set in foreground path | Strip `notification` when `isAppOpen`       |
-| Notifications stop after server restart     | Firebase Admin re-initialized               | Guard with `if (!getApps().length)`         |
-| Push fires while user is on the target page | Presence stale or never written             | Check `usePresence(currentRoute)` is called |
-| `FIREBASE_PRIVATE_KEY` parse error          | `\n` literals not converted                 | `.replace(/\\n/g, '\n')` at runtime         |
+| Symptom                                                | Cause                                                                  | Fix                                                                                                       |
+| ------------------------------------------------------ | ---------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| Duplicate banner + toast on Android                    | `notification` field set in foreground path                            | Strip `notification` when `isAppOpen`                                                                     |
+| Notifications stop after server restart                | Firebase Admin re-initialized                                          | Guard with `if (!getApps().length)`                                                                       |
+| Push fires while user is on the target page            | Presence stale or never written                                        | Check `usePresence(currentRoute)` is called                                                               |
+| `FIREBASE_PRIVATE_KEY` parse error                     | `\n` literals not converted                                            | `.replace(/\\n/g, '\n')` at runtime                                                                       |
+| One device gets pushes, other(s) silent (multi-device) | Pre-SET-migration single-token race (last-writer-wins on STRING)       | Ensured by SET shape — every device's token persists. Re-registration auto-migrates legacy STRING values. |
+| Notifications stop without a server change             | Token rotated; old value persists; new sends hit dead token            | `sendEachForMulticast` failure inspection + `pruneStaleFcmTokens` on `registration-token-not-registered`  |
+| Honor / EMUI device drops background pushes            | OEM aggressive battery management / notification suppression           | Device-side: Phone Manager → Protected Apps → toggle on; App Launch → Manual; Battery → Don't restrict    |
 
 ---
 

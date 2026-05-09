@@ -5,6 +5,11 @@ import { redis } from "@/lib/redis";
 import { cookies } from "next/headers";
 import { decrypt } from "@/lib/auth-utils";
 import { logger } from "@/lib/logger";
+import {
+  PERMANENTLY_DEAD_FCM_ERROR_CODES,
+  pruneStaleFcmTokens,
+  readFcmTokens,
+} from "@/lib/fcm-tokens";
 
 export interface NotificationRecord {
   id: string;
@@ -164,8 +169,10 @@ export async function clearAllNotifications(): Promise<void> {
  * 3. If recipient is on `payload.url` and `bypassPresence` is not set,
  *    return — SSE / `useRefreshListener` cover the UI; a push would
  *    double-notify.
- * 4. Read `push:fcm:{to}`. If absent, return (Honor / no-GMS — silent).
- * 5. Send via FCM:
+ * 4. Read every token in `push:fcm:{to}` (SET — multi-device per author).
+ *    Empty set → return (Honor / no-GMS — silent).
+ * 5. Send via FCM `sendEachForMulticast` (single API call, per-token
+ *    success/error breakdown):
  *    - `bypassPresence: true` → full `notification` payload regardless
  *      of foreground state, with optional `android` overrides for
  *      channel / priority / sound. Used by `/safeword`.
@@ -174,6 +181,13 @@ export async function clearAllNotifications(): Promise<void> {
  *      The `notification` field MUST NOT be set here, or Android draws
  *      the heads-up banner and the in-app toast simultaneously.
  *    - Background / closed → full `notification` payload + `data.url`.
+ * 6. Inspect the per-token responses. Tokens that fail with
+ *    `messaging/registration-token-not-registered` /
+ *    `messaging/invalid-registration-token` /
+ *    `messaging/invalid-argument` are SREM'd from the SET. Tokens
+ *    rotate (Play Services updates, app reinstalls, security events);
+ *    without auto-eviction, a dead token persists forever and the
+ *    affected device goes silent until the user notices.
  *
  * No external fallback. Web Push and `web-push` are intentionally
  * removed (see `SKILL.md` Section 2.1). FCM failures are logged and
@@ -248,20 +262,15 @@ export async function sendNotification(
     return;
   }
 
-  // 4. Resolve FCM token. Absent → done (Honor / no-GMS).
-  let fcmToken: string | null = null;
-  try {
-    fcmToken = await redis.get<string>(`push:fcm:${to}`);
-  } catch (err) {
-    logger.error("[push] Failed to read FCM token:", err);
+  // 4. Resolve every registered token. Empty → done (Honor / no-GMS,
+  //    or a fresh install that hasn't registered yet).
+  const tokens = await readFcmTokens(redis, to);
+  if (tokens.length === 0) {
+    logger.info(`[push] No FCM tokens for ${to}.`);
     return;
   }
-  if (!fcmToken) {
-    logger.info(`[push] No FCM token for ${to}.`);
-    return;
-  }
-  
-  // 5. Initialize firebase-admin and send.
+
+  // 5. Initialize firebase-admin and fan out to every token.
   try {
     const { getApps, initializeApp, cert } = await import("firebase-admin/app");
     const { getMessaging } = await import("firebase-admin/messaging");
@@ -279,42 +288,75 @@ export async function sendNotification(
     const isAppOpen = currentPage !== null;
     const useFullNotification = options?.bypassPresence === true || !isAppOpen;
 
-    if (useFullNotification) {
-      const a = options?.android;
-      await getMessaging().send({
-        token: fcmToken,
-        notification: {
-          title: payload.title,
-          body: payload.body,
-        },
-        data: { url: payload.url },
-        android: {
-          priority: "high",
-          ...(a
-            ? {
-                notification: {
-                  ...(a.channelId ? { channelId: a.channelId } : {}),
-                  ...(a.priority ? { priority: a.priority } : {}),
-                  ...(a.sound ? { sound: a.sound } : {}),
-                },
-              }
-            : {}),
-        },
-      });
-    } else {
-      // Foreground, different page: data-only.
-      // CRITICAL: no `notification` field, or Android double-notifies.
-      await getMessaging().send({
-        token: fcmToken,
-        data: {
-          url: payload.url,
-          title: payload.title,
-          body: payload.body,
-        },
+    // Build the multicast message ONCE — the only thing that varies
+    // per recipient device is the token, which sendEachForMulticast
+    // injects from `tokens[]`.
+    const multicast = useFullNotification
+      ? (() => {
+          const a = options?.android;
+          return {
+            tokens,
+            notification: {
+              title: payload.title,
+              body: payload.body,
+            },
+            data: { url: payload.url },
+            android: {
+              priority: "high" as const,
+              ...(a
+                ? {
+                    notification: {
+                      ...(a.channelId ? { channelId: a.channelId } : {}),
+                      ...(a.priority ? { priority: a.priority } : {}),
+                      ...(a.sound ? { sound: a.sound } : {}),
+                    },
+                  }
+                : {}),
+            },
+          };
+        })()
+      : {
+          // Foreground, different page: data-only.
+          // CRITICAL: no `notification` field, or Android double-notifies.
+          tokens,
+          data: {
+            url: payload.url,
+            title: payload.title,
+            body: payload.body,
+          },
+        };
+
+    const result = await getMessaging().sendEachForMulticast(multicast);
+
+    // 6. Per-token failure inspection. Permanently-dead error codes
+    //    trigger SREM so the SET self-cleans; transient failures are
+    //    logged but kept (next send retries the same token).
+    const stale: string[] = [];
+    if (result.failureCount > 0) {
+      result.responses.forEach((resp, i) => {
+        if (resp.success) return;
+        const code = resp.error?.code ?? "";
+        if (PERMANENTLY_DEAD_FCM_ERROR_CODES.has(code)) {
+          stale.push(tokens[i]);
+        } else {
+          logger.warn("[push] Transient FCM failure", {
+            to,
+            code,
+            message: resp.error?.message,
+          });
+        }
       });
     }
+    if (stale.length > 0) {
+      const removed = await pruneStaleFcmTokens(redis, to, stale);
+      logger.info(
+        `[push] Pruned ${removed} stale token(s) for ${to} after FCM rejection.`,
+      );
+    }
 
-    logger.info(`[push] FCM sent to ${to}.`);
+    logger.info(
+      `[push] FCM sent to ${to}: ${result.successCount}/${tokens.length} delivered.`,
+    );
   } catch (err) {
     logger.error("[push] FCM send failed:", err);
   }

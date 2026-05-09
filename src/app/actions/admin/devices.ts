@@ -15,6 +15,7 @@ import {
 } from "@/lib/restraint";
 import { recordObedienceEvent } from "@/lib/obedience";
 import { OBEDIENCE_NOTE_MAX } from "@/lib/reward-types";
+import { readFcmTokens } from "@/lib/fcm-tokens";
 import { redis, requireSir, PRESENCE_FRESH_MS } from "./_shared";
 
 // ──────────────────────────────────────────────────────────────────
@@ -30,8 +31,12 @@ export interface PresenceInfo {
 
 export interface PushInfo {
   author: Author;
+  /** True iff at least one device has registered. */
   hasToken: boolean;
-  preview: string | null;
+  /** Total tokens in `push:fcm:{author}` (multi-device after the SET migration). */
+  tokenCount: number;
+  /** Masked previews of every registered token, in arbitrary set order. */
+  previews: string[];
 }
 
 export interface InspectorSnapshot {
@@ -53,13 +58,13 @@ export async function getInspectorSnapshot(): Promise<InspectorResult> {
   const authors: Author[] = ["T7SEN", "Besho"];
   const now = Date.now();
 
-  const [presenceRaw, pushRaw] = await Promise.all([
+  const [presenceRaw, pushTokens] = await Promise.all([
     Promise.all(
       authors.map((a) => redis.get<string | { page: string; ts: number }>(
         `presence:${a}`,
       )),
     ),
-    Promise.all(authors.map((a) => redis.get<string>(`push:fcm:${a}`))),
+    Promise.all(authors.map((a) => readFcmTokens(redis, a))),
   ]);
 
   const presence: PresenceInfo[] = authors.map((author, i) => {
@@ -87,14 +92,14 @@ export async function getInspectorSnapshot(): Promise<InspectorResult> {
   });
 
   const push: PushInfo[] = authors.map((author, i) => {
-    const v = pushRaw[i];
+    const tokens = pushTokens[i] ?? [];
     return {
       author,
-      hasToken: typeof v === "string" && v.length > 0,
-      preview:
-        typeof v === "string" && v.length > 12
-          ? `${v.slice(0, 8)}…${v.slice(-4)}`
-          : null,
+      hasToken: tokens.length > 0,
+      tokenCount: tokens.length,
+      previews: tokens.map((t) =>
+        t.length > 12 ? `${t.slice(0, 8)}…${t.slice(-4)}` : t,
+      ),
     };
   });
 

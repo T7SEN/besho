@@ -120,12 +120,12 @@ export const ADMIN_SETTINGS: AdminSettingEntry[] = [
   },
   {
     id: "health:fcm-tokens",
-    title: "FCM tokens registered",
-    description: "Per-author push:fcm:{author} token presence (T7SEN, Besho).",
+    title: "FCM tokens per author",
+    description: "Multi-device count from push:fcm:{author} SET (Besho's phone + tablet land in the same set).",
     page: "Diagnostics",
     section: "Health",
     href: "/admin/health",
-    keywords: "fcm token push notification registered daddy kitten",
+    keywords: "fcm token push notification registered daddy kitten count multi device set",
     Icon: Bell,
   },
   {
@@ -339,10 +339,10 @@ export const ADMIN_SETTINGS: AdminSettingEntry[] = [
   {
     id: "devices:right-now",
     title: "Right now (presence + tokens)",
-    description: "Per-author presence freshness + push:fcm:{author} token presence.",
+    description: "Per-author presence freshness + every push:fcm:{author} SET member with masked preview.",
     page: "Devices & sessions",
     href: "/admin/devices",
-    keywords: "presence devices fcm token right now live",
+    keywords: "presence devices fcm token right now live multi device set",
     Icon: Smartphone,
   },
   {
