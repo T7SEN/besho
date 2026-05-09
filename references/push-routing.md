@@ -212,6 +212,7 @@ Copy the `sendRuleNotification` function in `src/app/actions/rules.ts` as a temp
 | One device gets pushes, other(s) silent (multi-device) | Pre-SET-migration single-token race (last-writer-wins on STRING)       | Ensured by SET shape — every device's token persists. Re-registration auto-migrates legacy STRING values. |
 | Notifications stop without a server change             | Token rotated; old value persists; new sends hit dead token            | `sendEachForMulticast` failure inspection + `pruneStaleFcmTokens` on `registration-token-not-registered`  |
 | Honor / EMUI device drops background pushes            | OEM aggressive battery management / notification suppression           | Device-side: Phone Manager → Protected Apps → toggle on; App Launch → Manual; Battery → Don't restrict    |
+| `Error: Notifications not enabled on this device` from `register()` after fresh install on Vivo / Oppo / Honor | OS-level "Allow notifications" toggle defaulted off post-install (separate from Android 13+ runtime POST_NOTIFICATIONS grant — that one passed our check) | Device-side: Settings → Apps → Our Space → Notifications → Allow notifications. Then close + reopen the app so FCMProvider re-registers. Sentry-side noise is filtered by `ignoreErrors` family 4. The activity feed surfaces this with the explicit OS-settings hint via `logger.warn`. |
 
 ---
 

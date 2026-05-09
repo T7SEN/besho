@@ -186,6 +186,23 @@ export function FCMProvider() {
 
         await PushNotifications.register();
       } catch (err) {
+        // Capacitor surfaces the OS-level "Allow notifications" toggle
+        // through this rejection — DIFFERENT from the Android 13+
+        // POST_NOTIFICATIONS runtime grant we check earlier. Vivo /
+        // Oppo / Honor ROMs commonly default the toggle off after a
+        // fresh install. Log a clear hint into the activity feed so
+        // Sir can tell the affected user the exact OS-settings path
+        // to flip. Sentry filters this message family — see
+        // `instrumentation-client.ts` family 4.
+        const msg =
+          err instanceof Error ? err.message : String(err ?? "");
+        if (/notifications not enabled/i.test(msg)) {
+          logger.warn(
+            `[fcm] OS-level notifications disabled for ${author}; user must flip Settings → Apps → Our Space → Notifications → Allow notifications.`,
+            { author, hint: "os-notification-toggle-off" },
+          );
+          return;
+        }
         logger.warn(`[fcm] Init failed for ${author}:`, {
           error: err,
         });

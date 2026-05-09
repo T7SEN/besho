@@ -39,6 +39,20 @@ import * as Sentry from "@sentry/nextjs";
  *   reproduce it on demand, and it's already self-contained inside the
  *   feedback annotation flow — pure noise on our side.
  *
+ * Family 4 — Capacitor PushNotifications OS-level disable:
+ *   `Error: Notifications not enabled on this device`.
+ *   Thrown from the native side of `@capacitor/push-notifications`
+ *   `register()` when `NotificationManager.areNotificationsEnabled()`
+ *   returns false — i.e. the user has toggled "Allow notifications"
+ *   off in OS settings (DIFFERENT from the Android 13+ runtime
+ *   `POST_NOTIFICATIONS` grant, which we check separately at the
+ *   FCMProvider layer). This is an expected user-side state on first
+ *   launch after a fresh install on Vivo / Oppo / Honor (FuntouchOS /
+ *   ColorOS / MagicOS all default the toggle off post-install on some
+ *   ROM versions). Operational visibility is preserved through
+ *   `logger.warn` + the activity feed + the `/admin/health` "tokens
+ *   per author" diagnostic — no Issue needed.
+ *
  * `ignoreErrors` matches against the exception message string and is
  * invariant under minification — works the same in dev and prod. The
  * earlier `beforeSend`-with-stack-frame-check approach silently failed
@@ -68,6 +82,7 @@ Sentry.init({
     /^NetworkError when attempting to fetch resource\.?$/i,
     "An unexpected response was received from the server.",
     /Failed to execute 'selectNode' on 'Range'/i,
+    /^Notifications not enabled on this device\.?$/i,
   ],
 
   // Drop any error originating from the Vercel Toolbar's feedback
