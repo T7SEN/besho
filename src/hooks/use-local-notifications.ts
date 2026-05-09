@@ -4,6 +4,10 @@
 import { useCallback, useEffect } from "react";
 import { isNative } from "@/lib/native";
 import { logger } from "@/lib/logger";
+import {
+  isOsNotificationsDisabledError,
+  OS_NOTIF_HINT,
+} from "@/lib/os-notifications";
 
 // ── Notification ID ranges ────────────────────────────────────────────────────
 // Stable IDs prevent duplicate notifications when re-scheduling.
@@ -81,6 +85,13 @@ function ensureActionListener(): Promise<void> {
       // Reset so a future caller can retry. Not strictly necessary —
       // the failure mode is "tap doesn't deep-link" which is recoverable.
       actionListenerPromise = null;
+      if (isOsNotificationsDisabledError(err)) {
+        logger.warn(
+          "[local-notif] Action listener skipped — OS-level notifications disabled.",
+          { hint: OS_NOTIF_HINT },
+        );
+        return;
+      }
       logger.error("[local-notif] Action listener register failed:", err);
     }
   })();
@@ -107,6 +118,13 @@ export function useLocalNotifications() {
       const { display } = await LocalNotifications.requestPermissions();
       return display === "granted";
     } catch (err) {
+      if (isOsNotificationsDisabledError(err)) {
+        logger.warn(
+          "[local-notif] Permission request skipped — OS-level notifications disabled.",
+          { hint: OS_NOTIF_HINT },
+        );
+        return false;
+      }
       logger.error("[local-notif] Permission request failed:", err);
       return false;
     }
@@ -138,6 +156,13 @@ export function useLocalNotifications() {
           ],
         });
       } catch (err) {
+        if (isOsNotificationsDisabledError(err)) {
+          logger.warn(
+            "[local-notif] Schedule skipped — OS-level notifications disabled.",
+            { hint: OS_NOTIF_HINT, notifId: options.id },
+          );
+          return;
+        }
         logger.error("[local-notif] Schedule failed:", err);
       }
     },
@@ -156,6 +181,13 @@ export function useLocalNotifications() {
         notifications: ids.map((id) => ({ id })),
       });
     } catch (err) {
+      if (isOsNotificationsDisabledError(err)) {
+        logger.warn(
+          "[local-notif] Cancel skipped — OS-level notifications disabled.",
+          { hint: OS_NOTIF_HINT },
+        );
+        return;
+      }
       logger.error("[local-notif] Cancel failed:", err);
     }
   }, []);

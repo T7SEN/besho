@@ -38,17 +38,64 @@ async function getSessionAuthor(): Promise<"T7SEN" | "Besho" | null> {
   return session?.author ?? null;
 }
 
+/**
+ * Drops or normalizes records that don't conform to the current
+ * `NotificationRecord` shape. Pre-shape records (missing `url`,
+ * partial migrations, anything that lost a field) survive in the
+ * `notifications:{author}` LIST until LTRIM ages them out at the 50-
+ * cap; without this normalization, a missing `url` on an old record
+ * crashes `router.push(undefined)` inside the drawer's
+ * `handleNavigate` (Next 16 surfaces it as
+ * `TypeError: Cannot read properties of undefined (reading 'startsWith')`
+ * from `addPathPrefix`).
+ *
+ * Strategy: keep the record visible (the user's history shouldn't
+ * silently shrink), but coerce missing fields to safe defaults —
+ * `url` falls back to `/` so navigation lands somewhere sensible.
+ * Records lacking `id` or `timestamp` are unrenderable (no React
+ * key, no sortable order) and get dropped.
+ */
+function sanitizeNotificationRecord(
+  raw: unknown,
+): NotificationRecord | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Partial<NotificationRecord>;
+  if (typeof r.id !== "string" || r.id.length === 0) return null;
+  if (typeof r.timestamp !== "number") return null;
+  return {
+    id: r.id,
+    title: typeof r.title === "string" ? r.title : "",
+    body: typeof r.body === "string" ? r.body : "",
+    url: typeof r.url === "string" && r.url.length > 0 ? r.url : "/",
+    timestamp: r.timestamp,
+    read: typeof r.read === "boolean" ? r.read : false,
+  };
+}
+
 export async function getNotificationHistory(): Promise<NotificationRecord[]> {
   const author = await getSessionAuthor();
   if (!author) return [];
 
   try {
-    const records = await redis.lrange<NotificationRecord>(
+    const raws = await redis.lrange<unknown>(
       historyKey(author),
       0,
       MAX_HISTORY - 1,
     );
-    return records ?? [];
+    const sanitized: NotificationRecord[] = [];
+    let droppedCount = 0;
+    for (const raw of raws ?? []) {
+      const r = sanitizeNotificationRecord(raw);
+      if (r) sanitized.push(r);
+      else droppedCount++;
+    }
+    if (droppedCount > 0) {
+      logger.warn(
+        `[notifications] Dropped ${droppedCount} malformed history record(s) for ${author}.`,
+        { author, droppedCount },
+      );
+    }
+    return sanitized;
   } catch (error) {
     logger.error("[notifications] Failed to fetch history:", error);
     return [];

@@ -7,6 +7,10 @@ import { dispatchPushToast } from "@/components/push-toast";
 import { getCurrentAuthor } from "@/app/actions/auth";
 import { isNative } from "@/lib/native";
 import { logger } from "@/lib/logger";
+import {
+  isOsNotificationsDisabledError,
+  OS_NOTIF_HINT,
+} from "@/lib/os-notifications";
 
 /**
  * Registers FCM listeners once at the layout level so they persist
@@ -190,16 +194,13 @@ export function FCMProvider() {
         // through this rejection — DIFFERENT from the Android 13+
         // POST_NOTIFICATIONS runtime grant we check earlier. Vivo /
         // Oppo / Honor ROMs commonly default the toggle off after a
-        // fresh install. Log a clear hint into the activity feed so
-        // Sir can tell the affected user the exact OS-settings path
-        // to flip. Sentry filters this message family — see
-        // `instrumentation-client.ts` family 4.
-        const msg =
-          err instanceof Error ? err.message : String(err ?? "");
-        if (/notifications not enabled/i.test(msg)) {
+        // fresh install. Detection helper lives in
+        // `@/lib/os-notifications` so the same shape applies to the
+        // local-notifications hook.
+        if (isOsNotificationsDisabledError(err)) {
           logger.warn(
-            `[fcm] OS-level notifications disabled for ${author}; user must flip Settings → Apps → Our Space → Notifications → Allow notifications.`,
-            { author, hint: "os-notification-toggle-off" },
+            `[fcm] OS-level notifications disabled for ${author}.`,
+            { author, hint: OS_NOTIF_HINT },
           );
           return;
         }

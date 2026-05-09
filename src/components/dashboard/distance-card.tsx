@@ -19,6 +19,47 @@ type DistanceStatus = "loading" | "live" | "fallback";
 const POSITION_MAX_AGE_MS = 5 * 60_000;
 const POSITION_TIMEOUT_MS = 10_000;
 
+/**
+ * Geolocation has four well-known environmental / user-side failure
+ * shapes that aren't bugs:
+ *
+ *  1. `GeolocationPositionError.code` 1 — PERMISSION_DENIED. We
+ *     pre-check + request earlier in the flow, but mid-call revokes
+ *     and OS-level master Location toggle off both surface this here.
+ *  2. `GeolocationPositionError.code` 2 — POSITION_UNAVAILABLE. Common
+ *     indoors / in cellular dead zones / airplane mode / cold-start
+ *     GPS with no satellite lock.
+ *  3. `GeolocationPositionError.code` 3 — TIMEOUT. The 10s budget
+ *     can be tight on cold-start GPS or weak signal.
+ *  4. Native string errors like "Location services are not enabled"
+ *     (OS-level master toggle off, separate from app permission).
+ *
+ * All four are recoverable — we already fall back to the static
+ * `DISTANCE_KM` constant. Demoting these to `logger.warn` stops the
+ * Sentry Issue + error-severity Log. Genuinely unexpected failures
+ * (e.g. a bad `getCurrentPosition` argument shape from a Capacitor
+ * version mismatch) keep the loud `logger.error` path so a real
+ * regression isn't hidden.
+ */
+function isExpectedGeolocationFailure(err: unknown): boolean {
+  if (
+    typeof err === "object" &&
+    err !== null &&
+    "code" in err &&
+    (err.code === 1 || err.code === 2 || err.code === 3)
+  ) {
+    return true;
+  }
+  if (err instanceof Error) {
+    const msg = err.message.toLowerCase();
+    if (/location services? (are )?not enabled/.test(msg)) return true;
+    if (/permission/.test(msg)) return true;
+    if (/timeout/.test(msg)) return true;
+    if (/position (is )?unavailable/.test(msg)) return true;
+  }
+  return false;
+}
+
 function haversineKm(
   lat1: number,
   lon1: number,
@@ -69,7 +110,13 @@ export function DistanceCard() {
       setLiveKm(km);
       setStatus("live");
     } catch (err) {
-      logger.error("[distance] geolocation failed:", err);
+      if (isExpectedGeolocationFailure(err)) {
+        logger.warn("[distance] geolocation unavailable; using static fallback.", {
+          reason: err instanceof Error ? err.message : String(err),
+        });
+      } else {
+        logger.error("[distance] geolocation failed:", err);
+      }
       setStatus("fallback");
     }
   }, []);

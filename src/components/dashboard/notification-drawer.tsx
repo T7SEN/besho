@@ -21,6 +21,7 @@ import {
   type NotificationRecord,
 } from "@/app/actions/notifications";
 import { vibrate } from "@/lib/haptic";
+import { logger } from "@/lib/logger";
 
 function formatTime(timestamp: number): string {
   const diff = Date.now() - timestamp;
@@ -100,8 +101,18 @@ export function NotificationDrawer() {
     setIsOpen(false);
   };
 
-  const handleNavigate = (url: string) => {
+  const handleNavigate = (url: string | undefined) => {
     setIsOpen(false);
+    // Defensive — `getNotificationHistory` already coerces missing
+    // urls to "/", but old shipped clients carrying stale code might
+    // bypass that. Explicit guard so `router.push(undefined)` can
+    // never re-surface as
+    // `TypeError: Cannot read properties of undefined (reading 'startsWith')`
+    // from Next 16's `addPathPrefix`.
+    if (typeof url !== "string" || url.length === 0) {
+      logger.warn("[notification-drawer] empty url; staying on current page.");
+      return;
+    }
     router.push(url);
   };
 

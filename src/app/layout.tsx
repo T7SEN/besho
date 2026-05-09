@@ -16,7 +16,6 @@ import { TopNavbar } from "@/components/navigation/top-navbar";
 import { PullToRefresh } from "@/components/pull-to-refresh";
 import { NavigationProgress } from "@/components/navigation-progress";
 import { ErrorBoundary } from "@/components/ui/error-boundary";
-import { GlobalLogger } from "@/components/global-logger";
 import { SentryUserProvider } from "@/components/sentry-user-provider";
 import { DeviceTracker } from "@/components/device-tracker";
 import { SessionGuard } from "@/components/session-guard";
@@ -95,7 +94,6 @@ export default function RootLayout({
       suppressHydrationWarning
     >
       <body className="flex min-h-full flex-col" suppressHydrationWarning>
-        <GlobalLogger />
         <ErrorBoundary>
           <ThemeProvider
             attribute="class"

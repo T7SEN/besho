@@ -53,6 +53,22 @@ import * as Sentry from "@sentry/nextjs";
  *   `logger.warn` + the activity feed + the `/admin/health` "tokens
  *   per author" diagnostic — no Issue needed.
  *
+ * Family 5 — Capacitor Geolocation environmental / user-side failures:
+ *   `Error: Could not obtain location in time. Try with a higher timeout.`
+ *   `Error: Location services are not enabled`
+ *   `Error: User denied permission`
+ *   Thrown from the native side of `@capacitor/geolocation`
+ *   `getCurrentPosition()` for the documented `GeolocationPositionError`
+ *   shapes — TIMEOUT (cold-start GPS / weak signal), POSITION_UNAVAILABLE
+ *   (indoors, airplane mode, OS-level Location services off), or mid-call
+ *   permission revocation. The `DistanceCard` catches and demotes these
+ *   to `logger.warn` in-band (see the helper in `distance-card.tsx`) and
+ *   falls back to the static `DISTANCE_KM` constant — no UX impact.
+ *   The Sentry-side filter is defense-in-depth against any future
+ *   geolocation callsite that bypasses the helper, plus stale Issues
+ *   from pre-fix releases. Don't reintroduce a `logger.error` for these —
+ *   they're environmental, not bugs.
+ *
  * `ignoreErrors` matches against the exception message string and is
  * invariant under minification — works the same in dev and prod. The
  * earlier `beforeSend`-with-stack-frame-check approach silently failed
@@ -83,6 +99,10 @@ Sentry.init({
     "An unexpected response was received from the server.",
     /Failed to execute 'selectNode' on 'Range'/i,
     /^Notifications not enabled on this device\.?$/i,
+    /Could not obtain location in time/i,
+    /Location services? (are )?not enabled/i,
+    /Position (is )?unavailable/i,
+    /User denied (permission|geolocation)/i,
   ],
 
   // Drop any error originating from the Vercel Toolbar's feedback

@@ -171,6 +171,7 @@ Vercel auto-deploys on push to `main`. Required env vars: `AUTH_SECRET_KEY`, `KV
 - Cite the file path and the function/symbol you're editing.
 - Prefer React 19 / Next.js 16 idioms over older patterns even if older "still work."
 - Tone: formal, direct, technical.
+- **Skip the `tsc` + `eslint` + `next build` verification triple when the turn touched ONLY documentation** — `AGENTS.md`, `SKILL.md`, `CLAUDE.md`, `GEMINI.md`, `README.md`, anything under `references/`. Markdown changes can't affect compilation. Any code touch — including a single-line comment edit inside a `.ts` / `.tsx` / `.mjs` / config file — still gets the full triple. The default for code-touching turns remains: verify before reporting done.
 
 ---
 
