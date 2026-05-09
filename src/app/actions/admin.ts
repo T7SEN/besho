@@ -281,199 +281,6 @@ export async function exportSnapshot(): Promise<ExportResult> {
 }
 
 // ──────────────────────────────────────────────────────────────────
-// Cross-feature search — single substring search across the four
-// primary feature indexes (notes / rules / tasks / ledger).
-// ──────────────────────────────────────────────────────────────────
-
-export type CrossFeatureKind = "note" | "rule" | "task" | "ledger";
-
-export interface CrossFeatureHit {
-  kind: CrossFeatureKind;
-  id: string;
-  /** Short label — title for rules/tasks/ledger, content excerpt for notes. */
-  label: string;
-  /** Body excerpt highlighting the match context. */
-  preview: string;
-  /** ms timestamp the record sorted on (createdAt or equivalent). */
-  ts: number;
-  /** Path to navigate the user to the source page. */
-  href: string;
-}
-
-export interface CrossFeatureSearchResult {
-  query?: string;
-  hits?: CrossFeatureHit[];
-  scanned?: { notes: number; rules: number; tasks: number; ledger: number };
-  /** Set when the query was empty/too short. */
-  error?: string;
-}
-
-const SEARCH_INDEX_LIMIT = 500;
-const SEARCH_HIT_CAP = 50;
-const SEARCH_PREVIEW_LEN = 140;
-
-function buildExcerpt(haystack: string, needle: string): string {
-  const lower = haystack.toLowerCase();
-  const i = lower.indexOf(needle.toLowerCase());
-  if (i < 0) {
-    return haystack.length > SEARCH_PREVIEW_LEN
-      ? `${haystack.slice(0, SEARCH_PREVIEW_LEN - 1)}…`
-      : haystack;
-  }
-  const radius = Math.floor(SEARCH_PREVIEW_LEN / 2);
-  const start = Math.max(0, i - radius);
-  const end = Math.min(haystack.length, i + needle.length + radius);
-  const slice = haystack.slice(start, end).replace(/\s+/g, " ").trim();
-  return `${start > 0 ? "…" : ""}${slice}${end < haystack.length ? "…" : ""}`;
-}
-
-export async function searchAcrossFeatures(
-  query: string,
-): Promise<CrossFeatureSearchResult> {
-  const guard = await requireSir();
-  if (!guard.ok) return { error: guard.error };
-  const q = (query ?? "").trim();
-  if (q.length < 2) return { error: "Query must be at least 2 characters." };
-  if (q.length > 200) return { error: "Query too long (max 200)." };
-
-  try {
-    const [noteIds, ruleIds, taskIds, ledgerIds] = await Promise.all([
-      redis.zrange<unknown[]>("notes:index", 0, SEARCH_INDEX_LIMIT - 1, {
-        rev: true,
-      }),
-      redis.zrange<unknown[]>("rules:index", 0, SEARCH_INDEX_LIMIT - 1, {
-        rev: true,
-      }),
-      redis.zrange<unknown[]>("tasks:index", 0, SEARCH_INDEX_LIMIT - 1, {
-        rev: true,
-      }),
-      redis.zrange<unknown[]>("ledger:index", 0, SEARCH_INDEX_LIMIT - 1, {
-        rev: true,
-      }),
-    ]);
-    const nIds = (noteIds ?? []).map(String);
-    const rIds = (ruleIds ?? []).map(String);
-    const tIds = (taskIds ?? []).map(String);
-    const lIds = (ledgerIds ?? []).map(String);
-
-    const [notes, rules, tasks, ledgers] = await Promise.all([
-      nIds.length
-        ? redis.mget<({ id?: string; content?: string; createdAt?: number } | null)[]>(
-            ...nIds.map((id) => `note:${id}`),
-          )
-        : Promise.resolve([]),
-      rIds.length
-        ? redis.mget<
-            ({
-              id?: string;
-              title?: string;
-              description?: string;
-              createdAt?: number;
-            } | null)[]
-          >(...rIds.map((id) => `rule:${id}`))
-        : Promise.resolve([]),
-      tIds.length
-        ? redis.mget<
-            ({
-              id?: string;
-              title?: string;
-              description?: string;
-              createdAt?: number;
-            } | null)[]
-          >(...tIds.map((id) => `task:${id}`))
-        : Promise.resolve([]),
-      lIds.length
-        ? redis.mget<
-            ({
-              id?: string;
-              title?: string;
-              description?: string;
-              category?: string;
-              timestamp?: number;
-            } | null)[]
-          >(...lIds.map((id) => `ledger:${id}`))
-        : Promise.resolve([]),
-    ]);
-
-    const lower = q.toLowerCase();
-    const hits: CrossFeatureHit[] = [];
-
-    for (let i = 0; i < (notes ?? []).length; i++) {
-      const n = notes![i];
-      if (!n) continue;
-      const content = n.content ?? "";
-      if (!content.toLowerCase().includes(lower)) continue;
-      const label = content.slice(0, 60).replace(/\s+/g, " ").trim();
-      hits.push({
-        kind: "note",
-        id: nIds[i],
-        label: label || "(empty note)",
-        preview: buildExcerpt(content, q),
-        ts: n.createdAt ?? 0,
-        href: "/notes",
-      });
-    }
-    for (let i = 0; i < (rules ?? []).length; i++) {
-      const r = rules![i];
-      if (!r) continue;
-      const haystack = `${r.title ?? ""}\n${r.description ?? ""}`;
-      if (!haystack.toLowerCase().includes(lower)) continue;
-      hits.push({
-        kind: "rule",
-        id: rIds[i],
-        label: r.title ?? "(untitled rule)",
-        preview: buildExcerpt(haystack, q),
-        ts: r.createdAt ?? 0,
-        href: "/rules",
-      });
-    }
-    for (let i = 0; i < (tasks ?? []).length; i++) {
-      const t = tasks![i];
-      if (!t) continue;
-      const haystack = `${t.title ?? ""}\n${t.description ?? ""}`;
-      if (!haystack.toLowerCase().includes(lower)) continue;
-      hits.push({
-        kind: "task",
-        id: tIds[i],
-        label: t.title ?? "(untitled task)",
-        preview: buildExcerpt(haystack, q),
-        ts: t.createdAt ?? 0,
-        href: "/tasks",
-      });
-    }
-    for (let i = 0; i < (ledgers ?? []).length; i++) {
-      const l = ledgers![i];
-      if (!l) continue;
-      const haystack = `${l.title ?? ""}\n${l.description ?? ""}\n${l.category ?? ""}`;
-      if (!haystack.toLowerCase().includes(lower)) continue;
-      hits.push({
-        kind: "ledger",
-        id: lIds[i],
-        label: l.title ?? "(untitled entry)",
-        preview: buildExcerpt(haystack, q),
-        ts: l.timestamp ?? 0,
-        href: "/ledger",
-      });
-    }
-
-    hits.sort((a, b) => b.ts - a.ts);
-    return {
-      query: q,
-      hits: hits.slice(0, SEARCH_HIT_CAP),
-      scanned: {
-        notes: nIds.length,
-        rules: rIds.length,
-        tasks: tIds.length,
-        ledger: lIds.length,
-      },
-    };
-  } catch (err) {
-    logger.error("[admin] cross-feature search failed", err);
-    return { error: "Search failed." };
-  }
-}
-
-// ──────────────────────────────────────────────────────────────────
 // Auth failure log — Sir-only reader / clearer.
 // ──────────────────────────────────────────────────────────────────
 
@@ -1565,6 +1372,10 @@ import {
   repairIndexes as _repairIndexes,
   getCronTelemetry as _getCronTelemetry,
   repairObedienceDrift as _repairObedienceDrift,
+  reconcileFeatureIndexes as _reconcileFeatureIndexes,
+  reconcilePendingRewardClaims as _reconcilePendingRewardClaims,
+  pruneOrphanedReactions as _pruneOrphanedReactions,
+  pruneOrphanedRitualOccurrences as _pruneOrphanedRitualOccurrences,
   migrateObedienceBucketShift as _migrateObedienceBucketShift,
   getDeployInfo as _getDeployInfo,
   inspectRedisKey as _inspectRedisKey,
@@ -1576,6 +1387,10 @@ export async function getHealthSnapshot(...args: Parameters<typeof _getHealthSna
 export async function repairIndexes(...args: Parameters<typeof _repairIndexes>): ReturnType<typeof _repairIndexes> { return _repairIndexes(...args); }
 export async function getCronTelemetry(...args: Parameters<typeof _getCronTelemetry>): ReturnType<typeof _getCronTelemetry> { return _getCronTelemetry(...args); }
 export async function repairObedienceDrift(...args: Parameters<typeof _repairObedienceDrift>): ReturnType<typeof _repairObedienceDrift> { return _repairObedienceDrift(...args); }
+export async function reconcileFeatureIndexes(...args: Parameters<typeof _reconcileFeatureIndexes>): ReturnType<typeof _reconcileFeatureIndexes> { return _reconcileFeatureIndexes(...args); }
+export async function reconcilePendingRewardClaims(...args: Parameters<typeof _reconcilePendingRewardClaims>): ReturnType<typeof _reconcilePendingRewardClaims> { return _reconcilePendingRewardClaims(...args); }
+export async function pruneOrphanedReactions(...args: Parameters<typeof _pruneOrphanedReactions>): ReturnType<typeof _pruneOrphanedReactions> { return _pruneOrphanedReactions(...args); }
+export async function pruneOrphanedRitualOccurrences(...args: Parameters<typeof _pruneOrphanedRitualOccurrences>): ReturnType<typeof _pruneOrphanedRitualOccurrences> { return _pruneOrphanedRitualOccurrences(...args); }
 export async function migrateObedienceBucketShift(...args: Parameters<typeof _migrateObedienceBucketShift>): ReturnType<typeof _migrateObedienceBucketShift> { return _migrateObedienceBucketShift(...args); }
 export async function getDeployInfo(...args: Parameters<typeof _getDeployInfo>): ReturnType<typeof _getDeployInfo> { return _getDeployInfo(...args); }
 export async function inspectRedisKey(...args: Parameters<typeof _inspectRedisKey>): ReturnType<typeof _inspectRedisKey> { return _inspectRedisKey(...args); }
@@ -1590,6 +1405,11 @@ export type {
   CronTelemetryResult,
   ObedienceDriftRepairSummary,
   RepairObedienceDriftResult,
+  FeatureIndexDrift,
+  ReconcileFeatureIndexesResult,
+  PendingClaimDriftEntry,
+  ReconcilePendingClaimsResult,
+  PruneOrphansResult,
   BucketShiftMigrationResult,
   DeployInfo,
   RedisKeyType,

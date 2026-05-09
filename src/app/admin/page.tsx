@@ -16,7 +16,7 @@ import {
 } from "lucide-react";
 import { SummonButton } from "@/components/admin/summon-button";
 import { RestraintToggle } from "@/components/admin/restraint-toggle";
-import { CrossFeatureSearch } from "@/components/admin/cross-feature-search";
+import { AdminSettingsSearch } from "@/components/admin/admin-settings-search";
 import {
   AdminDashboardStrip,
   RecentAdminActions,
@@ -142,7 +142,7 @@ export default async function AdminLandingPage() {
 
       <RecentAdminActions />
 
-      <CrossFeatureSearch />
+      <AdminSettingsSearch />
 
       <div className="grid gap-4 md:grid-cols-2 md:gap-6">
         {TOOLS.map(({ href, title, description, Icon }) => (

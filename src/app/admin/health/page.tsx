@@ -5,17 +5,22 @@ import Link from "next/link";
 import {
   ArrowLeft,
   ArrowRightLeft,
+  CalendarX,
   CheckCircle2,
   Clock,
+  Database,
+  Gift,
   Hash,
   Hourglass,
   Loader2,
   RefreshCw,
   ShieldCheck,
   ShieldOff,
+  Smile,
   Timer,
   Wrench,
   XCircle,
+  type LucideIcon,
 } from "lucide-react";
 import {
   Tabs,
@@ -27,12 +32,21 @@ import {
   getCooldownState,
   getCronTelemetry,
   getHealthSnapshot,
+  pruneOrphanedReactions,
+  pruneOrphanedRitualOccurrences,
+  reconcileFeatureIndexes,
+  reconcilePendingRewardClaims,
   repairIndexes,
   repairObedienceDrift,
   type CooldownState,
   type CronTelemetryResult,
+  type FeatureIndexDrift,
   type HealthSnapshot,
   type ObedienceDriftRepairSummary,
+  type PendingClaimDriftEntry,
+  type PruneOrphansResult,
+  type ReconcileFeatureIndexesResult,
+  type ReconcilePendingClaimsResult,
   type RepairResult,
 } from "@/app/actions/admin";
 import type { CronTelemetrySnapshot } from "@/lib/cron-telemetry";
@@ -57,17 +71,6 @@ export default function HealthPage() {
   const [cooldown, setCooldown] = useState<CooldownState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
-
-  const [confirmingRepair, setConfirmingRepair] = useState(false);
-  const [repairing, setRepairing] = useState(false);
-  const [repairResult, setRepairResult] = useState<
-    RepairResult["repaired"] | null
-  >(null);
-
-  const [confirmingObedience, setConfirmingObedience] = useState(false);
-  const [obedienceRepairing, setObedienceRepairing] = useState(false);
-  const [obedienceResult, setObedienceResult] =
-    useState<ObedienceDriftRepairSummary | null>(null);
 
   const [now, setNow] = useState(() => Date.now());
 
@@ -121,60 +124,6 @@ export default function HealthPage() {
     }, 1000);
     return () => clearInterval(id);
   }, []);
-
-  useEffect(() => {
-    if (!confirmingRepair) return;
-    const id = setTimeout(
-      () => setConfirmingRepair(false),
-      CONFIRM_TIMEOUT_MS,
-    );
-    return () => clearTimeout(id);
-  }, [confirmingRepair]);
-
-  useEffect(() => {
-    if (!confirmingObedience) return;
-    const id = setTimeout(
-      () => setConfirmingObedience(false),
-      CONFIRM_TIMEOUT_MS,
-    );
-    return () => clearTimeout(id);
-  }, [confirmingObedience]);
-
-  const handleRepair = async () => {
-    void vibrate([100, 50, 100], "heavy");
-    setRepairing(true);
-    setError(null);
-    try {
-      const result = await repairIndexes();
-      if (result.error) {
-        setError(result.error);
-      } else {
-        setRepairResult(result.repaired ?? null);
-        setConfirmingRepair(false);
-        await fetchAll();
-      }
-    } finally {
-      setRepairing(false);
-    }
-  };
-
-  const handleObedienceRepair = async () => {
-    void vibrate([100, 50, 100], "heavy");
-    setObedienceRepairing(true);
-    setError(null);
-    try {
-      const result = await repairObedienceDrift();
-      if (result.error) {
-        setError(result.error);
-      } else {
-        setObedienceResult(result.summary ?? null);
-        setConfirmingObedience(false);
-        await fetchAll();
-      }
-    } finally {
-      setObedienceRepairing(false);
-    }
-  };
 
   return (
     <main className="mx-auto max-w-3xl p-4 pb-28 md:p-12 md:pb-32">
@@ -343,126 +292,10 @@ export default function HealthPage() {
                 />
               </Section>
 
-              {obedienceResult && (
-                <div className="rounded-lg border border-emerald-400/40 bg-emerald-400/10 p-3 text-xs text-emerald-400">
-                  Obedience drift repaired:
-                  <ul className="mt-1 space-y-0.5">
-                    <li>
-                      Events → audit re-added:{" "}
-                      {obedienceResult.totals.eventsToAuditAdded}
-                    </li>
-                    <li>
-                      Audit orphans removed:{" "}
-                      {obedienceResult.totals.auditOrphansRemoved}
-                    </li>
-                    <li>
-                      Weeks scanned: {obedienceResult.totals.weeksScanned}
-                    </li>
-                  </ul>
-                </div>
-              )}
-
-              {repairResult && (
-                <div className="rounded-lg border border-emerald-400/40 bg-emerald-400/10 p-3 text-xs text-emerald-400">
-                  Repaired:
-                  <ul className="mt-1 space-y-0.5">
-                    <li>
-                      {TITLE_BY_AUTHOR.T7SEN}:{" "}
-                      {repairResult.countT7SEN.before} →{" "}
-                      {repairResult.countT7SEN.after}
-                    </li>
-                    <li>
-                      {TITLE_BY_AUTHOR.Besho}:{" "}
-                      {repairResult.countBesho.before} →{" "}
-                      {repairResult.countBesho.after}
-                    </li>
-                    <li>Stale pinned removed: {repairResult.pinnedRemoved}</li>
-                  </ul>
-                </div>
-              )}
-
-              <div className="flex flex-wrap items-center justify-end gap-2">
-                {confirmingObedience ? (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        void vibrate(20, "light");
-                        setConfirmingObedience(false);
-                      }}
-                      disabled={obedienceRepairing}
-                      className="rounded-full border border-border/40 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground active:scale-95 disabled:opacity-50"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void handleObedienceRepair()}
-                      disabled={obedienceRepairing}
-                      className="flex items-center gap-1.5 rounded-full bg-primary px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-primary-foreground transition-colors hover:bg-primary/90 active:scale-95 disabled:opacity-60"
-                    >
-                      {obedienceRepairing ? (
-                        <Loader2 className="h-3 w-3 animate-spin" />
-                      ) : (
-                        <ShieldCheck className="h-3 w-3" />
-                      )}
-                      Confirm obedience repair
-                    </button>
-                  </>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      void vibrate(50, "medium");
-                      setConfirmingObedience(true);
-                    }}
-                    className="flex items-center gap-1.5 rounded-full border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-amber-400 transition-colors hover:bg-amber-500/20 active:scale-95"
-                  >
-                    <ShieldCheck className="h-3 w-3" />
-                    Repair obedience drift
-                  </button>
-                )}
-                {confirmingRepair ? (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        void vibrate(20, "light");
-                        setConfirmingRepair(false);
-                      }}
-                      disabled={repairing}
-                      className="rounded-full border border-border/40 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground active:scale-95 disabled:opacity-50"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void handleRepair()}
-                      disabled={repairing}
-                      className="flex items-center gap-1.5 rounded-full bg-primary px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-primary-foreground transition-colors hover:bg-primary/90 active:scale-95 disabled:opacity-60"
-                    >
-                      {repairing ? (
-                        <Loader2 className="h-3 w-3 animate-spin" />
-                      ) : (
-                        <Wrench className="h-3 w-3" />
-                      )}
-                      Confirm repair
-                    </button>
-                  </>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      void vibrate(50, "medium");
-                      setConfirmingRepair(true);
-                    }}
-                    className="flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/10 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-primary transition-colors hover:bg-primary/20 active:scale-95"
-                  >
-                    <Wrench className="h-3 w-3" />
-                    Reseed indexes
-                  </button>
-                )}
-              </div>
+              <RepairOperations
+                onError={(msg) => setError(msg)}
+                onComplete={fetchAll}
+              />
             </>
           )}
         </TabsContent>
@@ -1422,6 +1255,425 @@ function SkeletonCards() {
           className="h-24 animate-pulse rounded-2xl border border-border/40 bg-card"
         />
       ))}
+    </div>
+  );
+}
+
+// ── Repair operations ─────────────────────────────────────────────────────
+//
+// Each repair lives in its own self-contained <RepairCard>. The card owns
+// its confirming/busy/result state — the page-level component only hands
+// down the `onError` and `onComplete` callbacks for global error
+// surfacing + diagnostics refetch on success.
+//
+// Categories group related repairs:
+//   • Index integrity — ZSET-vs-record reconciliation across every
+//     feature index, plus the original notes-counts repair and the
+//     pending-claim ZSET reconciliation.
+//   • Orphan cleanup — auxiliary HASH keys (reactions, ritual
+//     occurrences) that soft-delete intentionally doesn't preserve.
+//     They linger forever without these tools.
+//   • Obedience — the events↔audit ZSET drift repair.
+
+function RepairOperations({
+  onError,
+  onComplete,
+}: {
+  onError: (msg: string) => void;
+  onComplete: () => Promise<void> | void;
+}) {
+  return (
+    <section className="space-y-5">
+      <header className="flex items-center gap-2 pt-2">
+        <Wrench className="h-4 w-4 text-muted-foreground" />
+        <h2 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
+          Repair operations
+        </h2>
+      </header>
+
+      <RepairCategory title="Index integrity">
+        <RepairCard<RepairResult>
+          title="Notes counts + pinned set"
+          description="Recompute notes:count:{author} from the index, prune notes:pinned members whose underlying note is gone."
+          icon={Wrench}
+          tone="primary"
+          cta="Reseed indexes"
+          confirmCta="Confirm repair"
+          action={repairIndexes}
+          onError={onError}
+          onComplete={onComplete}
+          renderResult={(r) =>
+            r.repaired ? (
+              <RepairResultPanel
+                rows={[
+                  [
+                    TITLE_BY_AUTHOR.T7SEN,
+                    `${r.repaired.countT7SEN.before} → ${r.repaired.countT7SEN.after}`,
+                  ],
+                  [
+                    TITLE_BY_AUTHOR.Besho,
+                    `${r.repaired.countBesho.before} → ${r.repaired.countBesho.after}`,
+                  ],
+                  ["Stale pinned removed", `${r.repaired.pinnedRemoved}`],
+                ]}
+              />
+            ) : null
+          }
+        />
+
+        <RepairCard<ReconcileFeatureIndexesResult>
+          title="Feature index ↔ record reconciliation"
+          description="Walks every {feature}:index ZSET — notes, rules, tasks, ledger, permissions, rituals, milestones — and drops members whose backing record is missing."
+          icon={Database}
+          tone="primary"
+          cta="Reconcile indexes"
+          confirmCta="Confirm reconcile"
+          action={reconcileFeatureIndexes}
+          onError={onError}
+          onComplete={onComplete}
+          renderResult={(r) =>
+            r.perFeature ? (
+              <RepairResultPanel
+                title={
+                  r.totals
+                    ? `Scanned ${r.totals.scanned} · removed ${r.totals.removed}`
+                    : undefined
+                }
+                rows={r.perFeature
+                  .filter(
+                    (f: FeatureIndexDrift) =>
+                      f.scanned > 0 || f.removed > 0,
+                  )
+                  .map((f: FeatureIndexDrift) => [
+                    f.feature,
+                    f.removed > 0
+                      ? `${f.scanned} scanned, ${f.removed} removed`
+                      : `${f.scanned} scanned, clean`,
+                  ])}
+              />
+            ) : null
+          }
+        />
+
+        <RepairCard<ReconcilePendingClaimsResult>
+          title="Pending reward claims ZSET"
+          description="Walks rewards:claims:pending — drops members whose reward:claim:{id} is missing OR whose status is no longer pending. Stops the stale-claim-nudge cron from firing on already-decided claims."
+          icon={Gift}
+          tone="primary"
+          cta="Reconcile claims"
+          confirmCta="Confirm reconcile"
+          action={reconcilePendingRewardClaims}
+          onError={onError}
+          onComplete={onComplete}
+          renderResult={(r) => {
+            if (r.scanned == null) return null;
+            const sample = r.removedSample ?? [];
+            const missing = sample.filter(
+              (s: PendingClaimDriftEntry) => s.reason === "missing",
+            ).length;
+            const decided = sample.filter(
+              (s: PendingClaimDriftEntry) => s.reason === "decided",
+            ).length;
+            return (
+              <RepairResultPanel
+                rows={[
+                  ["Scanned", `${r.scanned}`],
+                  ["Removed", `${r.removed ?? 0}`],
+                  ...((r.removed ?? 0) > 0
+                    ? ([
+                        [
+                          "Breakdown",
+                          `${missing} missing · ${decided} decided`,
+                        ],
+                      ] as [string, string][])
+                    : []),
+                ]}
+              />
+            );
+          }}
+        />
+      </RepairCategory>
+
+      <RepairCategory title="Orphan cleanup">
+        <RepairCard<PruneOrphansResult>
+          title="Orphaned reactions"
+          description="Reactions are stored at reactions:{noteId} HASH. Soft-delete intentionally does NOT preserve them, so deleted notes leave reaction hashes behind. Pure waste."
+          icon={Smile}
+          tone="primary"
+          cta="Prune reactions"
+          confirmCta="Confirm prune"
+          action={pruneOrphanedReactions}
+          onError={onError}
+          onComplete={onComplete}
+          renderResult={(r) => {
+            if (r.scanned == null) return null;
+            return (
+              <RepairResultPanel
+                rows={[
+                  ["Scanned", `${r.scanned}`],
+                  ["Removed", `${r.removed ?? 0}`],
+                  ...(r.truncated
+                    ? ([["Truncated", "scan cap hit"]] as [string, string][])
+                    : []),
+                ]}
+              />
+            );
+          }}
+        />
+
+        <RepairCard<PruneOrphansResult>
+          title="Orphaned ritual occurrences"
+          description="Per-day occurrence records at ritual:occurrence:{ritualId}:{dateKey} HASH. Linger forever after the parent ritual is deleted — the cron skips them, but they still occupy keys."
+          icon={CalendarX}
+          tone="primary"
+          cta="Prune occurrences"
+          confirmCta="Confirm prune"
+          action={pruneOrphanedRitualOccurrences}
+          onError={onError}
+          onComplete={onComplete}
+          renderResult={(r) => {
+            if (r.scanned == null) return null;
+            return (
+              <RepairResultPanel
+                rows={[
+                  ["Scanned", `${r.scanned}`],
+                  ["Removed", `${r.removed ?? 0}`],
+                  ...(r.truncated
+                    ? ([["Truncated", "scan cap hit"]] as [string, string][])
+                    : []),
+                ]}
+              />
+            );
+          }}
+        />
+      </RepairCategory>
+
+      <RepairCategory title="Obedience">
+        <RepairCard<{
+          success?: boolean;
+          error?: string;
+          summary?: ObedienceDriftRepairSummary;
+        }>
+          title="Events ↔ audit ZSET drift"
+          description="Reconciles obedience:events:{author}:{weekKey} against obedience:audit:{author}:{weekKey} for both authors over the current week + 4 prior weeks. Re-adds audit entries lost to half-failed pipelines; removes audit orphans whose event vanished."
+          icon={ShieldCheck}
+          tone="amber"
+          cta="Repair obedience drift"
+          confirmCta="Confirm obedience repair"
+          action={repairObedienceDrift}
+          onError={onError}
+          onComplete={onComplete}
+          renderResult={(r) =>
+            r.summary ? (
+              <RepairResultPanel
+                rows={[
+                  [
+                    "Events → audit re-added",
+                    `${r.summary.totals.eventsToAuditAdded}`,
+                  ],
+                  [
+                    "Audit orphans removed",
+                    `${r.summary.totals.auditOrphansRemoved}`,
+                  ],
+                  ["Weeks scanned", `${r.summary.totals.weeksScanned}`],
+                ]}
+              />
+            ) : null
+          }
+        />
+      </RepairCategory>
+    </section>
+  );
+}
+
+function RepairCategory({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="space-y-3">
+      <h3 className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground/70">
+        {title}
+      </h3>
+      <div className="space-y-3">{children}</div>
+    </div>
+  );
+}
+
+type RepairTone = "primary" | "amber";
+
+interface RepairToneClasses {
+  border: string;
+  bg: string;
+  text: string;
+  hoverBg: string;
+}
+
+const TONE_CLASSES: Record<RepairTone, RepairToneClasses> = {
+  primary: {
+    border: "border-primary/30",
+    bg: "bg-primary/10",
+    text: "text-primary",
+    hoverBg: "hover:bg-primary/20",
+  },
+  amber: {
+    border: "border-amber-500/30",
+    bg: "bg-amber-500/10",
+    text: "text-amber-400",
+    hoverBg: "hover:bg-amber-500/20",
+  },
+};
+
+function RepairCard<R extends { error?: string }>({
+  title,
+  description,
+  icon: Icon,
+  tone,
+  cta,
+  confirmCta,
+  action,
+  onError,
+  onComplete,
+  renderResult,
+}: {
+  title: string;
+  description: string;
+  icon: LucideIcon;
+  tone: RepairTone;
+  cta: string;
+  confirmCta: string;
+  action: () => Promise<R>;
+  onError: (msg: string) => void;
+  onComplete: () => Promise<void> | void;
+  renderResult: (result: R) => React.ReactNode;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<R | null>(null);
+
+  // Auto-cancel the confirming state after CONFIRM_TIMEOUT_MS so a
+  // forgotten primed button doesn't fire when the user comes back.
+  useEffect(() => {
+    if (!confirming) return;
+    const id = setTimeout(() => setConfirming(false), CONFIRM_TIMEOUT_MS);
+    return () => clearTimeout(id);
+  }, [confirming]);
+
+  const tones = TONE_CLASSES[tone];
+
+  const handleConfirm = async () => {
+    void vibrate([100, 50, 100], "heavy");
+    setBusy(true);
+    try {
+      const r = await action();
+      if (r.error) {
+        onError(r.error);
+      } else {
+        setResult(r);
+        setConfirming(false);
+        await onComplete();
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <article className="rounded-2xl border border-border/40 bg-card p-4">
+      <header className="flex items-start gap-3">
+        <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-muted/40 text-muted-foreground">
+          <Icon className="h-3.5 w-3.5" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <h4 className="text-sm font-semibold">{title}</h4>
+          <p className="mt-1 text-xs text-muted-foreground">{description}</p>
+        </div>
+      </header>
+
+      {result && (
+        <div className="mt-3">{renderResult(result)}</div>
+      )}
+
+      <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
+        {confirming ? (
+          <>
+            <button
+              type="button"
+              onClick={() => {
+                void vibrate(20, "light");
+                setConfirming(false);
+              }}
+              disabled={busy}
+              className="rounded-full border border-border/40 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground active:scale-95 disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleConfirm()}
+              disabled={busy}
+              className="flex items-center gap-1.5 rounded-full bg-primary px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-primary-foreground transition-colors hover:bg-primary/90 active:scale-95 disabled:opacity-60"
+            >
+              {busy ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <Icon className="h-3 w-3" />
+              )}
+              {confirmCta}
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            onClick={() => {
+              void vibrate(50, "medium");
+              setConfirming(true);
+            }}
+            className={cn(
+              "flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider transition-colors active:scale-95",
+              tones.border,
+              tones.bg,
+              tones.text,
+              tones.hoverBg,
+            )}
+          >
+            <Icon className="h-3 w-3" />
+            {cta}
+          </button>
+        )}
+      </div>
+    </article>
+  );
+}
+
+function RepairResultPanel({
+  title,
+  rows,
+}: {
+  title?: string;
+  rows: [string, string][];
+}) {
+  return (
+    <div className="rounded-lg border border-emerald-400/40 bg-emerald-400/10 p-3 text-xs text-emerald-400">
+      {title && <p className="mb-1 font-bold">{title}</p>}
+      {rows.length === 0 ? (
+        <p className="opacity-80">No drift detected.</p>
+      ) : (
+        <ul className="space-y-0.5">
+          {rows.map(([label, value]) => (
+            <li
+              key={label}
+              className="flex items-baseline justify-between gap-2"
+            >
+              <span className="opacity-80">{label}</span>
+              <span className="tabular-nums">{value}</span>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

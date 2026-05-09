@@ -445,6 +445,385 @@ export async function repairObedienceDrift(): Promise<RepairObedienceDriftResult
 }
 
 // ──────────────────────────────────────────────────────────────────
+// Generic feature-index reconciliation. Each feature stores records as
+// `{prefix}:{id}` and indexes them in a `{feature}:index` ZSET. A half-
+// failed pipeline (record DEL succeeds, ZREM fails — or the inverse)
+// leaves the ZSET pointing at a vanished record. Symptoms: bundle
+// fetches return `null` records that the UI has to filter, count
+// badges over-report, MGET round-trips waste calls.
+//
+// This walks every feature index, MGETs its records, and ZREMs members
+// whose record is missing. Doesn't touch records-that-exist-but-aren't-
+// indexed (a different drift mode that's much rarer and harder to
+// recover from without per-feature schema knowledge).
+//
+// Idempotent. Safe to run on a healthy DB (returns `removed: 0`).
+// ──────────────────────────────────────────────────────────────────
+
+interface FeatureIndexSpec {
+  /** Stable label for UI / logging. */
+  feature: string;
+  /** ZSET key holding the canonical id list. */
+  indexKey: string;
+  /** Builds the record key for a given id. */
+  recordKey: (id: string) => string;
+}
+
+const FEATURE_INDEXES: FeatureIndexSpec[] = [
+  { feature: "notes", indexKey: "notes:index", recordKey: (id) => `note:${id}` },
+  { feature: "rules", indexKey: "rules:index", recordKey: (id) => `rule:${id}` },
+  { feature: "tasks", indexKey: "tasks:index", recordKey: (id) => `task:${id}` },
+  { feature: "ledger", indexKey: "ledger:index", recordKey: (id) => `ledger:${id}` },
+  {
+    feature: "permissions",
+    indexKey: "permissions:index",
+    recordKey: (id) => `permission:${id}`,
+  },
+  { feature: "rituals", indexKey: "rituals:index", recordKey: (id) => `ritual:${id}` },
+  {
+    feature: "timeline",
+    indexKey: "milestones:index",
+    recordKey: (id) => `milestone:${id}`,
+  },
+];
+
+export interface FeatureIndexDrift {
+  feature: string;
+  indexKey: string;
+  scanned: number;
+  removed: number;
+  /** Sample of removed ids (capped at 10) for the result panel. */
+  removedSample: string[];
+}
+
+export interface ReconcileFeatureIndexesResult {
+  success?: boolean;
+  error?: string;
+  perFeature?: FeatureIndexDrift[];
+  totals?: { scanned: number; removed: number };
+}
+
+export async function reconcileFeatureIndexes(): Promise<ReconcileFeatureIndexesResult> {
+  const guard = await requireSir();
+  if (!guard.ok) return { error: guard.error };
+  try {
+    const perFeature: FeatureIndexDrift[] = [];
+    let totalScanned = 0;
+    let totalRemoved = 0;
+
+    for (const spec of FEATURE_INDEXES) {
+      const ids = ((await redis.zrange<unknown[]>(spec.indexKey, 0, -1)) ?? [])
+        .map(String);
+      if (!ids.length) {
+        perFeature.push({
+          feature: spec.feature,
+          indexKey: spec.indexKey,
+          scanned: 0,
+          removed: 0,
+          removedSample: [],
+        });
+        continue;
+      }
+      const records =
+        (await redis.mget<unknown[]>(...ids.map(spec.recordKey))) ?? [];
+      const orphaned: string[] = [];
+      for (let i = 0; i < ids.length; i++) {
+        if (records[i] == null) orphaned.push(ids[i]);
+      }
+      if (orphaned.length > 0) {
+        // Variadic ZREM — single round-trip regardless of orphan count.
+        await redis.zrem(spec.indexKey, ...orphaned);
+      }
+      perFeature.push({
+        feature: spec.feature,
+        indexKey: spec.indexKey,
+        scanned: ids.length,
+        removed: orphaned.length,
+        removedSample: orphaned.slice(0, 10),
+      });
+      totalScanned += ids.length;
+      totalRemoved += orphaned.length;
+    }
+
+    logger.interaction("[admin] feature indexes reconciled", {
+      by: guard.session.author,
+      scanned: totalScanned,
+      removed: totalRemoved,
+      perFeature: perFeature.map((p) => ({
+        feature: p.feature,
+        scanned: p.scanned,
+        removed: p.removed,
+      })),
+    });
+    revalidatePath("/admin/health");
+    return {
+      success: true,
+      perFeature,
+      totals: { scanned: totalScanned, removed: totalRemoved },
+    };
+  } catch (err) {
+    logger.error("[admin] feature index reconcile failed", err);
+    return { error: "Reconcile failed." };
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Pending reward claims reconciliation. `rewards:claims:pending` is a
+// ZSET (score = requestedAt) that drives the stale-claim-nudge cron
+// AND the pending-count badge on the Sir-side rewards UI. If a claim
+// gets decided but the ZREM doesn't land (network blip mid-pipeline),
+// the cron will keep nudging Sir for a "pending" claim that's actually
+// approved/denied — and the badge over-reports.
+//
+// Walks the ZSET, MGETs each claim, and ZREMs members whose record is
+// missing OR whose status is no longer "pending". Idempotent.
+// ──────────────────────────────────────────────────────────────────
+
+const CLAIMS_PENDING_KEY = "rewards:claims:pending";
+const claimRecordKey = (id: string) => `reward:claim:${id}`;
+
+export interface PendingClaimDriftEntry {
+  id: string;
+  /** "missing" = record gone; "decided" = status no longer pending. */
+  reason: "missing" | "decided";
+  /** Status as observed (only present when reason === "decided"). */
+  status?: string;
+}
+
+export interface ReconcilePendingClaimsResult {
+  success?: boolean;
+  error?: string;
+  scanned?: number;
+  removed?: number;
+  /** First 20 removed entries with reason. */
+  removedSample?: PendingClaimDriftEntry[];
+}
+
+export async function reconcilePendingRewardClaims(): Promise<ReconcilePendingClaimsResult> {
+  const guard = await requireSir();
+  if (!guard.ok) return { error: guard.error };
+  try {
+    const ids = ((await redis.zrange<unknown[]>(CLAIMS_PENDING_KEY, 0, -1)) ?? [])
+      .map(String);
+    if (!ids.length) {
+      return { success: true, scanned: 0, removed: 0, removedSample: [] };
+    }
+    const claims =
+      (await redis.mget<{ status?: string }[]>(...ids.map(claimRecordKey))) ?? [];
+    const stale: PendingClaimDriftEntry[] = [];
+    for (let i = 0; i < ids.length; i++) {
+      const c = claims[i];
+      if (c == null) {
+        stale.push({ id: ids[i], reason: "missing" });
+      } else if (c.status !== "pending") {
+        stale.push({
+          id: ids[i],
+          reason: "decided",
+          status: typeof c.status === "string" ? c.status : "unknown",
+        });
+      }
+    }
+    if (stale.length > 0) {
+      await redis.zrem(CLAIMS_PENDING_KEY, ...stale.map((s) => s.id));
+    }
+    logger.interaction("[admin] pending reward claims reconciled", {
+      by: guard.session.author,
+      scanned: ids.length,
+      removed: stale.length,
+      missingCount: stale.filter((s) => s.reason === "missing").length,
+      decidedCount: stale.filter((s) => s.reason === "decided").length,
+    });
+    revalidatePath("/admin/health");
+    revalidatePath("/admin/rewards");
+    revalidatePath("/rewards");
+    return {
+      success: true,
+      scanned: ids.length,
+      removed: stale.length,
+      removedSample: stale.slice(0, 20),
+    };
+  } catch (err) {
+    logger.error("[admin] pending reward claim reconcile failed", err);
+    return { error: "Reconcile failed." };
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────
+// SCAN-then-DEL helper for orphan-prone auxiliary keys. Soft-delete
+// (`moveToTrash`) intentionally does NOT preserve reactions / ritual
+// occurrences (per `references/coding-patterns.md` § "Soft-Delete via
+// Trash Helper"), so over time these auxiliary HASH keys outlive
+// their parent records. This is unbounded growth on long-lived
+// installations.
+//
+// Generic scan: MATCH a key prefix, parse the parent id from the key
+// suffix, check parent existence via a single MGET on the batch.
+// Bounded by SCAN_KEY_CAP / SCAN_ITER_CAP (matches the bucket-shift
+// migration limits).
+// ──────────────────────────────────────────────────────────────────
+
+const SCAN_KEY_CAP = 2000;
+const SCAN_ITER_CAP = 100;
+const SCAN_PAGE_SIZE = 200;
+
+async function scanAllKeys(match: string): Promise<string[]> {
+  const seen = new Set<string>();
+  let cursor: string | number = 0;
+  let safety = 0;
+  do {
+    const [next, keys] = (await redis.scan(cursor, {
+      match,
+      count: SCAN_PAGE_SIZE,
+    })) as [string | number, string[]];
+    for (const k of keys ?? []) seen.add(k);
+    cursor = next;
+    safety++;
+    if (seen.size >= SCAN_KEY_CAP || safety > SCAN_ITER_CAP) break;
+  } while (cursor !== 0 && cursor !== "0");
+  return Array.from(seen);
+}
+
+export interface PruneOrphansResult {
+  success?: boolean;
+  error?: string;
+  scanned?: number;
+  removed?: number;
+  /** True if the SCAN_KEY_CAP was hit and not every key was inspected. */
+  truncated?: boolean;
+  /** Sample of removed keys (capped at 10) for the result panel. */
+  removedSample?: string[];
+}
+
+/**
+ * `reactions:{noteId}` HASH — per-note { author: emoji } map. Orphans
+ * accumulate after note deletion (soft + hard), since `moveToTrash`
+ * does not snapshot or restore reactions.
+ */
+export async function pruneOrphanedReactions(): Promise<PruneOrphansResult> {
+  const guard = await requireSir();
+  if (!guard.ok) return { error: guard.error };
+  try {
+    const keys = await scanAllKeys("reactions:*");
+    if (!keys.length) {
+      return {
+        success: true,
+        scanned: 0,
+        removed: 0,
+        truncated: false,
+        removedSample: [],
+      };
+    }
+    const noteIds = keys.map((k) => k.replace(/^reactions:/, ""));
+    const notes =
+      (await redis.mget<unknown[]>(...noteIds.map((id) => `note:${id}`))) ?? [];
+    const orphans: string[] = [];
+    for (let i = 0; i < keys.length; i++) {
+      if (notes[i] == null) orphans.push(keys[i]);
+    }
+    if (orphans.length > 0) {
+      const pipeline = redis.pipeline();
+      for (const k of orphans) pipeline.del(k);
+      await pipeline.exec();
+    }
+    const truncated = keys.length >= SCAN_KEY_CAP;
+    logger.interaction("[admin] orphaned reactions pruned", {
+      by: guard.session.author,
+      scanned: keys.length,
+      removed: orphans.length,
+      truncated,
+    });
+    revalidatePath("/admin/health");
+    return {
+      success: true,
+      scanned: keys.length,
+      removed: orphans.length,
+      truncated,
+      removedSample: orphans.slice(0, 10),
+    };
+  } catch (err) {
+    logger.error("[admin] reactions prune failed", err);
+    return { error: "Prune failed." };
+  }
+}
+
+/**
+ * `ritual:occurrence:{ritualId}:{dateKey}` HASH — submission record per
+ * (ritual, day). Orphans accumulate after ritual deletion. The cron's
+ * "ritual_missed" sweep already short-circuits on missing rituals, but
+ * the records stick around indefinitely.
+ */
+export async function pruneOrphanedRitualOccurrences(): Promise<PruneOrphansResult> {
+  const guard = await requireSir();
+  if (!guard.ok) return { error: guard.error };
+  try {
+    const keys = await scanAllKeys("ritual:occurrence:*");
+    if (!keys.length) {
+      return {
+        success: true,
+        scanned: 0,
+        removed: 0,
+        truncated: false,
+        removedSample: [],
+      };
+    }
+    // Parse ritualId from `ritual:occurrence:{ritualId}:{dateKey}`.
+    const parsed: { key: string; ritualId: string }[] = [];
+    for (const k of keys) {
+      const rest = k.replace(/^ritual:occurrence:/, "");
+      const colon = rest.lastIndexOf(":");
+      if (colon < 0) continue;
+      const ritualId = rest.slice(0, colon);
+      if (!ritualId) continue;
+      parsed.push({ key: k, ritualId });
+    }
+    if (!parsed.length) {
+      return {
+        success: true,
+        scanned: keys.length,
+        removed: 0,
+        truncated: keys.length >= SCAN_KEY_CAP,
+        removedSample: [],
+      };
+    }
+    // De-dup ritualIds before MGET to avoid redundant lookups when a
+    // ritual has many occurrences.
+    const uniqueIds = Array.from(new Set(parsed.map((p) => p.ritualId)));
+    const rituals =
+      (await redis.mget<unknown[]>(...uniqueIds.map((id) => `ritual:${id}`))) ?? [];
+    const aliveIds = new Set<string>();
+    for (let i = 0; i < uniqueIds.length; i++) {
+      if (rituals[i] != null) aliveIds.add(uniqueIds[i]);
+    }
+    const orphans = parsed
+      .filter((p) => !aliveIds.has(p.ritualId))
+      .map((p) => p.key);
+    if (orphans.length > 0) {
+      const pipeline = redis.pipeline();
+      for (const k of orphans) pipeline.del(k);
+      await pipeline.exec();
+    }
+    const truncated = keys.length >= SCAN_KEY_CAP;
+    logger.interaction("[admin] orphaned ritual occurrences pruned", {
+      by: guard.session.author,
+      scanned: keys.length,
+      removed: orphans.length,
+      truncated,
+    });
+    revalidatePath("/admin/health");
+    return {
+      success: true,
+      scanned: keys.length,
+      removed: orphans.length,
+      truncated,
+      removedSample: orphans.slice(0, 10),
+    };
+  } catch (err) {
+    logger.error("[admin] ritual occurrences prune failed", err);
+    return { error: "Prune failed." };
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────
 // One-time bucket migration: the rewards system used to bucket events
 // by the just-completed week (via `currentReviewWeekDate`) instead of
 // the containing week. After fixing `currentWeekKey` to use the

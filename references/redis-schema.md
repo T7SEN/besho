@@ -497,7 +497,25 @@ Both nudges live in the existing `obedience-sweep` cron — no new cron-job.org 
 
 ### Audit/events ZSET drift repair
 
-`obedience.repairObedienceZsetDrift(author, weekKey)` reconciles the events + audit ZSETs when a half-failed write left one populated and the other not. Members in `events:` but missing from `audit:` are re-added with score = now (best timestamp available). Members in `audit:` but missing from `events:` are removed (no points to recover, so the audit row would render as missing-points). Idempotent. The all-week sweep `repairAllObedienceZsetDrift(weeks=4)` walks both authors over current + prior 4 weeks. Sir-only via `admin.repairObedienceDrift()`, surfaced as a button in `/admin/health`.
+`obedience.repairObedienceZsetDrift(author, weekKey)` reconciles the events + audit ZSETs when a half-failed write left one populated and the other not. Members in `events:` but missing from `audit:` are re-added with score = now (best timestamp available). Members in `audit:` but missing from `events:` are removed (no points to recover, so the audit row would render as missing-points). Idempotent. The all-week sweep `repairAllObedienceZsetDrift(weeks=4)` walks both authors over current + prior 4 weeks. Sir-only via `admin.repairObedienceDrift()`, surfaced as a `<RepairCard>` in `/admin/health` Health tab.
+
+### Repair toolkit (`/admin/health` Health tab → Repair operations)
+
+The Health tab carries a categorized stack of `<RepairCard>` instances backed by these Sir-only server actions. All idempotent, all log via `logger.interaction` to the activity feed, all use a 5-second-auto-cancel two-step confirm + heavy haptic on commit.
+
+- **Index integrity**
+  - `repairIndexes()` — recompute `notes:count:{author}` from the `notes:index` ZSET and prune `notes:pinned` set members whose underlying note is gone. Notes-only.
+  - `reconcileFeatureIndexes()` — generic ZSET ↔ record reconciliation. Walks `notes:index` / `rules:index` / `tasks:index` / `ledger:index` / `permissions:index` / `rituals:index` / `milestones:index`; ZREMs members whose backing record is missing. Doesn't touch records-that-exist-but-aren't-indexed (different drift mode, harder to recover without per-feature schema knowledge).
+  - `reconcilePendingRewardClaims()` — walks `rewards:claims:pending` ZSET; ZREMs members whose `reward:claim:{id}` is missing OR whose status is no longer `"pending"`. Stops the obedience-sweep stale-claim-nudge cron from firing on already-decided claims; also fixes pending-count badge drift.
+- **Orphan cleanup** (auxiliary HASH keys that soft-delete intentionally doesn't preserve)
+  - `pruneOrphanedReactions()` — SCAN `reactions:*`; DELs those whose `note:{id}` is gone.
+  - `pruneOrphanedRitualOccurrences()` — SCAN `ritual:occurrence:*`; DELs those whose `ritual:{id}` is gone. De-dups ritualIds before MGET to avoid redundant lookups when a ritual has many occurrences.
+- **Obedience**
+  - `repairObedienceDrift()` — see "Audit/events ZSET drift repair" above.
+
+SCAN-based prunes are bounded by `SCAN_KEY_CAP = 2000` keys and `SCAN_ITER_CAP = 100` cursor iterations (matches `migrateObedienceBucketShift`). Result panels surface a `truncated: true` flag when the cap is hit so Sir knows to re-run.
+
+Adding a new repair: define the action in `src/app/actions/admin/health.ts` with a `requireSir()` gate + `logger.interaction` audit; re-export through `src/app/actions/admin.ts` via the `_alias` wrapper-function pattern (Turbopack rejects `export {...} from` in `'use server'` files); add a `<RepairCard>` instance under the appropriate `<RepairCategory>` in `/admin/health` Health tab.
 
 ---
 
