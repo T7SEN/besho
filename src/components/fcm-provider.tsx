@@ -39,6 +39,7 @@ export function FCMProvider() {
     cleanupRef.current?.();
 
     let cancelled = false;
+    let appStateCleanup: (() => void) | null = null;
 
     const register = async () => {
       try {
@@ -210,12 +211,46 @@ export function FCMProvider() {
       }
     };
 
+    // Retry on app foreground if registration hasn't yet succeeded.
+    // Handles the case where the user toggled a system setting (OS-
+    // level "Allow notifications", app permission, etc.) while the app
+    // was backgrounded — the first mount-time `register()` failed
+    // before the gate was flipped, but we can succeed on resume now
+    // that it is. Without this, the user has to fully relaunch the
+    // app to retry, which isn't obvious post-fix from the user's POV.
+    const setupAppStateRetry = async () => {
+      try {
+        const { App } = await import("@capacitor/app");
+        const handle = await App.addListener("appStateChange", (state) => {
+          if (cancelled) return;
+          if (!state.isActive) return;
+          if (registeredForAuthor.current === author) return;
+          logger.info(
+            `[fcm] App resumed; retrying registration for ${author}.`,
+          );
+          void register();
+        });
+        if (cancelled) {
+          void handle.remove();
+          return;
+        }
+        appStateCleanup = () => void handle.remove();
+      } catch (err) {
+        logger.warn(
+          `[fcm] Failed to register app-state retry listener for ${author}:`,
+          { error: err },
+        );
+      }
+    };
+
     void register();
+    void setupAppStateRetry();
 
     return () => {
       cancelled = true;
       cleanupRef.current?.();
       cleanupRef.current = null;
+      appStateCleanup?.();
     };
   }, [author]);
 

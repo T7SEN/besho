@@ -111,7 +111,7 @@ export default function TasksPage() {
   const [state, action, isPending] = useActionState(createTask, null);
   const formRef = useRef<HTMLFormElement & { reset: () => void }>(null);
 
-  const { schedule, cancel } = useLocalNotifications();
+  const { schedule, cancel, cancelInRange } = useLocalNotifications();
 
   usePresence("/tasks", !!currentAuthor);
 
@@ -130,8 +130,38 @@ export default function TasksPage() {
       setTasks(taskList);
       setCurrentAuthor(author);
       setIsLoading(false);
+
+      // Local-notification ownership: tasks target Besho (she's the
+      // one completing them), so reminders live on HER device. Sir
+      // creates the task but the reminder isn't his to receive.
+      //
+      //  • Besho's device → schedule "📋 Task due soon" for every
+      //    still-pending task with a future deadline. Idempotent ids
+      //    via NOTIF_ID.taskDeadline; re-scheduling replaces.
+      //  • Sir's device  → cancel any task-band schedules. Cleans up
+      //    the legacy creator-side schedules from before this fix
+      //    (which is why the ghost notifications fired on Sir's
+      //    phone for tasks already marked done).
+      if (author === "Besho") {
+        const oneHourMs = 60 * 60 * 1_000;
+        const now = Date.now();
+        for (const t of taskList) {
+          if (t.status !== "pending") continue;
+          if (typeof t.deadline !== "number") continue;
+          const notifTime = t.deadline - oneHourMs;
+          if (notifTime <= now) continue;
+          void schedule({
+            id: NOTIF_ID.taskDeadline(idToNumeric(t.id)),
+            title: "📋 Task due soon",
+            body: t.title,
+            atMs: notifTime,
+          });
+        }
+      } else if (author === "T7SEN") {
+        void cancelInRange(NOTIF_ID.TASK_BAND_START, NOTIF_ID.TASK_BAND_END);
+      }
     });
-  }, []);
+  }, [schedule, cancelInRange]);
 
   useEffect(() => {
     if (!state?.success) return;
@@ -143,20 +173,12 @@ export default function TasksPage() {
       void hideKeyboard();
     }, 0);
 
-    getTasks().then((fresh) => {
-      setTasks(fresh);
-      const newest = fresh[0];
-      if (newest?.deadline && newest.status !== "completed") {
-        const notifTime = newest.deadline - 60 * 60 * 1_000;
-        void schedule({
-          id: NOTIF_ID.taskDeadline(idToNumeric(newest.id)),
-          title: "📋 Task due soon",
-          body: newest.title,
-          atMs: notifTime,
-        });
-      }
-    });
-  }, [state, schedule]);
+    // Refresh the list. Scheduling lives on Besho's device only — see
+    // the load-effect above. The form-success path used to schedule
+    // on the creator's device, which fired ghost reminders on Sir's
+    // phone after the recipient marked the task done.
+    getTasks().then(setTasks);
+  }, [state]);
 
   const isT7SEN = currentAuthor === "T7SEN";
   const isBesho = currentAuthor === "Besho";
@@ -177,6 +199,10 @@ export default function TasksPage() {
             : t,
         ),
       );
+      // Cancel the deadline reminder — task is no longer pending.
+      // This is Besho's device; the schedule was created here on the
+      // load-effect, so the cancel actually clears the queued notif.
+      void cancel([NOTIF_ID.taskDeadline(idToNumeric(id))]);
     } else if (result.error) {
       void vibrate([60, 40, 60], "heavy");
       setActionError(result.error);

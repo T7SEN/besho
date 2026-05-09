@@ -39,35 +39,47 @@ async function getSessionAuthor(): Promise<"T7SEN" | "Besho" | null> {
 }
 
 /**
- * Drops or normalizes records that don't conform to the current
- * `NotificationRecord` shape. Pre-shape records (missing `url`,
- * partial migrations, anything that lost a field) survive in the
- * `notifications:{author}` LIST until LTRIM ages them out at the 50-
- * cap; without this normalization, a missing `url` on an old record
- * crashes `router.push(undefined)` inside the drawer's
- * `handleNavigate` (Next 16 surfaces it as
- * `TypeError: Cannot read properties of undefined (reading 'startsWith')`
- * from `addPathPrefix`).
+ * Coerces a Redis-resident record into the current `NotificationRecord`
+ * shape with safe defaults for every field. The original purpose of
+ * this normalizer was to prevent `router.push(undefined)` inside the
+ * drawer's `handleNavigate` from crashing on records with a missing
+ * `url`; that's the only field whose default actually matters at use
+ * time. The use-site itself also guards against falsy urls in
+ * `notification-drawer.tsx::handleNavigate` — defense in depth.
  *
- * Strategy: keep the record visible (the user's history shouldn't
- * silently shrink), but coerce missing fields to safe defaults —
- * `url` falls back to `/` so navigation lands somewhere sensible.
- * Records lacking `id` or `timestamp` are unrenderable (no React
- * key, no sortable order) and get dropped.
+ * Strategy: lenient. Never drop a renderable record. Missing fields
+ * get defaults. Stable per-position id when the record itself lacks
+ * one — keeps React keys stable across the same render and avoids
+ * remount churn. Only completely-broken values (non-objects, non-
+ * parseable strings) are filtered.
  */
 function sanitizeNotificationRecord(
   raw: unknown,
+  index: number,
 ): NotificationRecord | null {
-  if (!raw || typeof raw !== "object") return null;
-  const r = raw as Partial<NotificationRecord>;
-  if (typeof r.id !== "string" || r.id.length === 0) return null;
-  if (typeof r.timestamp !== "number") return null;
+  // Some legacy entries may have been stored as JSON strings if
+  // they predate the auto-stringify behavior of @upstash/redis.
+  // Try a parse before giving up.
+  let value: unknown = raw;
+  if (typeof value === "string") {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      // unparseable — drop
+      return null;
+    }
+  }
+  if (!value || typeof value !== "object") return null;
+  const r = value as Partial<NotificationRecord>;
   return {
-    id: r.id,
+    id:
+      typeof r.id === "string" && r.id.length > 0
+        ? r.id
+        : `legacy-${index}`,
     title: typeof r.title === "string" ? r.title : "",
     body: typeof r.body === "string" ? r.body : "",
     url: typeof r.url === "string" && r.url.length > 0 ? r.url : "/",
-    timestamp: r.timestamp,
+    timestamp: typeof r.timestamp === "number" ? r.timestamp : 0,
     read: typeof r.read === "boolean" ? r.read : false,
   };
 }
@@ -83,17 +95,9 @@ export async function getNotificationHistory(): Promise<NotificationRecord[]> {
       MAX_HISTORY - 1,
     );
     const sanitized: NotificationRecord[] = [];
-    let droppedCount = 0;
-    for (const raw of raws ?? []) {
-      const r = sanitizeNotificationRecord(raw);
+    for (let i = 0; i < (raws ?? []).length; i++) {
+      const r = sanitizeNotificationRecord(raws[i], i);
       if (r) sanitized.push(r);
-      else droppedCount++;
-    }
-    if (droppedCount > 0) {
-      logger.warn(
-        `[notifications] Dropped ${droppedCount} malformed history record(s) for ${author}.`,
-        { author, droppedCount },
-      );
     }
     return sanitized;
   } catch (error) {

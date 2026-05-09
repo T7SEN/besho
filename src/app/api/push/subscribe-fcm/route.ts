@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { redis } from "@/lib/redis";
 import { cookies } from "next/headers";
 import { decrypt } from "@/lib/auth-utils";
+import { logger } from "@/lib/logger";
 import { addFcmToken, fcmKey } from "@/lib/fcm-tokens";
 
 export async function POST(req: NextRequest) {
@@ -20,6 +21,20 @@ export async function POST(req: NextRequest) {
   // shape if encountered). Idempotent — re-registering an existing
   // token is a no-op via SET dedup.
   const totalTokens = await addFcmToken(redis, session.author, token);
+
+  // Activity-feed entry for Sir's `/admin/logs` Activity tab. Confirms
+  // exactly when a device's token landed in the SET — primary
+  // diagnostic for "did her phone actually reach the server?" debugging.
+  // Token preview only (first 8 + last 4) so the audit trail is
+  // recognizable but doesn't expose the full token in the log.
+  const tokenPreview =
+    token.length > 12 ? `${token.slice(0, 8)}…${token.slice(-4)}` : token;
+  logger.interaction(`[fcm] Token registered for ${session.author}`, {
+    author: session.author,
+    totalTokens,
+    tokenPreview,
+  });
+
   return NextResponse.json({ success: true, totalTokens });
 }
 

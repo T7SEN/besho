@@ -151,7 +151,7 @@ export default function RulesPage() {
   const [state, action, isPending] = useActionState(createRule, null);
   const formRef = useRef<HTMLFormElement & { reset: () => void }>(null);
 
-  const { schedule, cancel } = useLocalNotifications();
+  const { schedule, cancel, cancelInRange } = useLocalNotifications();
 
   usePresence("/rules", !!currentAuthor);
 
@@ -196,10 +196,43 @@ export default function RulesPage() {
       setRules(list);
       setCurrentAuthor(author);
       setIsLoading(false);
-    });
-  }, []);
 
-  // Schedule notification for ack deadline on new rule creation
+      // Local-notification ownership: rules target Besho (she's the
+      // one acknowledging), so reminders live on HER device.
+      //
+      //  • Besho's device → schedule "📜 Rule acknowledgement due"
+      //    30 min before each pending rule's ack deadline.
+      //  • Sir's device  → cancel any rule-band schedules. Cleans up
+      //    the legacy creator-side schedules from before this fix
+      //    (which is why the ghost notifications fired on Sir's
+      //    phone for rules already acknowledged).
+      if (author === "Besho") {
+        const thirtyMinMs = 30 * 60 * 1_000;
+        const now = Date.now();
+        for (const r of list as (Rule & {
+          acknowledgeDeadline?: number;
+        })[]) {
+          if (r.status !== "pending") continue;
+          if (typeof r.acknowledgeDeadline !== "number") continue;
+          const notifTime = r.acknowledgeDeadline - thirtyMinMs;
+          if (notifTime <= now) continue;
+          void schedule({
+            id: NOTIF_ID.ruleAckDeadline(idToNumeric(r.id)),
+            title: "📜 Rule acknowledgement due",
+            body: `"${r.title}" needs your acknowledgement`,
+            atMs: notifTime,
+          });
+        }
+      } else if (author === "T7SEN") {
+        void cancelInRange(NOTIF_ID.RULE_BAND_START, NOTIF_ID.RULE_BAND_END);
+      }
+    });
+  }, [schedule, cancelInRange]);
+
+  // Refresh the list after a successful create. Scheduling lives on
+  // Besho's device only — see the load-effect above. The form-success
+  // path used to schedule on the creator's device, which fired ghost
+  // reminders on Sir's phone after the recipient acknowledged.
   useEffect(() => {
     if (!state?.success) return;
 
@@ -210,21 +243,8 @@ export default function RulesPage() {
       void hideKeyboard();
     }, 0);
 
-    getRules().then((fresh) => {
-      setRules(fresh);
-      const newest = fresh[0] as
-        | (Rule & { acknowledgeDeadline?: number })
-        | undefined;
-      if (newest?.acknowledgeDeadline && newest.status === "pending") {
-        void schedule({
-          id: NOTIF_ID.ruleAckDeadline(idToNumeric(newest.id)),
-          title: "📜 Rule acknowledgement due",
-          body: `"${newest.title}" needs your acknowledgement`,
-          atMs: newest.acknowledgeDeadline - 30 * 60 * 1_000, // 30 min before
-        });
-      }
-    });
-  }, [state, schedule]);
+    getRules().then(setRules);
+  }, [state]);
 
   const isT7SEN = currentAuthor === "T7SEN";
   const isBesho = currentAuthor === "Besho";

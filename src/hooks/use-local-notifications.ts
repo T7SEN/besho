@@ -23,6 +23,10 @@ export const NOTIF_ID = {
   ruleAckDeadline: (numericSuffix: number) => 2000 + (numericSuffix % 900),
   ritualReminder: (numericSuffix: number, daysSinceEpoch: number) =>
     3000 + (numericSuffix % 112) * 8 + (daysSinceEpoch % 8),
+  TASK_BAND_START: 1000,
+  TASK_BAND_END: 1899,
+  RULE_BAND_START: 2000,
+  RULE_BAND_END: 2899,
   RITUAL_BAND_START: 3000,
   RITUAL_BAND_END: 3895,
 } as const;
@@ -193,6 +197,46 @@ export function useLocalNotifications() {
   }, []);
 
   /**
+   * Cancels every pending notification whose id falls in `[idStart, idEnd]`
+   * (inclusive). Used for cleanup of stale band-scoped schedules — e.g.,
+   * Sir's device wiping out task/rule notifications that were
+   * (incorrectly) scheduled by the legacy "schedule on creator's device"
+   * pattern. `LocalNotifications.getPending()` enumerates the queue;
+   * we filter by id range and pass only those to `cancel()`. Capacitor
+   * has no native "cancel all" or "cancel by range" API.
+   */
+  const cancelInRange = useCallback(
+    async (idStart: number, idEnd: number): Promise<void> => {
+      if (!isNative()) return;
+      try {
+        const { LocalNotifications } =
+          await import("@capacitor/local-notifications");
+        const pending = await LocalNotifications.getPending();
+        const toCancel = pending.notifications.filter(
+          (n) => n.id >= idStart && n.id <= idEnd,
+        );
+        if (toCancel.length === 0) return;
+        await LocalNotifications.cancel({
+          notifications: toCancel.map((n) => ({ id: n.id })),
+        });
+        logger.info(
+          `[local-notif] Cancelled ${toCancel.length} pending notif(s) in band [${idStart}, ${idEnd}].`,
+        );
+      } catch (err) {
+        if (isOsNotificationsDisabledError(err)) {
+          logger.warn(
+            "[local-notif] cancelInRange skipped — OS-level notifications disabled.",
+            { hint: OS_NOTIF_HINT },
+          );
+          return;
+        }
+        logger.error("[local-notif] cancelInRange failed:", err);
+      }
+    },
+    [],
+  );
+
+  /**
    * Schedules a daily mood check-in nudge at 21:00 local time.
    * Re-calling this replaces the existing scheduled notification.
    */
@@ -228,5 +272,11 @@ export function useLocalNotifications() {
     void ensureActionListener();
   }, []);
 
-  return { requestPermission, schedule, cancel, scheduleMoodNudge };
+  return {
+    requestPermission,
+    schedule,
+    cancel,
+    cancelInRange,
+    scheduleMoodNudge,
+  };
 }
