@@ -65,6 +65,20 @@ export const eventsKey = (author: Author, weekKey: string) =>
   `obedience:events:${author}:${weekKey}`;
 export const streakKey = (author: Author) =>
   `obedience:streak:${author}`;
+/** Per-week snapshot of the streak value ENTERING this week. Written
+ *  at the end of the prior week's `finalizeWeek` (so the snapshot is
+ *  locked in BEFORE the week begins) and consumed by the next
+ *  finalize + by `computeWeekScore` for past unfinalized weeks.
+ *
+ *  Why it exists: without this snapshot, `computeWeekScore` for an
+ *  unfinalized past week falls back to live `streakKey`, which means
+ *  any `adminSetStreakRaw` adjustment between week-end and cron-run
+ *  retroactively shifts the past week's display AND the multiplier
+ *  the cron eventually freezes. With the snapshot, the entry-streak
+ *  is fixed the moment the prior week finalizes, so streak
+ *  adjustments during week N only affect future weeks. */
+export const entryStreakKey = (author: Author, weekKey: string) =>
+  `obedience:entry-streak:${author}:${weekKey}`;
 export const multiplierFrozenKey = (author: Author, weekKey: string) =>
   `obedience:multiplier:${author}:${weekKey}`;
 export const finalizedKey = (author: Author, weekKey: string) =>
@@ -426,6 +440,18 @@ export async function setStreakRaw(
   } else {
     await redis.set(streakKey(author), value);
   }
+  // Mirror to the CURRENT week's entry-streak snapshot so the next
+  // finalize honors Sir's adjustment. Without this, the snapshot
+  // written by the prior week's finalize would override Sir's
+  // intent at the next cron tick. Past-week snapshots are
+  // intentionally NOT touched — they represent locked-in history
+  // and should not be retroactively rewritten by a streak override.
+  const wk = currentWeekKey();
+  if (value <= 0) {
+    await redis.del(entryStreakKey(author, wk));
+  } else {
+    await redis.set(entryStreakKey(author, wk), value);
+  }
 }
 
 export function multiplierForStreak(
@@ -545,9 +571,39 @@ export async function computeWeekScore(
     readManualAdjustReasons(author, weekKey),
   ]);
 
-  // Past weeks: use frozen multiplier when available. Current week:
-  // compute against the stored streak (which represents consecutive
-  // weeks finalized prior to this one).
+  // Determine the streak ENTERING this week. For past weeks, prefer
+  // the snapshot written by the prior week's `finalizeWeek`. Without
+  // this, an unfinalized past week would compute against the live
+  // streak — meaning any `adminSetStreakRaw` between week-end and
+  // cron-run retroactively shifts the past week's display and the
+  // multiplier the cron eventually freezes.
+  //
+  // Current week always uses live streak (intentional — mid-week
+  // streak adjustments by Sir DO affect the current week's display,
+  // which is the expected behavior). The snapshot is only consulted
+  // for past weeks.
+  //
+  // Degraded fallback: the very first finalize after this snapshot
+  // mechanism shipped has no prior snapshot to read, so it falls
+  // back to live streak. From the second finalize onward, the
+  // snapshot is always present.
+  let entryStreak = streakStored;
+  if (isPastWeek) {
+    try {
+      const snap = await redis.get<number | string>(
+        entryStreakKey(author, weekKey),
+      );
+      const n = Number(snap);
+      if (Number.isFinite(n) && n >= 0) entryStreak = n;
+    } catch {
+      // ignore — falls back to live streak
+    }
+  }
+
+  // Past weeks: use frozen multiplier when available (finalized).
+  // Past unfinalized: compute from entry-streak snapshot (locked in)
+  // OR live streak (fallback).
+  // Current week: compute from live streak (entry-streak ignored).
   let multiplier: number | null = null;
   if (isPastWeek) {
     try {
@@ -561,7 +617,7 @@ export async function computeWeekScore(
     }
   }
   if (multiplier === null) {
-    multiplier = multiplierForStreak(streakStored, mults);
+    multiplier = multiplierForStreak(entryStreak, mults);
   }
 
   let rawScore = 0;
@@ -609,7 +665,13 @@ export async function computeWeekScore(
     rawScore,
     multiplier,
     displayedScore,
-    streakEntering: streakStored,
+    // Past weeks: snapshot when available, else live streak. Current
+    // week: always live streak. This is what `finalizeWeek` uses to
+    // derive the new streak value (newStreak = entryStreak + 1 on
+    // high score, 0 otherwise) — keeping the snapshot here means
+    // mid-week streak adjustments don't pollute the just-ending
+    // week's finalize math.
+    streakEntering: entryStreak,
     breakdown,
   };
 }
@@ -738,10 +800,20 @@ export async function finalizeWeek(
 
     // Note: the finalized sentinel was already written by the SET NX
     // above; the pipeline below covers everything else.
+    //
+    // We also write `entry-streak:{author}:{nextWeekKey}` = newStreak
+    // so the NEXT week's finalize (and any `computeWeekScore` for
+    // that week while still past-unfinalized) has a locked-in
+    // snapshot to compute the multiplier from. This is the load-
+    // bearing piece that prevents mid-week streak adjustments from
+    // retroactively shifting a past unfinalized week's display or
+    // poisoning the next finalize's frozen multiplier.
+    const nextWeekKey = shiftWeekKey(weekKey, 1);
     const pipeline = redis.pipeline();
     pipeline.set(multiplierFrozenKey(author, weekKey), score.multiplier);
     if (newStreak <= 0) pipeline.del(streakKey(author));
     else pipeline.set(streakKey(author), newStreak);
+    pipeline.set(entryStreakKey(author, nextWeekKey), newStreak);
     pipeline.incr(weeksTrackedKey(author));
     if (isNewBest) {
       pipeline.set(bestWeekKey(author), {

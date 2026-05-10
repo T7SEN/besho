@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import {
   ArrowLeft,
@@ -21,6 +21,8 @@ import {
   adminDeleteObedienceEvent,
   adminPurgeTestClaims,
   adminSetStreakRaw,
+  adminForceRecomputeWeek,
+  adminGrantPastReward,
   getObedienceAdminSnapshot,
   getObedienceEventLog,
   getTestModeState,
@@ -45,6 +47,7 @@ import {
   REWARD_BODY_MAX,
   REWARD_EMOJI_MAX,
   REWARD_LABEL_MAX,
+  SIR_NOTE_MAX,
   TIER_EMOJI_MAX,
   TIER_NAME_MAX,
   TUNABLE_EVENT_TYPES,
@@ -152,6 +155,7 @@ export default function AdminRewardsPage() {
             <TabsTrigger value="tiers">Tiers</TabsTrigger>
             <TabsTrigger value="weights">Weights</TabsTrigger>
             <TabsTrigger value="streak">Streak</TabsTrigger>
+            <TabsTrigger value="recovery">Recovery</TabsTrigger>
           </TabsList>
 
           <TabsContent value="status" className="space-y-6">
@@ -191,6 +195,14 @@ export default function AdminRewardsPage() {
             />
             <StreakOverrideEditor
               initialBeshoStreak={snapshot.besho.streak}
+              onSaved={fetchSnapshot}
+            />
+          </TabsContent>
+
+          <TabsContent value="recovery" className="space-y-6">
+            <ForceRecomputeWeekEditor onSaved={fetchSnapshot} />
+            <GrantPastRewardEditor
+              tiers={snapshot.tiers}
               onSaved={fetchSnapshot}
             />
           </TabsContent>
@@ -2107,5 +2119,285 @@ function Skeleton() {
         />
       ))}
     </div>
+  );
+}
+
+// ── Recovery tab ──────────────────────────────────────────────────────────
+//
+// Two one-off recovery tools for edge cases the normal admin surfaces
+// can't reach:
+//   1. ForceRecomputeWeekEditor — re-finalize a past week with an
+//      explicit entry-streak. Use when the original finalize captured
+//      the wrong streak (e.g. first-ever week with stale streak left
+//      over from testing).
+//   2. GrantPastRewardEditor — create a fresh delivered claim record
+//      for a past week. Use when the original claim was lost to a
+//      deny → revoke chain and kitten deserves the reward anyway.
+
+function ForceRecomputeWeekEditor({ onSaved }: { onSaved: () => Promise<void> }) {
+  const [weekKey, setWeekKey] = useState("");
+  const [entryStreak, setEntryStreak] = useState("0");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  const submit = async () => {
+    setErr(null);
+    setMsg(null);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(weekKey)) {
+      setErr("Week key must be YYYY-MM-DD (a Sunday).");
+      return;
+    }
+    const n = Number(entryStreak);
+    if (!Number.isFinite(n) || n < 0) {
+      setErr("Entry streak must be a non-negative integer.");
+      return;
+    }
+    setBusy(true);
+    void vibrate(40, "medium");
+    const result = await adminForceRecomputeWeek({
+      author: "Besho",
+      weekKey,
+      entryStreak: Math.floor(n),
+    });
+    setBusy(false);
+    if (result.error) {
+      setErr(result.error);
+      return;
+    }
+    setMsg(
+      `Recomputed. New displayed score: ${result.displayedScore ?? "?"}.`,
+    );
+    void onSaved();
+  };
+
+  return (
+    <section className="rounded-2xl border border-border/40 bg-card p-5">
+      <h2 className="mb-2 text-sm font-semibold">Force-recompute a past week</h2>
+      <p className="mb-3 text-xs text-muted-foreground">
+        Re-runs <code className="rounded bg-muted px-1">finalizeWeek</code> for a
+        past week with an explicit entry-streak. Use when the original
+        finalize captured the wrong streak — e.g. the first obedience week
+        was finalized against a non-zero stale streak. Set entry-streak to{" "}
+        <strong>0</strong> for a fresh-start first week.
+      </p>
+      <p className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/5 p-2 text-[11px] text-amber-200/90">
+        Cascades forward: this writes{" "}
+        <code className="rounded bg-muted px-1">
+          entry-streak:{"{next week}"}
+        </code>{" "}
+        as a side effect. Subsequent finalized weeks keep their existing
+        frozen multipliers, but their displayed streak-entering will shift.
+        Re-run this on each subsequent week if you want a clean cascade.
+      </p>
+      <div className="space-y-2">
+        <label className="block text-[10px] font-bold uppercase tracking-widest text-muted-foreground/60">
+          Week key (Sunday YYYY-MM-DD)
+        </label>
+        <input
+          dir="auto"
+          type="text"
+          value={weekKey}
+          onChange={(e) => setWeekKey(e.target.value.trim())}
+          placeholder="2026-05-03"
+          className="w-full rounded-lg border border-border/60 bg-input/50 px-3 py-2 text-sm placeholder:text-muted-foreground/60 focus:border-primary focus:outline-none"
+        />
+        <label className="block text-[10px] font-bold uppercase tracking-widest text-muted-foreground/60">
+          Entry streak (0 = first week / fresh start)
+        </label>
+        <input
+          dir="auto"
+          type="number"
+          min={0}
+          step={1}
+          value={entryStreak}
+          onChange={(e) => setEntryStreak(e.target.value)}
+          className="w-full rounded-lg border border-border/60 bg-input/50 px-3 py-2 text-sm focus:border-primary focus:outline-none"
+        />
+      </div>
+      {err && (
+        <p className="mt-2 rounded-lg border border-destructive/40 bg-destructive/10 p-2 text-xs text-destructive">
+          {err}
+        </p>
+      )}
+      {msg && (
+        <p className="mt-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 p-2 text-xs text-emerald-300">
+          {msg}
+        </p>
+      )}
+      <button
+        type="button"
+        onClick={() => void submit()}
+        disabled={busy}
+        className="mt-3 flex items-center gap-1.5 rounded-full bg-amber-500/90 px-4 py-2 text-xs font-bold uppercase tracking-wider text-black transition-opacity active:scale-95 disabled:opacity-60"
+      >
+        {busy && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+        Force recompute
+      </button>
+    </section>
+  );
+}
+
+function GrantPastRewardEditor({
+  tiers,
+  onSaved,
+}: {
+  tiers: RewardTier[];
+  onSaved: () => Promise<void>;
+}) {
+  const [weekKey, setWeekKey] = useState("");
+  const [tierId, setTierId] = useState(tiers[0]?.id ?? "");
+  const selectedTier = useMemo(
+    () => tiers.find((t) => t.id === tierId) ?? null,
+    [tiers, tierId],
+  );
+  const [rewardId, setRewardId] = useState(
+    selectedTier?.rewards[0]?.id ?? "",
+  );
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  // Reset the reward picker when tier changes. Deferred setState
+  // per § 4 pattern.
+  useEffect(() => {
+    if (!selectedTier) {
+      setTimeout(() => setRewardId(""), 0);
+      return;
+    }
+    if (!selectedTier.rewards.find((r) => r.id === rewardId)) {
+      setTimeout(
+        () => setRewardId(selectedTier.rewards[0]?.id ?? ""),
+        0,
+      );
+    }
+  }, [selectedTier, rewardId]);
+
+  const submit = async () => {
+    setErr(null);
+    setMsg(null);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(weekKey)) {
+      setErr("Week key must be YYYY-MM-DD (a Sunday).");
+      return;
+    }
+    if (!tierId) {
+      setErr("Pick a tier.");
+      return;
+    }
+    if (!rewardId) {
+      setErr("Pick a reward.");
+      return;
+    }
+    setBusy(true);
+    void vibrate(40, "medium");
+    const result = await adminGrantPastReward({
+      author: "Besho",
+      weekKey,
+      tierId,
+      rewardId,
+      sirNote: note.trim() || undefined,
+    });
+    setBusy(false);
+    if (result.error) {
+      setErr(result.error);
+      return;
+    }
+    setMsg(`Granted. Claim id: ${result.claimId}.`);
+    setNote("");
+    void onSaved();
+  };
+
+  return (
+    <section className="rounded-2xl border border-border/40 bg-card p-5">
+      <h2 className="mb-2 text-sm font-semibold">
+        Grant a reward retroactively
+      </h2>
+      <p className="mb-3 text-xs text-muted-foreground">
+        Creates a fresh <code className="rounded bg-muted px-1">delivered</code>{" "}
+        claim record for a past week. Use when a claim was lost to a deny
+        → revoke chain (or similar) and kitten deserves the reward anyway.
+        Does NOT touch existing claim records for that week — those stay as
+        history. Bypasses the normal claim-window restriction AND the tier-
+        threshold check (Sir&apos;s discretion).
+      </p>
+      <div className="space-y-2">
+        <label className="block text-[10px] font-bold uppercase tracking-widest text-muted-foreground/60">
+          Week key (Sunday YYYY-MM-DD)
+        </label>
+        <input
+          dir="auto"
+          type="text"
+          value={weekKey}
+          onChange={(e) => setWeekKey(e.target.value.trim())}
+          placeholder="2026-05-03"
+          className="w-full rounded-lg border border-border/60 bg-input/50 px-3 py-2 text-sm placeholder:text-muted-foreground/60 focus:border-primary focus:outline-none"
+        />
+        <label className="block text-[10px] font-bold uppercase tracking-widest text-muted-foreground/60">
+          Tier
+        </label>
+        <select
+          dir="auto"
+          value={tierId}
+          onChange={(e) => setTierId(e.target.value)}
+          className="w-full rounded-lg border border-border/60 bg-input/50 px-3 py-2 text-sm focus:border-primary focus:outline-none"
+        >
+          {tiers.map((t) => (
+            <option key={t.id} value={t.id}>
+              {t.emoji ? `${t.emoji} ` : ""}
+              {t.name}
+            </option>
+          ))}
+        </select>
+        <label className="block text-[10px] font-bold uppercase tracking-widest text-muted-foreground/60">
+          Reward
+        </label>
+        <select
+          dir="auto"
+          value={rewardId}
+          onChange={(e) => setRewardId(e.target.value)}
+          disabled={!selectedTier}
+          className="w-full rounded-lg border border-border/60 bg-input/50 px-3 py-2 text-sm focus:border-primary focus:outline-none disabled:opacity-60"
+        >
+          {selectedTier?.rewards.map((r) => (
+            <option key={r.id} value={r.id}>
+              {r.emoji ? `${r.emoji} ` : ""}
+              {r.label}
+            </option>
+          )) ?? null}
+        </select>
+        <label className="block text-[10px] font-bold uppercase tracking-widest text-muted-foreground/60">
+          Note for kitten (optional)
+        </label>
+        <textarea
+          dir="auto"
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          rows={2}
+          maxLength={SIR_NOTE_MAX}
+          placeholder="Optional message — appears in kitten's push notification."
+          className="w-full rounded-lg border border-border/60 bg-input/50 px-3 py-2 text-sm placeholder:text-muted-foreground/60 focus:border-primary focus:outline-none"
+        />
+      </div>
+      {err && (
+        <p className="mt-2 rounded-lg border border-destructive/40 bg-destructive/10 p-2 text-xs text-destructive">
+          {err}
+        </p>
+      )}
+      {msg && (
+        <p className="mt-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 p-2 text-xs text-emerald-300">
+          {msg}
+        </p>
+      )}
+      <button
+        type="button"
+        onClick={() => void submit()}
+        disabled={busy}
+        className="mt-3 flex items-center gap-1.5 rounded-full bg-emerald-500/90 px-4 py-2 text-xs font-bold uppercase tracking-wider text-black transition-opacity active:scale-95 disabled:opacity-60"
+      >
+        {busy && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+        Grant reward
+      </button>
+    </section>
   );
 }

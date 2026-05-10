@@ -28,8 +28,14 @@ import {
   getTestMode,
   setTestModeRaw,
   setManualAdjustReason,
+  entryStreakKey,
+  finalizedKey,
+  multiplierFrozenKey,
   type ObedienceAuditEntry,
 } from "@/lib/obedience";
+import { redis } from "@/lib/redis";
+import { SIR_NOTE_MAX } from "@/lib/reward-types";
+import type { RewardClaim } from "@/lib/reward-types";
 import {
   type RewardTier,
   type RewardItem,
@@ -755,5 +761,237 @@ export async function adminAdjustScore(
   } catch (err) {
     logger.error("[admin] manual adjust failed", err);
     return { error: "Adjust failed." };
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Recovery: force-recompute a past week with an explicit entry-streak.
+//
+// Use case: the week was finalized with the wrong entry-streak (e.g.
+// a streak adjustment was made in the gap between week-end and cron-
+// run on a pre-fix deploy, OR the first-ever obedience week was
+// finalized against a non-zero streak left over from testing). The
+// existing `recomputeWeek` action calls `finalizeWeek` directly, but
+// `finalizeWeek` bails when the finalized sentinel already exists, so
+// it has no effect on already-finalized weeks.
+//
+// This action atomically:
+//   1. Writes the entry-streak snapshot for the target week (so
+//      finalizeWeek's `computeWeekScore` reads the correct value)
+//   2. DELs `obedience:finalized:{author}:{weekKey}` (release the lock)
+//   3. DELs `obedience:multiplier:{author}:{weekKey}` (clear the freeze)
+//   4. Calls `finalizeWeek` which reads the new snapshot and re-freezes
+//
+// Caveats Sir should know:
+//   - This overwrites `obedience:entry-streak:{author}:{nextWeekKey}`
+//     because the finalize writes that as a side effect. If the next
+//     week was already finalized, its frozen multiplier won't change
+//     (it was frozen earlier), but its streakEntering display may
+//     shift the next time `computeWeekScore` reads it for an
+//     unfinalized state. For a clean cascade, re-run this action on
+//     each subsequent finalized week with the corrected entry-streak.
+//   - The recap FCM may re-fire because `notifyWeekClosed` has its
+//     own dedup sentinel (`obedience:week-wrapped-fcm:*`). If that
+//     sentinel is also DEL'd by Sir via /admin/redis, the FCM
+//     re-fires; otherwise it's a silent recompute.
+// ──────────────────────────────────────────────────────────────────
+
+export interface AdminForceRecomputeWeekArgs {
+  author: Author;
+  weekKey: string;
+  entryStreak: number;
+}
+
+export async function adminForceRecomputeWeek(
+  args: AdminForceRecomputeWeekArgs,
+): Promise<{
+  success?: boolean;
+  error?: string;
+  displayedScore?: number;
+  multiplier?: number;
+}> {
+  const guard = await requireSir();
+  if (!guard.ok) return { error: guard.error };
+  if (args.author !== "T7SEN" && args.author !== "Besho") {
+    return { error: "Invalid author." };
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(args.weekKey)) {
+    return { error: "Invalid week key (expected YYYY-MM-DD)." };
+  }
+  const n = Math.max(0, Math.floor(Number(args.entryStreak)));
+  if (!Number.isFinite(n)) {
+    return { error: "Entry streak must be a non-negative integer." };
+  }
+  // The week must be in the past — finalizeWeek refuses current/future.
+  if (args.weekKey >= currentWeekKey()) {
+    return { error: "Week must be in the past." };
+  }
+
+  try {
+    // Step 1+2+3: write entry-streak snapshot AND release the
+    // finalize lock + frozen multiplier in one pipeline. The
+    // snapshot lands first so when finalizeWeek calls
+    // computeWeekScore, the snapshot is already in place.
+    const pipeline = redis.pipeline();
+    if (n <= 0) {
+      pipeline.del(entryStreakKey(args.author, args.weekKey));
+    } else {
+      pipeline.set(entryStreakKey(args.author, args.weekKey), n);
+    }
+    pipeline.del(finalizedKey(args.author, args.weekKey));
+    pipeline.del(multiplierFrozenKey(args.author, args.weekKey));
+    await pipeline.exec();
+
+    // Step 4: re-finalize. Now the lock is released so the SET NX
+    // inside finalizeWeek succeeds; it reads the entry-streak we
+    // just wrote and freezes the correct multiplier.
+    const result = await finalizeWeek(args.author, args.weekKey);
+
+    logger.warn("[admin] force-recompute week", {
+      by: guard.session.author,
+      author: args.author,
+      weekKey: args.weekKey,
+      entryStreak: n,
+      result,
+    });
+    revalidatePath("/admin/rewards");
+    revalidatePath("/rewards");
+    return {
+      success: true,
+      displayedScore: result.displayedScore,
+    };
+  } catch (err) {
+    logger.error("[admin] force-recompute failed", err);
+    return { error: "Force-recompute failed." };
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Recovery: grant a reward retroactively.
+//
+// Use case: kitten claimed a reward for a past week, Sir denied then
+// revoked the denial (or some other terminal-state mishap), and the
+// reward never got delivered. The normal claim flow is closed — only
+// the immediately prior week is claimable, the revoked record is
+// terminal, and the per-week slot key may still be held.
+//
+// This action creates a FRESH `reward:claim:{id}` record directly in
+// `delivered` state. It does NOT touch the existing claim record(s)
+// for that week — those stay as historical audit. It does NOT touch
+// the per-week slot key (intentionally — the slot's semantic is
+// "kitten's choice for the week"; this is Sir's grant, parallel).
+//
+// Constraints:
+//   - Sir picks the tier + reward from the current tier catalog.
+//   - The week must be a past week. Future weeks make no sense for
+//     a retroactive grant; current week kitten can claim normally.
+//   - Tier-threshold enforcement is bypassed — Sir's discretion.
+// ──────────────────────────────────────────────────────────────────
+
+export interface AdminGrantPastRewardArgs {
+  author: Author;
+  weekKey: string;
+  tierId: string;
+  rewardId: string;
+  sirNote?: string;
+}
+
+export async function adminGrantPastReward(
+  args: AdminGrantPastRewardArgs,
+): Promise<{ success?: boolean; error?: string; claimId?: string }> {
+  const guard = await requireSir();
+  if (!guard.ok) return { error: guard.error };
+  if (args.author !== "T7SEN" && args.author !== "Besho") {
+    return { error: "Invalid author." };
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(args.weekKey)) {
+    return { error: "Invalid week key (expected YYYY-MM-DD)." };
+  }
+  if (args.weekKey >= currentWeekKey()) {
+    return { error: "Week must be in the past." };
+  }
+  const note = (args.sirNote ?? "").trim();
+  if (note.length > SIR_NOTE_MAX) {
+    return { error: `Note too long (max ${SIR_NOTE_MAX}).` };
+  }
+
+  try {
+    const tiers = await readTiers();
+    const tier = tiers.find((t) => t.id === args.tierId);
+    if (!tier) return { error: "Tier not found in catalog." };
+    const reward = tier.rewards.find((r) => r.id === args.rewardId);
+    if (!reward) return { error: "Reward not found in tier." };
+
+    // Read the week's actual displayedScore for the audit trail —
+    // even though we're bypassing the threshold check.
+    const score = await computeWeekScore(args.author, args.weekKey);
+
+    const now = Date.now();
+    const id = crypto.randomUUID();
+    const claim: RewardClaim = {
+      id,
+      author: args.author,
+      weekKey: args.weekKey,
+      tierId: tier.id,
+      tierName: tier.name,
+      ...(tier.emoji && { tierEmoji: tier.emoji }),
+      rewardId: reward.id,
+      rewardLabel: reward.label,
+      ...(reward.body && { rewardBody: reward.body }),
+      ...(reward.emoji && { rewardEmoji: reward.emoji }),
+      status: "delivered",
+      requestedAt: now,
+      respondedAt: now,
+      respondedBy: guard.session.author,
+      ...(note.length > 0 && { sirNote: note }),
+      // Snapshot the score at grant time. Threshold-bypass is
+      // surfaced by `claimedScore < claimedTierThreshold`.
+      claimedScore: score.displayedScore,
+      claimedTierThreshold: tier.threshold,
+    };
+
+    const pipeline = redis.pipeline();
+    pipeline.set(`reward:claim:${id}`, claim);
+    pipeline.zadd(`rewards:claims:by-author:${args.author}`, {
+      score: now,
+      member: id,
+    });
+    // Skip CLAIMS_PENDING_KEY (it's delivered, not pending).
+    // Skip claim:by-week — intentional. This is a parallel admin
+    // grant, not kitten's choice. Existing records for that week
+    // (denied, revoked, rerolled, whatever) stay as history.
+    await pipeline.exec();
+
+    // Notify kitten with celebratory wording — this isn't a normal
+    // delivery, it's a make-good.
+    try {
+      await sendNotification(args.author, {
+        title: "🎁 Reward granted retroactively",
+        body: note.length > 0
+          ? `${tier.name}: ${reward.label} — ${note}`
+          : `${tier.name}: ${reward.label}`,
+        url: "/rewards",
+      });
+    } catch (err) {
+      logger.error("[admin] retroactive grant notify failed", err, {
+        claimId: id,
+      });
+    }
+
+    logger.interaction("[admin] retroactive reward granted", {
+      by: guard.session.author,
+      author: args.author,
+      weekKey: args.weekKey,
+      tierId: tier.id,
+      rewardId: reward.id,
+      claimId: id,
+      note: note.length > 0 ? note : undefined,
+    });
+    revalidatePath("/admin/rewards");
+    revalidatePath("/rewards");
+    return { success: true, claimId: id };
+  } catch (err) {
+    logger.error("[admin] retroactive grant failed", err);
+    return { error: "Grant failed." };
   }
 }

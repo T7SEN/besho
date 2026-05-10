@@ -1339,6 +1339,8 @@ import {
   setTestModeState as _setTestModeState,
   adminPurgeTestClaims as _adminPurgeTestClaims,
   adminDeleteObedienceEvent as _adminDeleteObedienceEvent,
+  adminForceRecomputeWeek as _adminForceRecomputeWeek,
+  adminGrantPastReward as _adminGrantPastReward,
 } from "./admin/rewards";
 
 // rewards bucket
@@ -1357,6 +1359,8 @@ export async function getTestModeState(...args: Parameters<typeof _getTestModeSt
 export async function setTestModeState(...args: Parameters<typeof _setTestModeState>): ReturnType<typeof _setTestModeState> { return _setTestModeState(...args); }
 export async function adminPurgeTestClaims(...args: Parameters<typeof _adminPurgeTestClaims>): ReturnType<typeof _adminPurgeTestClaims> { return _adminPurgeTestClaims(...args); }
 export async function adminDeleteObedienceEvent(...args: Parameters<typeof _adminDeleteObedienceEvent>): ReturnType<typeof _adminDeleteObedienceEvent> { return _adminDeleteObedienceEvent(...args); }
+export async function adminForceRecomputeWeek(...args: Parameters<typeof _adminForceRecomputeWeek>): ReturnType<typeof _adminForceRecomputeWeek> { return _adminForceRecomputeWeek(...args); }
+export async function adminGrantPastReward(...args: Parameters<typeof _adminGrantPastReward>): ReturnType<typeof _adminGrantPastReward> { return _adminGrantPastReward(...args); }
 export type {
   RewardTiersResult,
   ObedienceWeightsResult,
@@ -1367,6 +1371,8 @@ export type {
   ObedienceEventLogResult,
   TestModeResult,
   DeleteObedienceEventArgs,
+  AdminForceRecomputeWeekArgs,
+  AdminGrantPastRewardArgs,
 } from "./admin/rewards";
 
 import {
