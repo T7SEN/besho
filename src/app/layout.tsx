@@ -20,6 +20,8 @@ import { SentryUserProvider } from "@/components/sentry-user-provider";
 import { DeviceTracker } from "@/components/device-tracker";
 import { SessionGuard } from "@/components/session-guard";
 import { StaffToolbar } from "@/components/staff-toolbar";
+import { DirectiveDialog } from "@/components/directive/directive-dialog";
+import { PunishmentOverlay } from "@/components/punishment/punishment-overlay";
 
 const sourceSans3 = Source_Sans_3({
   subsets: ["latin"],
@@ -113,6 +115,8 @@ export default function RootLayout({
                 <SentryUserProvider />
                 <DeviceTracker />
                 <SessionGuard />
+                <PunishmentOverlay />
+                <DirectiveDialog />
                 <FloatingNavbar />
               </BiometricGate>
             </TooltipProvider>

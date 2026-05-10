@@ -274,6 +274,15 @@ export async function sendNotification(
       priority?: "default" | "high" | "max";
       sound?: string;
     };
+    /** Additional FCM `data` fields merged into both the foreground
+     *  (data-only) and background (notification + data) payload
+     *  shapes. Values MUST be strings — FCM rejects nested objects
+     *  and non-string values. Used by the directive overlay
+     *  (`{ kind: "directive", directiveId }`) and the punishment
+     *  timer; clients branch on `data.kind` in `<FCMProvider>`'s
+     *  foreground listener and in `pushNotificationActionPerformed`
+     *  to route to the right surface on tap. */
+    extraData?: Record<string, string>;
   },
 ): Promise<void> {
   // 1. Always record to history first — the only artifact for no-GMS.
@@ -342,6 +351,7 @@ export async function sendNotification(
     // Build the multicast message ONCE — the only thing that varies
     // per recipient device is the token, which sendEachForMulticast
     // injects from `tokens[]`.
+    const extra = options?.extraData ?? {};
     const multicast = useFullNotification
       ? (() => {
           const a = options?.android;
@@ -351,7 +361,7 @@ export async function sendNotification(
               title: payload.title,
               body: payload.body,
             },
-            data: { url: payload.url },
+            data: { url: payload.url, ...extra },
             android: {
               priority: "high" as const,
               ...(a
@@ -374,6 +384,7 @@ export async function sendNotification(
             url: payload.url,
             title: payload.title,
             body: payload.body,
+            ...extra,
           },
         };
 

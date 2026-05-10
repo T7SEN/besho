@@ -18,6 +18,7 @@ import {
   ChevronUp,
   Circle,
   Clock,
+  Gavel,
   Loader2,
   Plus,
   RotateCcw,
@@ -37,6 +38,7 @@ import {
   type Rule,
   type RuleStatus,
 } from "@/app/actions/rules";
+import { getViolationCountsForRules } from "@/app/actions/ledger";
 import { getCurrentAuthor } from "@/app/actions/auth";
 import { TITLE_BY_AUTHOR } from "@/lib/constants";
 import { usePresence } from "@/hooks/use-presence";
@@ -142,6 +144,9 @@ function formatDate(timestamp: number): string {
 
 export default function RulesPage() {
   const [rules, setRules] = useState<Rule[]>([]);
+  const [violationCounts, setViolationCounts] = useState<
+    Record<string, number>
+  >({});
   const [isLoading, setIsLoading] = useState(true);
   const [currentAuthor, setCurrentAuthor] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
@@ -186,7 +191,11 @@ export default function RulesPage() {
 
   const handleRefresh = useCallback(async () => {
     const list = await getRules();
-    setTimeout(() => setRules(list), 0);
+    const counts = await getViolationCountsForRules(list.map((r) => r.id));
+    setTimeout(() => {
+      setRules(list);
+      setViolationCounts(counts);
+    }, 0);
   }, []);
 
   useRefreshListener(handleRefresh);
@@ -196,6 +205,12 @@ export default function RulesPage() {
       setRules(list);
       setCurrentAuthor(author);
       setIsLoading(false);
+
+      // Pull violation counts in the background — best-effort. Empty
+      // counts render as a no-op on each card.
+      void getViolationCountsForRules(list.map((r) => r.id))
+        .then(setViolationCounts)
+        .catch(() => {});
 
       // Local-notification ownership: rules target Besho (she's the
       // one acknowledging), so reminders live on HER device.
@@ -549,6 +564,7 @@ export default function RulesPage() {
                       isBesho={isBesho}
                       isBusy={busyId === rule.id}
                       now={now}
+                      violationCount={violationCounts[rule.id] ?? 0}
                       onAcknowledge={handleAcknowledge}
                       onComplete={handleComplete}
                       onReopen={handleReopen}
@@ -569,6 +585,7 @@ export default function RulesPage() {
                       isBesho={isBesho}
                       isBusy={busyId === rule.id}
                       now={now}
+                      violationCount={violationCounts[rule.id] ?? 0}
                       onAcknowledge={handleAcknowledge}
                       onComplete={handleComplete}
                       onReopen={handleReopen}
@@ -589,6 +606,7 @@ export default function RulesPage() {
                       isBesho={isBesho}
                       isBusy={busyId === rule.id}
                       now={now}
+                      violationCount={violationCounts[rule.id] ?? 0}
                       onAcknowledge={handleAcknowledge}
                       onComplete={handleComplete}
                       onReopen={handleReopen}
@@ -629,6 +647,7 @@ function RuleItem({
   isBesho,
   isBusy,
   now,
+  violationCount,
   onAcknowledge,
   onComplete,
   onReopen,
@@ -640,6 +659,10 @@ function RuleItem({
   isBesho: boolean;
   isBusy: boolean;
   now: number;
+  /** Number of `violation`-typed ledger entries against this rule.
+   *  Both authors see this count for transparency; only Sir gets the
+   *  "Log violation" affordance. */
+  violationCount: number;
   onAcknowledge: (id: string) => void;
   onComplete: (id: string) => void;
   onReopen: (id: string) => void;
@@ -745,6 +768,15 @@ function RuleItem({
                 ★ Completed {formatDate(rule.completedAt)}
               </span>
             )}
+            {violationCount > 0 && (
+              <Link
+                href={`/ledger?filter=violation`}
+                className="flex items-center gap-1 text-amber-400/70 transition-colors hover:text-amber-400"
+              >
+                <Gavel className="h-2.5 w-2.5" />
+                {violationCount} violation{violationCount === 1 ? "" : "s"} logged
+              </Link>
+            )}
           </div>
         </div>
 
@@ -814,6 +846,17 @@ function RuleItem({
             <CheckCircle2 className="h-3 w-3" />
             Mark Completed
           </button>
+        )}
+
+        {isT7SEN && rule.status !== "completed" && (
+          <Link
+            href={`/ledger?prefill=violation:${rule.id}`}
+            onClick={() => void vibrate(30, "light")}
+            className="flex items-center gap-1.5 rounded-full bg-amber-500/10 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-amber-400 transition-all hover:bg-amber-500/20 active:scale-[0.95]"
+          >
+            <Gavel className="h-3 w-3" />
+            Log Violation
+          </Link>
         )}
 
         {isT7SEN && rule.status === "completed" && (

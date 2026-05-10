@@ -13,6 +13,7 @@
 import type { LucideIcon } from "lucide-react";
 import {
   Activity,
+  AlertTriangle,
   Award,
   BarChart3,
   Bell,
@@ -42,6 +43,7 @@ import {
   Smile,
   Sparkles,
   Sun,
+  Target,
   Timer,
   Trash2,
   Trophy,
@@ -463,6 +465,64 @@ export const ADMIN_SETTINGS: AdminSettingEntry[] = [
     href: "/admin/push-test",
     keywords: "push presets templates tap fill quick",
     Icon: Sparkles,
+  },
+
+  // ── /admin/directive ───────────────────────────────────────────────────
+  {
+    id: "directive:issue",
+    title: "Issue real-time directive",
+    description: "Short-lived command (1–60 min) with countdown overlay on kitten's device.",
+    page: "Real-time directive",
+    href: "/admin/directive",
+    keywords: "directive command real-time overlay countdown kitten besho timer kneel",
+    Icon: Target,
+  },
+  {
+    id: "directive:cancel",
+    title: "Cancel active directive",
+    description: "Single-slot — cancel before issuing a new one.",
+    page: "Real-time directive",
+    href: "/admin/directive",
+    keywords: "directive cancel active stop dismiss",
+    Icon: Target,
+  },
+  {
+    id: "directive:history",
+    title: "Directive history",
+    description: "Last 50 directives with acknowledged / completed / expired state.",
+    page: "Real-time directive",
+    href: "/admin/directive",
+    keywords: "directive history list past completed expired log",
+    Icon: Target,
+  },
+
+  // ── /admin/punishment-timer ────────────────────────────────────────────
+  {
+    id: "punishment-timer:issue",
+    title: "Issue punishment timer",
+    description: "Duration-bounded corrective timer (1–120 min) with full-screen kneel overlay.",
+    page: "Punishment timer",
+    href: "/admin/punishment-timer",
+    keywords: "punishment timer kneel corrective duration overlay besho kitten discipline",
+    Icon: AlertTriangle,
+  },
+  {
+    id: "punishment-timer:cancel",
+    title: "Cancel active punishment",
+    description: "Single-slot — cancel before issuing a new one.",
+    page: "Punishment timer",
+    href: "/admin/punishment-timer",
+    keywords: "punishment cancel active stop dismiss",
+    Icon: AlertTriangle,
+  },
+  {
+    id: "punishment-timer:history",
+    title: "Punishment history",
+    description: "Last 50 punishments with completed / bailed / cancelled state.",
+    page: "Punishment timer",
+    href: "/admin/punishment-timer",
+    keywords: "punishment history list past completed bailed log",
+    Icon: AlertTriangle,
   },
 
   // ── /admin/mood ────────────────────────────────────────────────────────

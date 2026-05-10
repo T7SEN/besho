@@ -1,5 +1,6 @@
 import Link from "next/link";
 import {
+  AlertTriangle,
   ArrowLeft,
   Award,
   BarChart3,
@@ -12,6 +13,7 @@ import {
   ShieldCheck,
   Smartphone,
   Smile,
+  Target,
   Trash2,
 } from "lucide-react";
 import { SummonButton } from "@/components/admin/summon-button";
@@ -66,6 +68,18 @@ const TOOLS = [
     title: "Send test push",
     description: "Fire a custom FCM to either author.",
     Icon: Send,
+  },
+  {
+    href: "/admin/directive",
+    title: "Real-time directive",
+    description: "Issue a short-lived command with countdown overlay.",
+    Icon: Target,
+  },
+  {
+    href: "/admin/punishment-timer",
+    title: "Punishment timer",
+    description: "Duration-bounded corrective timer with auto-ledger.",
+    Icon: AlertTriangle,
   },
   {
     href: "/admin/mood",

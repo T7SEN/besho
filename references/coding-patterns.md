@@ -1210,7 +1210,10 @@ This is intentional — capturing every aux key would 10x the trash payload size
 | Permissions  | audit log; bulk purge wipes quotas / auto-rules / denied-hashes (not restorable per-item) |
 | Rituals      | occurrence index + per-date occurrence keys, current/longest streak                       |
 | Reviews      | only the single trash entry per week — both authors' records are inside `extraRecords`   |
-| Tasks / Rules / Ledger / Timeline | nothing additional — those features only have the index + record   |
+| Ledger (violations) | `ledger:violations:by-rule:{ruleId}` ZSET membership — restored entries appear in `getLedgerEntries` but NOT in `getViolationsByRule` until manually reconciled |
+| Directives    | `directive:active:Besho` sentinel is never restored (terminal-state-only soft-delete). Restored directives appear in history but never re-occupy the active slot. |
+| Punishments   | `punishment:active:Besho` sentinel never restored. The auto-created `ledger:{id}` entry is independent — soft-deleting one does NOT cascade to the other. `linkedLedgerId` / `linkedPunishmentId` are back-references, not foreign-key constraints. |
+| Tasks / Rules / Ledger (reward & punishment & violation manual) / Timeline | nothing additional — those types only have the index + record |
 
 ### Reviews use composite ids
 
@@ -1219,6 +1222,93 @@ This is intentional — capturing every aux key would 10x the trash payload size
 ### Score capture
 
 Most features have a timestamp field on the record (`createdAt`, `requestedAt`, `date`). `zscore` is the source of truth, but if it returns `null` (race or schema drift), fall back to the record's timestamp. Don't fall back to `Date.now()` — that re-orders the record on restore.
+
+### Snapshot referenced data at write time
+
+Some entries reference another record by id (e.g. a violation references a rule). When the referenced record is editable or deletable independently of the entry, the entry MUST snapshot the relevant fields at write time. Otherwise a future edit / delete silently rewrites the entry's display.
+
+Currently applied to:
+
+- **`RewardClaim.rewardEmoji` / `rewardLabel` / `rewardBody`** — snapshot of the catalog reward at claim time (`src/app/actions/rewards.ts::claimReward`).
+- **`RewardClaim.tierEmoji` / `tierName`** — snapshot of the tier at claim time (same site).
+- **`LedgerEntry.ruleSnapshot: { title, body? }` for `type === "violation"`** — snapshot of `rule:{ruleId}` at violation-log time. Body truncated to `MAX_VIOLATION_RULE_SNAPSHOT_BODY_LEN = 1000` chars to keep entry storage bounded. The entry still carries `ruleId` for navigation back to the live rule (which may have been edited or deleted), but rendering reads from the snapshot.
+
+Don't rehydrate from the live source at display time. The snapshot IS the historical truth.
+
+### Inline ledger writes for cross-feature side effects
+
+Most `ledger:{id}` entries flow through `createLedgerEntry`, which fires the standard `ledger_punishment` obedience emit on `type === "punishment"`. Some features need to write a punishment entry as a side effect AND emit a different typed event — going through `createLedgerEntry` would double-count.
+
+The sanctioned pattern is an **inline write** in the feature's action file:
+
+- Mint a `ledger:{id}` UUID.
+- Build a complete `LedgerEntry` JSON shape (matching the interface in `@/app/actions/ledger`).
+- Pipeline `SET ledger:{id}` + `ZADD ledger:index`.
+- Skip the obedience emit at the inline site; the feature's typed event is fired separately at the call site.
+
+Currently applied to:
+
+- **`punishment.completePunishment` / `bailPunishment`** — writes a `ledger:{id}` `punishment` entry with `linkedPunishmentId` back-reference. Inline because the typed `punishment_completed` (+2) / `punishment_bailed` (−20) events are the canonical obedience signal; routing through `createLedgerEntry` would also fire `ledger_punishment` (−10) and double-count.
+
+Don't refactor inline writers to share with `createLedgerEntry` "for consistency" — the divergence is intentional and the alternative is the double-count footgun. If a third caller appears, factor a non-exported `_writeLedgerEntry({ entry, suppressObedienceEmit })` helper inside `ledger.ts`.
+
+### App-state-change grace timers (Capacitor)
+
+When a feature surface needs to respond to "kitten left the app while doing X" (e.g. `<PunishmentOverlay>` running state), use `@capacitor/app::appStateChange` with a refTracked timeout:
+
+```ts
+const graceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+useEffect(() => {
+  if (!shouldWatch) return;
+  let cancelled = false;
+  let appHandle: { remove: () => Promise<void> } | null = null;
+
+  void (async () => {
+    const { App } = await import("@capacitor/app");
+    const handle = await App.addListener("appStateChange", (state) => {
+      if (cancelled) return;
+      if (state.isActive) {
+        // Returned to foreground — cancel pending grace.
+        if (graceTimeoutRef.current) {
+          clearTimeout(graceTimeoutRef.current);
+          graceTimeoutRef.current = null;
+        }
+        return;
+      }
+      // Backgrounded — start grace.
+      if (graceTimeoutRef.current) clearTimeout(graceTimeoutRef.current);
+      graceTimeoutRef.current = setTimeout(() => {
+        graceTimeoutRef.current = null;
+        // Fire the bail / penalty action.
+        void onGraceExpiry();
+      }, GRACE_MS);
+    });
+    if (cancelled) {
+      void handle.remove();
+      return;
+    }
+    appHandle = handle;
+  })();
+
+  return () => {
+    cancelled = true;
+    if (graceTimeoutRef.current) {
+      clearTimeout(graceTimeoutRef.current);
+      graceTimeoutRef.current = null;
+    }
+    void appHandle?.remove();
+  };
+}, [shouldWatch, onGraceExpiry]);
+```
+
+Critical details:
+
+- Dynamic `import("@capacitor/app")` keeps the web bundle slim. Web silently no-ops because the module load fails harmlessly inside the IIFE try-block — but for safety, wrap it in try/catch so a missing @capacitor/app doesn't throw to the renderer.
+- Always clear the timeout in cleanup; otherwise navigating away while backgrounded leaks the grace expiry.
+- The `cancelled` flag prevents the listener attaching after the effect has already cleaned up (race during fast remount).
+
+Currently applied in `<PunishmentOverlay>` for the 60s background-grace bail.
 
 ---
 

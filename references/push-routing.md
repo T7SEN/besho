@@ -185,6 +185,30 @@ The notification channel is created with `importance: 4` and `visibility: 1` to 
 
 ---
 
+## Feature-Routed Payloads via `data.kind`
+
+Some payloads route to a feature surface (overlay, toast, full-screen dialog) rather than the generic PushToast. The discriminant is `data.kind` — set on the FCM `data` object via `sendNotification`'s `extraData` option. The `<FCMProvider>` foreground listener branches on `kind` before falling through to the default `dispatchPushToast(...)` path.
+
+### Currently routed kinds
+
+| `data.kind`     | Foreground handler                                                           | Background handler                                                                                                  |
+| --------------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `"directive"`   | Dispatches `ourspace:directive-arrived` CustomEvent → `<DirectiveDialog>` refetches and opens. PushToast NOT shown. | Standard heads-up banner. Tap → navigates to `data.url` (`/`); `<DirectiveDialog>` reads active state on mount. |
+| `"punishment"`  | Dispatches `ourspace:punishment-arrived` → `<PunishmentOverlay>` refetches and opens. PushToast NOT shown. Sender uses `bypassPresence: true` + `priority: "high"` so the timer engages immediately regardless of which page kitten is on. | Standard heads-up banner. Tap → navigates to `data.url` (`/`); `<PunishmentOverlay>` reads active state on mount. Channel is `default`, NOT `safeword`. |
+
+### Adding a kind
+
+1. Pick a stable string value. Add it to the kind constant (e.g. `DIRECTIVE_PAYLOAD_KIND` in `src/lib/directive-constants.ts`).
+2. Define a CustomEvent name (`DIRECTIVE_ARRIVED_EVENT = "ourspace:directive-arrived"`).
+3. Wire the FCM-provider foreground branch — match on `notification.data?.kind`, dispatch the event, return early to suppress the PushToast fall-through.
+4. Have the surface component subscribe via `addEventListener` on the global event name.
+5. The background path is automatic — `notification: { title, body }` + `data: { url, kind, ...extra }` falls through to standard tap-navigation; the surface component opens itself on the next render via its existing read path.
+6. **Always include the standard `url` field** in the payload — it's the fallback path when foreground branching fails for any reason (the catch-block in fcm-provider falls back to `dispatchPushToast` with `url: data.url`).
+
+The `extraData` parameter on `sendNotification` is the sanctioned way to add fields. Values must be strings — FCM rejects nested objects and non-string values.
+
+---
+
 ## Adding a New Push Path
 
 Checklist for any new server action that needs to notify the partner:

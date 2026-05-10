@@ -11,6 +11,14 @@ import {
   isOsNotificationsDisabledError,
   OS_NOTIF_HINT,
 } from "@/lib/os-notifications";
+import {
+  DIRECTIVE_ARRIVED_EVENT,
+  DIRECTIVE_PAYLOAD_KIND,
+} from "@/lib/directive-constants";
+import {
+  PUNISHMENT_ARRIVED_EVENT,
+  PUNISHMENT_PAYLOAD_KIND,
+} from "@/lib/punishment-constants";
 
 /**
  * Registers FCM listeners once at the layout level so they persist
@@ -149,11 +157,70 @@ export function FCMProvider() {
           },
         );
 
-        // Foreground notification — show in-app toast
+        // Foreground notification — branch on `data.kind` so feature
+        // surfaces (DirectiveDialog, future PunishmentOverlay, ...)
+        // can intercept payloads addressed to them. Default path
+        // dispatches the standard PushToast.
         const foregroundListener = await PushNotifications.addListener(
           "pushNotificationReceived",
           (notification) => {
             if (cancelled) return;
+            const kind = notification.data?.kind as string | undefined;
+
+            if (kind === DIRECTIVE_PAYLOAD_KIND) {
+              const directiveId = notification.data?.directiveId as
+                | string
+                | undefined;
+              try {
+                (
+                  globalThis as unknown as {
+                    dispatchEvent: (e: Event) => void;
+                  }
+                ).dispatchEvent(
+                  new CustomEvent(DIRECTIVE_ARRIVED_EVENT, {
+                    detail: { id: directiveId },
+                  }),
+                );
+              } catch (err) {
+                // Falling back to a toast keeps the user informed
+                // even if the dialog event-dispatch path breaks. The
+                // directive record is still durable in Redis;
+                // refresh-listener pulls will pick it up.
+                logger.warn("[fcm] directive dispatch failed", { err });
+                dispatchPushToast({
+                  title: notification.title ?? "🎯 New directive",
+                  body: notification.body ?? "",
+                  url: "/",
+                });
+              }
+              return;
+            }
+
+            if (kind === PUNISHMENT_PAYLOAD_KIND) {
+              const punishmentId = notification.data?.punishmentId as
+                | string
+                | undefined;
+              try {
+                (
+                  globalThis as unknown as {
+                    dispatchEvent: (e: Event) => void;
+                  }
+                ).dispatchEvent(
+                  new CustomEvent(PUNISHMENT_ARRIVED_EVENT, {
+                    detail: { id: punishmentId },
+                  }),
+                );
+              } catch (err) {
+                logger.warn("[fcm] punishment dispatch failed", { err });
+                dispatchPushToast({
+                  title: notification.title ?? "🔔 Punishment timer",
+                  body: notification.body ?? "",
+                  url: "/",
+                });
+              }
+              return;
+            }
+
             const title =
               notification.title ??
               (notification.data?.title as string | undefined) ??

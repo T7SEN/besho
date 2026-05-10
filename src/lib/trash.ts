@@ -10,7 +10,9 @@ export type TrashFeature =
   | "permissions"
   | "rituals"
   | "timeline"
-  | "reviews";
+  | "reviews"
+  | "directives"
+  | "punishments";
 
 export interface TrashEntry {
   feature: TrashFeature;
@@ -415,4 +417,6 @@ export const TRASH_FEATURE_LABELS: Record<TrashFeature, string> = {
   rituals: "Rituals",
   timeline: "Timeline",
   reviews: "Review weeks",
+  directives: "Directives",
+  punishments: "Punishment timers",
 };

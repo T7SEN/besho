@@ -25,6 +25,7 @@ export const CRON_NAMES = [
   "ritual-windows",
   "review-window-open",
   "heartbeat-watch",
+  "timer-expire",
 ] as const;
 
 export type CronName = (typeof CRON_NAMES)[number];

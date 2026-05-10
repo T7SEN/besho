@@ -63,6 +63,8 @@ const CRON_FRESH_MS = {
   // 2h fresh — cron-job.org should fire heartbeat-watch every ~30m,
   // so anything older than 2h means the watcher itself has stopped.
   "heartbeat-watch": 2 * 60 * 60_000,
+  // Minute cadence — same freshness window as ritual-windows.
+  "timer-expire": 5 * 60_000,
 } as const;
 
 export default function HealthPage() {

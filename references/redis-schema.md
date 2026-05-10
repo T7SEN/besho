@@ -99,12 +99,110 @@ T7SEN creates. Besho completes.
 
 ## Ledger (`/ledger`)
 
-| Key            | Type | Description                                                          |
-| -------------- | ---- | -------------------------------------------------------------------- |
-| `ledger:{id}`  | JSON | `{ id, type, category, title, description?, occurredAt, createdAt }` |
-| `ledger:index` | ZSET | Entry IDs scored by `occurredAt`                                     |
+| Key                                  | Type | Description                                                                                                                                                  |
+| ------------------------------------ | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ledger:{id}`                        | JSON | `{ id, type, category, title, description?, timestamp, author, ruleId?, ruleSnapshot?, severity?, linkedPunishmentId? }`                                                          |
+| `ledger:index`                       | ZSET | Entry IDs scored by `timestamp`                                                                                                                              |
+| `ledger:violations:by-rule:{ruleId}` | ZSET | **Violation entries only.** Per-rule lookup index. Score = `createdAt`, member = ledger entry id. Pipelined alongside `ZADD ledger:index` on create.         |
 
-`type` is `'reward'` or `'punishment'`. Categories defined in `src/lib/ledger-constants.ts`. T7SEN-only writes; both can read.
+`type` is `'reward'`, `'punishment'`, or `'violation'`. T7SEN-only writes; both can read.
+
+### Violation entries (`type === "violation"`)
+
+Violation entries carry three optional fields beyond the standard shape:
+
+- `ruleId: string` — the rule that was violated. References `rule:{ruleId}` but is NOT a foreign-key constraint; the rule may have been deleted after the violation was logged.
+- `ruleSnapshot: { title: string; body?: string }` — captured at write time. The body is truncated to `MAX_VIOLATION_RULE_SNAPSHOT_BODY_LEN = 1000` chars. Mirrors the reward/tier emoji snapshot pattern: future rule edits or deletes do NOT rewrite the violation's display.
+- `severity: "minor" | "moderate" | "major"` — typed mirror of the chip displayed in `category` (which holds the capitalized severity label "Minor" / "Moderate" / "Major" for violations). Code paths branching on severity should use this field rather than parsing `category`.
+
+The `category` field stores the capitalized severity label so the existing render pipeline (which displays `entry.category` as a chip) "just works" for violation entries without per-type rendering branches.
+
+### Violation indexing and restore semantics
+
+`createLedgerEntry` for `type === "violation"` pipelines `ZADD ledger:violations:by-rule:{ruleId}` alongside the standard `SET ledger:{id}` + `ZADD ledger:index` writes. Reads via `getViolationsByRule(ruleId, limit?)` (rev-ZRANGE) and `getViolationCountsForRules(ruleIds)` (parallel ZCARDs).
+
+`deleteLedgerEntry` removes the per-rule index entry in the same pipeline as the primary delete. **`restoreFromTrash` does NOT re-populate `ledger:violations:by-rule:{ruleId}`** — the auxiliary index is treated as orphaned-on-restore (mirrors `reactions:{noteId}` and `ritual:occurrence:*`). A restored violation will appear in `getLedgerEntries` but not in `getViolationsByRule` until manually reconciled via a new repair action (no such action exists yet — the use case is rare).
+
+### Obedience emit branching
+
+- `type === "reward"` → no obedience event. Manual log only.
+- `type === "punishment"` → `ledger_punishment` (default −10).
+- `type === "violation"` → severity-scaled `rule_violation_${severity}` (defaults −3 / −8 / −20). The `ledger_punishment` emit is intentionally suppressed for violations to prevent double-counting. Sir-tunable via `/admin/rewards` Weights tab.
+
+---
+
+## Directives (`/admin/directive`, overlay on `/`)
+
+| Key                          | Type   | TTL                                               | Description                                                                                                         |
+| ---------------------------- | ------ | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `directive:{id}`             | JSON   | none (until soft-delete)                          | `{ id, issuedBy, target, title, body?, durationSec, issuedAt, expiresAt, acknowledgedAt, completedAt, cancelledAt, state }` |
+| `directives:index`           | ZSET   | none                                              | All directive ids scored by `issuedAt`. Walked by `expireDueDirectives` and rendered as the admin history list.     |
+| `directive:active:Besho`     | STRING | `durationSec` seconds, or 24h fallback            | Single-slot sentinel — value is the active directive id. `SET` on issuance, `DEL` on completion / cancel / expire.  |
+
+`state` is `'issued'` | `'acknowledged'` | `'completed'` | `'expired'` | `'cancelled'`. Sir-only writes via `issueDirective` / `cancelDirective` / `deleteDirective` / `purgeAllDirectives`; Besho writes only via `acknowledgeDirective` / `completeDirective` (both gated by `assertWriteAllowed`). The `expireDirective` mutator is **cron-only** — page reads MUST NOT mutate state.
+
+### Single-slot guard
+
+`directive:active:Besho` is the gate. `issueDirective` reads it before pipelining the new record; if present, the call returns an error and Sir must `cancelDirective` first. The TTL is the directive's own countdown (`durationSec`) when set, or `DIRECTIVE_OPEN_ENDED_TTL_SEC = 24h` for open-ended directives — bounding the slot in case a record gets stuck in `issued` and the cron misses it. The expiry is best-effort: if the active sentinel TTL fires before the cron's `expireDueDirectives` sweep, the directive record stays in `issued` until the next sweep, but the active slot is free for new issuance immediately.
+
+### Soft-delete + restore
+
+Soft-delete via `moveToTrash` with `feature: "directives"`. **Refuses to delete a record still in `issued` or `acknowledged`** — Sir must cancel first. The active sentinel is not part of the trash payload; restored directives never re-occupy the active slot (terminal-state-only restore, by design).
+
+### Obedience emit
+
+- `completeDirective` → `directive_completed` (+5 default) at the action site.
+- `expireDirective` (cron-only) → `directive_missed` (−10 default).
+- No emit on cancel — Sir's withdrawal is not a behavioral signal.
+
+### FCM payload
+
+`data: { url: "/", kind: "directive", directiveId, title, body? }`. The `kind` field is the routing discriminant; `<FCMProvider>` foreground listener dispatches `ourspace:directive-arrived` instead of the standard PushToast when it sees `kind === "directive"`. Background notifications carry the standard banner. The `extraData` parameter on `sendNotification` is the sanctioned way to pipe `kind` + `directiveId` through (string values only — FCM rejects nested objects).
+
+---
+
+## Punishments (`/admin/punishment-timer`, overlay on `/`)
+
+| Key                           | Type   | TTL                                               | Description                                                                                              |
+| ----------------------------- | ------ | ------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `punishment:{id}`             | JSON   | none (until soft-delete)                          | `{ id, issuedBy, target, reason, durationSec, issuedAt, startsAt, endsAt, completedAt, bailedAt, cancelledAt, state, linkedLedgerId }` |
+| `punishments:index`           | ZSET   | none                                              | All punishment ids scored by `issuedAt`. Walked by `expireDuePunishments` and rendered as the admin history list. |
+| `punishment:active:Besho`     | STRING | `durationSec + PUNISHMENT_ACTIVE_TTL_BUFFER_SEC`  | Single-slot sentinel — value is the active punishment id. Buffer past `endsAt` gives the cron a window to finalize a bail without the slot reopening. |
+
+`state` is `'issued'` | `'running'` | `'completed'` | `'bailed'` | `'cancelled'`. Sir-only writes via `issuePunishment` / `cancelPunishment` / `deletePunishment` / `purgeAllPunishments`; Besho writes only via `startPunishment` / `completePunishment` / `bailPunishment` (all gated by `assertWriteAllowed`). `bailPunishment` with `reasonTag: "timeout"` is **cron-only** (the bail action skips the session check for that tag).
+
+### Single-slot guard
+
+`punishment:active:Besho` is the gate. `issuePunishment` reads it before pipelining the new record; if present, the call returns an error and Sir must `cancelPunishment` first. The TTL = `durationSec + PUNISHMENT_ACTIVE_TTL_BUFFER_SEC` (10min buffer). The buffer matters: without it, the active sentinel could expire between `endsAt` and the next cron tick that bails her, briefly opening the slot for a new issuance against an unfinalized record.
+
+### Auto-ledger writes
+
+`completePunishment` and `bailPunishment` write a `ledger:{id}` entry **inline** (not via `createLedgerEntry`):
+
+- `type: "punishment"`, `category: "Other"`, `title: reason.slice(0, 80)`.
+- `description: "Auto: completed punishment timer — ${reason}"` (completion) OR `"Auto: bailed punishment timer (${reasonTag}) — ${reason}"` (bail).
+- `linkedPunishmentId` back-reference.
+- The auto-write skips `createLedgerEntry`'s standard `ledger_punishment` obedience emit. The typed `punishment_completed` / `punishment_bailed` events at the call site are the canonical obedience signal — going through `createLedgerEntry` would double-count.
+
+The auto-created entry appears in `getLedgerEntries` like any other punishment entry. Soft-deleting it (from `/ledger`) does NOT cascade to the linked punishment record — they're independent records, and `linkedPunishmentId` is a back-reference, not a foreign-key constraint.
+
+### Soft-delete + restore
+
+Soft-delete via `moveToTrash` with `feature: "punishments"`. **Refuses to delete a record still in `issued` or `running`** — Sir must cancel first. The active sentinel is not part of the trash payload.
+
+### Obedience emit
+
+- `completePunishment` → `punishment_completed` (+2 default) at the action site.
+- `bailPunishment` → `punishment_bailed` (−20 default), regardless of `reasonTag` (`"user-bail"` / `"background-grace"` / `"timeout"`).
+- Cancel does NOT emit — Sir's withdrawal is not a behavioral signal.
+
+### FCM payload
+
+`data: { url: "/", kind: "punishment", punishmentId, title, body? }`. `bypassPresence: true` + `priority: "high"` + channel `default` (NOT `safeword`). `<FCMProvider>` foreground listener dispatches `ourspace:punishment-arrived` when it sees `kind === "punishment"`. The overlay component refetches on that event and on `useRefreshListener`.
+
+### Cross-overlay coordination
+
+`<PunishmentOverlay>` dispatches `ourspace:punishment-cleared` on terminal-state transitions (completed / bailed / cancelled). `<DirectiveDialog>` listens for that event and refetches its active state — surfacing any directive that arrived during the punishment.
 
 ---
 

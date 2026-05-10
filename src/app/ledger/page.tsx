@@ -1,21 +1,26 @@
 "use client";
 
 import {
+  Suspense,
   useActionState,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { motion, AnimatePresence } from "motion/react";
 import {
   AlertTriangle,
   ArrowLeft,
   Award,
   ChevronUp,
+  Gavel,
   Loader2,
   Plus,
+  ScrollText,
   Sparkles,
   Trash2,
   X,
@@ -28,10 +33,14 @@ import {
   purgeAllLedgerEntries,
   type LedgerEntry,
 } from "@/app/actions/ledger";
+import { getRules, type Rule } from "@/app/actions/rules";
 import {
   PUNISHMENT_CATEGORIES,
   REWARD_CATEGORIES,
+  VIOLATION_SEVERITIES,
+  VIOLATION_SEVERITY_LABEL,
   type LedgerEntryType,
+  type ViolationSeverity,
 } from "@/lib/ledger-constants";
 import { getCurrentAuthor } from "@/app/actions/auth";
 import { TITLE_BY_AUTHOR } from "@/lib/constants";
@@ -47,7 +56,7 @@ import { RichTextEditor } from "@/components/ui/rich-text-editor";
 import { MarkdownRenderer } from "@/components/ui/markdown-renderer";
 import { useKeyboardHeight } from "@/hooks/use-keyboard";
 
-type Filter = "all" | "reward" | "punishment";
+type Filter = "all" | "reward" | "punishment" | "violation";
 
 function formatDateTime(timestamp: number): string {
   return new Intl.DateTimeFormat("en-US", {
@@ -82,14 +91,32 @@ function dateInputDefault() {
   return `${byType.year}-${byType.month}-${byType.day}T${byType.hour}:${byType.minute}`;
 }
 
+// Default-export wraps the inner component in `<Suspense>` because the
+// inner reads `useSearchParams()` for the `?prefill=violation:${ruleId}`
+// deep-link from /rules. Next 16 prerender bails the whole route
+// otherwise (per AGENTS.md § 4 / SKILL.md § 1).
 export default function LedgerPage() {
+  return (
+    <Suspense fallback={null}>
+      <LedgerInner />
+    </Suspense>
+  );
+}
+
+function LedgerInner() {
+  const searchParams = useSearchParams();
+  const prefill = searchParams.get("prefill");
+
   const [entries, setEntries] = useState<LedgerEntry[]>([]);
+  const [rules, setRules] = useState<Rule[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [currentAuthor, setCurrentAuthor] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [type, setType] = useState<LedgerEntryType>("reward");
   const [filter, setFilter] = useState<Filter>("all");
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [selectedRuleId, setSelectedRuleId] = useState<string>("");
+  const [severity, setSeverity] = useState<ViolationSeverity>("moderate");
 
   const [state, action, isPending] = useActionState(createLedgerEntry, null);
   const formRef = useRef<HTMLFormElement & { reset: () => void }>(null);
@@ -100,8 +127,14 @@ export default function LedgerPage() {
   const isOffline = !connected;
 
   const handleRefresh = useCallback(async () => {
-    const list = await getLedgerEntries();
-    setTimeout(() => setEntries(list), 0);
+    const [list, ruleList] = await Promise.all([
+      getLedgerEntries(),
+      getRules(),
+    ]);
+    setTimeout(() => {
+      setEntries(list);
+      setRules(ruleList);
+    }, 0);
   }, []);
 
   // ── Keyboard height via @capacitor/keyboard ──────────────────────────────
@@ -123,9 +156,10 @@ export default function LedgerPage() {
   useRefreshListener(handleRefresh);
 
   useEffect(() => {
-    Promise.all([getLedgerEntries(), getCurrentAuthor()]).then(
-      ([list, author]) => {
+    Promise.all([getLedgerEntries(), getRules(), getCurrentAuthor()]).then(
+      ([list, ruleList, author]) => {
         setEntries(list);
+        setRules(ruleList);
         setCurrentAuthor(author);
         setIsLoading(false);
       },
@@ -134,14 +168,35 @@ export default function LedgerPage() {
 
   const isT7SEN = currentAuthor === "T7SEN";
 
+  // Prefill from /rules deep-link (`?prefill=violation:${ruleId}`).
+  // Sir-only path; gated below by `isT7SEN` before opening the form.
+  useEffect(() => {
+    if (!prefill || !isT7SEN) return;
+    if (prefill.startsWith("violation:")) {
+      const ruleId = prefill.slice("violation:".length);
+      setTimeout(() => {
+        setType("violation");
+        setSelectedRuleId(ruleId);
+        setShowForm(true);
+      }, 0);
+    }
+  }, [prefill, isT7SEN]);
+
   useEffect(() => {
     if (!state?.success) return;
     setTimeout(() => {
       formRef.current?.reset();
       setShowForm(false);
+      setSelectedRuleId("");
+      setSeverity("moderate");
       void vibrate(50, "medium");
       void hideKeyboard();
-      getLedgerEntries().then(setEntries);
+      Promise.all([getLedgerEntries(), getRules()]).then(
+        ([list, ruleList]) => {
+          setEntries(list);
+          setRules(ruleList);
+        },
+      );
     }, 0);
   }, [state]);
 
@@ -160,9 +215,17 @@ export default function LedgerPage() {
 
   const rewardCount = entries.filter((e) => e.type === "reward").length;
   const punishmentCount = entries.filter((e) => e.type === "punishment").length;
+  const violationCount = entries.filter((e) => e.type === "violation").length;
 
   const categories =
     type === "reward" ? REWARD_CATEGORIES : PUNISHMENT_CATEGORIES;
+
+  // Active rules only — completed rules can't have new violations
+  // logged against them (Sir reopens before logging if needed).
+  const activeRules = useMemo(
+    () => rules.filter((r) => r.status !== "completed"),
+    [rules],
+  );
 
   return (
     <div className="relative min-h-screen bg-background p-4 md:p-12">
@@ -187,7 +250,7 @@ export default function LedgerPage() {
               Ledger
             </h1>
             <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/40">
-              {rewardCount}✨ · {punishmentCount}⚠️
+              {rewardCount}✨ · {punishmentCount}⚠️ · {violationCount}⚖️
             </span>
           </div>
 
@@ -249,60 +312,136 @@ export default function LedgerPage() {
                   Log Entry for {TITLE_BY_AUTHOR.Besho}
                 </h2>
 
-                {/* Type toggle */}
-                <div className="flex gap-2">
-                  {(["reward", "punishment"] as LedgerEntryType[]).map((t) => (
-                    <button
-                      key={t}
-                      type="button"
-                      onClick={() => setType(t)}
-                      className={cn(
-                        "flex flex-1 items-center justify-center gap-2 rounded-xl border py-2.5 text-xs font-bold uppercase tracking-wider transition-all",
-                        type === t
-                          ? t === "reward"
-                            ? "border-primary/40 bg-primary/10 text-primary"
-                            : "border-destructive/40 bg-destructive/10 text-destructive"
-                          : "border-white/10 bg-black/20 text-muted-foreground hover:border-white/20",
-                      )}
-                    >
-                      {t === "reward" ? (
-                        <Sparkles className="h-3 w-3" />
-                      ) : (
-                        <AlertTriangle className="h-3 w-3" />
-                      )}
-                      {t}
-                    </button>
-                  ))}
+                {/* Type toggle — three options */}
+                <div className="grid grid-cols-3 gap-2">
+                  {(["reward", "punishment", "violation"] as LedgerEntryType[]).map(
+                    (t) => (
+                      <button
+                        key={t}
+                        type="button"
+                        onClick={() => setType(t)}
+                        className={cn(
+                          "flex items-center justify-center gap-1.5 rounded-xl border py-2.5 text-xs font-bold uppercase tracking-wider transition-all",
+                          type === t
+                            ? t === "reward"
+                              ? "border-primary/40 bg-primary/10 text-primary"
+                              : t === "punishment"
+                                ? "border-destructive/40 bg-destructive/10 text-destructive"
+                                : "border-amber-500/40 bg-amber-500/10 text-amber-400"
+                            : "border-white/10 bg-black/20 text-muted-foreground hover:border-white/20",
+                        )}
+                      >
+                        {t === "reward" ? (
+                          <Sparkles className="h-3 w-3" />
+                        ) : t === "punishment" ? (
+                          <AlertTriangle className="h-3 w-3" />
+                        ) : (
+                          <Gavel className="h-3 w-3" />
+                        )}
+                        {t}
+                      </button>
+                    ),
+                  )}
                 </div>
                 <input type="hidden" name="type" value={type} />
 
-                {/* Category */}
-                <div>
-                  <label
-                    htmlFor="ledger-category"
-                    className="mb-1.5 block text-[10px] font-bold uppercase tracking-widest text-muted-foreground/50"
-                  >
-                    Category *
-                  </label>
-                  <select
-                    id="ledger-category"
-                    name="category"
-                    required
-                    disabled={isPending || undefined}
-                    className={cn(
-                      "w-full rounded-xl border border-white/10 bg-black/20 px-4 py-2.5 text-sm",
-                      "outline-none focus:border-primary/40 transition-colors",
-                      "scheme-dark",
-                    )}
-                  >
-                    <option value="">Select a category…</option>
-                    {categories.map((cat) => (
-                      <option key={cat} value={cat}>
-                        {cat}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                {/* Reward / punishment branch — category dropdown */}
+                {type !== "violation" && (
+                  <div>
+                    <label
+                      htmlFor="ledger-category"
+                      className="mb-1.5 block text-[10px] font-bold uppercase tracking-widest text-muted-foreground/50"
+                    >
+                      Category *
+                    </label>
+                    <select
+                      id="ledger-category"
+                      name="category"
+                      required
+                      disabled={isPending || undefined}
+                      className={cn(
+                        "w-full rounded-xl border border-white/10 bg-black/20 px-4 py-2.5 text-sm",
+                        "outline-none focus:border-primary/40 transition-colors",
+                        "scheme-dark",
+                      )}
+                    >
+                      <option value="">Select a category…</option>
+                      {categories.map((cat) => (
+                        <option key={cat} value={cat}>
+                          {cat}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                {/* Violation branch — rule picker + severity */}
+                {type === "violation" && (
+                  <>
+                    <div>
+                      <label
+                        htmlFor="ledger-rule"
+                        className="mb-1.5 block text-[10px] font-bold uppercase tracking-widest text-muted-foreground/50"
+                      >
+                        Violated rule *
+                      </label>
+                      <select
+                        id="ledger-rule"
+                        name="ruleId"
+                        required
+                        value={selectedRuleId}
+                        onChange={(e) => setSelectedRuleId(e.target.value)}
+                        disabled={isPending || undefined}
+                        className={cn(
+                          "w-full rounded-xl border border-white/10 bg-black/20 px-4 py-2.5 text-sm",
+                          "outline-none focus:border-amber-500/40 transition-colors",
+                          "scheme-dark",
+                        )}
+                      >
+                        <option value="">Select a rule…</option>
+                        {activeRules.map((rule) => (
+                          <option key={rule.id} value={rule.id}>
+                            {rule.title}
+                          </option>
+                        ))}
+                      </select>
+                      {activeRules.length === 0 && (
+                        <p className="mt-1.5 text-[10px] font-semibold text-muted-foreground/40">
+                          No active rules. Reopen a completed rule on /rules
+                          before logging a violation.
+                        </p>
+                      )}
+                    </div>
+
+                    <div>
+                      <label className="mb-1.5 block text-[10px] font-bold uppercase tracking-widest text-muted-foreground/50">
+                        Severity *
+                      </label>
+                      <div className="grid grid-cols-3 gap-2">
+                        {VIOLATION_SEVERITIES.map((s) => (
+                          <button
+                            key={s}
+                            type="button"
+                            onClick={() => setSeverity(s)}
+                            className={cn(
+                              "rounded-xl border py-2 text-[11px] font-bold uppercase tracking-wider transition-all",
+                              severity === s
+                                ? s === "minor"
+                                  ? "border-amber-300/40 bg-amber-300/10 text-amber-300"
+                                  : s === "moderate"
+                                    ? "border-amber-500/40 bg-amber-500/10 text-amber-400"
+                                    : "border-red-500/40 bg-red-500/10 text-red-400"
+                                : "border-white/10 bg-black/20 text-muted-foreground hover:border-white/20",
+                            )}
+                          >
+                            {VIOLATION_SEVERITY_LABEL[s]}
+                          </button>
+                        ))}
+                      </div>
+                      <input type="hidden" name="severity" value={severity} />
+                    </div>
+                  </>
+                )}
 
                 {/* Title */}
                 <div>
@@ -316,7 +455,11 @@ export default function LedgerPage() {
                     id="ledger-title"
                     name="title"
                     type="text"
-                    placeholder="Brief description…"
+                    placeholder={
+                      type === "violation"
+                        ? "What happened…"
+                        : "Brief description…"
+                    }
                     required
                     disabled={isPending || undefined}
                     className={cn(
@@ -408,37 +551,41 @@ export default function LedgerPage() {
         {/* Filter tabs */}
         {!isLoading && entries.length > 0 && (
           <div className="flex items-center gap-2">
-            {(["all", "reward", "punishment"] as Filter[]).map((f) => (
-              <button
-                key={f}
-                onClick={() => setFilter(f)}
-                className={cn(
-                  "relative rounded-full px-4 py-1.5 text-xs font-bold uppercase tracking-wider transition-all",
-                  filter === f
-                    ? "text-primary-foreground"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {filter === f && (
-                  <motion.div
-                    layoutId="ledger-filter-pill"
-                    className="absolute inset-0 rounded-full bg-primary/80"
-                    transition={{
-                      type: "spring",
-                      bounce: 0.2,
-                      duration: 0.4,
-                    }}
-                  />
-                )}
-                <span className="relative z-10">
-                  {f === "all"
-                    ? "All"
-                    : f === "reward"
-                      ? "Rewards"
-                      : "Punishments"}
-                </span>
-              </button>
-            ))}
+            {(["all", "reward", "punishment", "violation"] as Filter[]).map(
+              (f) => (
+                <button
+                  key={f}
+                  onClick={() => setFilter(f)}
+                  className={cn(
+                    "relative rounded-full px-4 py-1.5 text-xs font-bold uppercase tracking-wider transition-all",
+                    filter === f
+                      ? "text-primary-foreground"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {filter === f && (
+                    <motion.div
+                      layoutId="ledger-filter-pill"
+                      className="absolute inset-0 rounded-full bg-primary/80"
+                      transition={{
+                        type: "spring",
+                        bounce: 0.2,
+                        duration: 0.4,
+                      }}
+                    />
+                  )}
+                  <span className="relative z-10">
+                    {f === "all"
+                      ? "All"
+                      : f === "reward"
+                        ? "Rewards"
+                        : f === "punishment"
+                          ? "Punishments"
+                          : "Violations"}
+                  </span>
+                </button>
+              ),
+            )}
           </div>
         )}
 
@@ -503,6 +650,37 @@ function EntryItem({
 }) {
   const [showDelete, setShowDelete] = useState(false);
   const isReward = entry.type === "reward";
+  const isViolation = entry.type === "violation";
+
+  // Tone tokens — three distinct palettes (primary / destructive /
+  // amber). Severity does NOT shift the violation card color further;
+  // severity is communicated via the chip label only. Keeps the visual
+  // language consistent with reward/punishment which also don't tier
+  // their backgrounds by category.
+  const tone = isReward
+    ? {
+        ring: "border-primary/15 bg-primary/5 hover:border-primary/25",
+        iconBg: "bg-primary/15 text-primary",
+        chipBg: "bg-primary/15 text-primary",
+        Icon: Sparkles,
+      }
+    : isViolation
+      ? {
+          ring:
+            "border-amber-500/15 bg-amber-500/5 hover:border-amber-500/25",
+          iconBg: "bg-amber-500/15 text-amber-400",
+          chipBg: "bg-amber-500/15 text-amber-400",
+          Icon: Gavel,
+        }
+      : {
+          ring:
+            "border-destructive/15 bg-destructive/5 hover:border-destructive/25",
+          iconBg: "bg-destructive/15 text-destructive",
+          chipBg: "bg-destructive/15 text-destructive",
+          Icon: AlertTriangle,
+        };
+
+  const Icon = tone.Icon;
 
   return (
     <motion.div
@@ -511,25 +689,17 @@ function EntryItem({
       transition={{ delay: Math.min(index * 0.05, 0.3) }}
       className={cn(
         "group relative rounded-2xl border p-5 transition-colors",
-        isReward
-          ? "border-primary/15 bg-primary/5 hover:border-primary/25"
-          : "border-destructive/15 bg-destructive/5 hover:border-destructive/25",
+        tone.ring,
       )}
     >
       <div className="flex items-start gap-4">
         <div
           className={cn(
             "flex h-9 w-9 shrink-0 items-center justify-center rounded-full",
-            isReward
-              ? "bg-primary/15 text-primary"
-              : "bg-destructive/15 text-destructive",
+            tone.iconBg,
           )}
         >
-          {isReward ? (
-            <Sparkles className="h-4 w-4" />
-          ) : (
-            <AlertTriangle className="h-4 w-4" />
-          )}
+          <Icon className="h-4 w-4" />
         </div>
 
         <div className="min-w-0 flex-1">
@@ -537,13 +707,17 @@ function EntryItem({
             <span
               className={cn(
                 "rounded-full px-2 py-0.5 text-[9px] font-black uppercase tracking-wider",
-                isReward
-                  ? "bg-primary/15 text-primary"
-                  : "bg-destructive/15 text-destructive",
+                tone.chipBg,
               )}
             >
               {entry.category}
             </span>
+            {isViolation && entry.ruleSnapshot && (
+              <span className="flex items-center gap-1 rounded-full bg-white/5 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-muted-foreground/80">
+                <ScrollText className="h-2.5 w-2.5" />
+                {entry.ruleSnapshot.title}
+              </span>
+            )}
           </div>
 
           <p className="mt-1.5 text-sm font-bold text-foreground">
@@ -559,6 +733,21 @@ function EntryItem({
                 "prose-ul:my-1 prose-ol:my-1 prose-li:my-0",
               )}
             />
+          )}
+
+          {isViolation && entry.ruleSnapshot?.body && (
+            <details className="mt-2 rounded-lg border border-white/5 bg-black/20 px-3 py-2">
+              <summary className="cursor-pointer text-[10px] font-bold uppercase tracking-widest text-muted-foreground/50">
+                Rule at violation time
+              </summary>
+              <MarkdownRenderer
+                content={entry.ruleSnapshot.body}
+                className={cn(
+                  "mt-2 text-xs leading-relaxed text-muted-foreground/80",
+                  "prose-p:my-1 prose-p:last:mb-0",
+                )}
+              />
+            </details>
           )}
 
           <p className="mt-2 text-[10px] font-semibold text-muted-foreground/40">

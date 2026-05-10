@@ -14,6 +14,13 @@ export type ObedienceEventType =
   | "ritual_missed"
   | "rule_acked"
   | "rule_unacked"
+  | "rule_violation_minor"
+  | "rule_violation_moderate"
+  | "rule_violation_major"
+  | "directive_completed"
+  | "directive_missed"
+  | "punishment_completed"
+  | "punishment_bailed"
   | "permission_approved"
   | "permission_reasked"
   | "mood_checkin"
@@ -29,6 +36,13 @@ export const OBEDIENCE_EVENT_TYPES: readonly ObedienceEventType[] = [
   "ritual_missed",
   "rule_acked",
   "rule_unacked",
+  "rule_violation_minor",
+  "rule_violation_moderate",
+  "rule_violation_major",
+  "directive_completed",
+  "directive_missed",
+  "punishment_completed",
+  "punishment_bailed",
   "permission_approved",
   "permission_reasked",
   "mood_checkin",
@@ -172,11 +186,38 @@ export const DEFAULT_OBEDIENCE_WEIGHTS: ObedienceWeights = {
   ritual_missed: -3,
   rule_acked: 3,
   rule_unacked: -2,
+  /** Sir-logged rule violations. Severity-scaled. The three keys are
+   *  separate event types (not a single key with a multiplier) so they
+   *  remain individually tunable in /admin/rewards and surface as
+   *  distinct rows in the breakdown. */
+  rule_violation_minor: -3,
+  rule_violation_moderate: -8,
+  rule_violation_major: -20,
+  /** Real-time directive overlay outcomes. `directive_completed`
+   *  fires when kitten confirms completion within the countdown.
+   *  `directive_missed` fires from the timer-expire cron when the
+   *  countdown elapses without completion (or, for open-ended
+   *  directives, after the 24h fallback TTL). */
+  directive_completed: 5,
+  directive_missed: -10,
+  /** Punishment timer outcomes. `punishment_completed` fires when
+   *  kitten confirms after `endsAt` — small positive (compliance
+   *  with corrective action). `punishment_bailed` fires when she
+   *  taps Bail (two-tap), backgrounds the app past the 60s grace
+   *  window, or the cron sweeps her past `endsAt + grace` —
+   *  larger negative (defiance). The auto-created `ledger:{id}`
+   *  entry's `ledger_punishment` emit is suppressed at the
+   *  inline write site to avoid double-counting these typed events. */
+  punishment_completed: 2,
+  punishment_bailed: -20,
   permission_approved: 1,
   permission_reasked: -1,
   mood_checkin: 1,
   restraint_engaged: -10,
-  /** Auto-deducted on every new ledger punishment entry. */
+  /** Auto-deducted on every new ledger punishment entry. Violations
+   *  use the `rule_violation_*` events instead — the punishment-style
+   *  emit is suppressed for `type === "violation"` so the score isn't
+   *  double-counted. */
   ledger_punishment: -10,
   /** Manual adjustments always supply their own points value at emit
    *  time. The default of 0 here is a placeholder so the type is
@@ -254,6 +295,13 @@ export const OBEDIENCE_EVENT_LABELS: Record<ObedienceEventType, string> = {
   ritual_missed: "Ritual missed",
   rule_acked: "Rule acked",
   rule_unacked: "Rule not acked",
+  rule_violation_minor: "Rule violation (minor)",
+  rule_violation_moderate: "Rule violation (moderate)",
+  rule_violation_major: "Rule violation (major)",
+  directive_completed: "Directive completed",
+  directive_missed: "Directive missed",
+  punishment_completed: "Punishment completed",
+  punishment_bailed: "Punishment bailed",
   permission_approved: "Permission approved",
   permission_reasked: "Re-asked denied permission",
   mood_checkin: "Mood check-in",
