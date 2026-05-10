@@ -68,7 +68,19 @@ export const RichTextEditor = forwardRef<
             </TabsTrigger>
           </TabsList>
 
-          <TabsContent value="write" className="mt-0 pt-2" forceMount>
+          {/* `forceMount` keeps the textarea in the DOM so its value is
+              captured by FormData even when the user submits while
+              Preview is active (per AGENTS.md § 4). Without
+              `data-[state=inactive]:hidden`, Radix renders the Write
+              content visibly alongside Preview — `forceMount` doesn't
+              auto-hide. CSS `display:none` does NOT remove named inputs
+              from form serialization, so FormData still picks up the
+              value. */}
+          <TabsContent
+            value="write"
+            className="mt-0 pt-2 data-[state=inactive]:hidden"
+            forceMount
+          >
             <Textarea
               ref={ref}
               disabled={disabled}
