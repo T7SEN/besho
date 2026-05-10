@@ -1149,12 +1149,16 @@ function RequestItem({
             </span>
           )}
           {request.whoWith && (
-            <span className="flex items-center gap-1 rounded-full border border-violet-500/20 bg-violet-500/5 px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-violet-300/80">
+            <span
+              dir="auto"
+              className="flex items-center gap-1 rounded-full border border-violet-500/20 bg-violet-500/5 px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-violet-300/80"
+            >
               with {request.whoWith}
             </span>
           )}
           {request.protocolRef && (
             <Link
+              dir="auto"
               href={`/protocol?focus=${encodeURIComponent(request.protocolRef)}`}
               className="flex items-center gap-1 rounded-full border border-primary/20 bg-primary/5 px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-primary/80 transition-colors hover:border-primary/40 hover:bg-primary/10"
             >
@@ -1185,7 +1189,10 @@ function RequestItem({
               <p className="text-[9px] font-bold uppercase tracking-widest text-emerald-400/70">
                 Terms
               </p>
-              <p className="mt-1 whitespace-pre-wrap text-sm text-emerald-100/90">
+              <p
+                dir="auto"
+                className="mt-1 whitespace-pre-wrap text-sm text-emerald-100/90"
+              >
                 {request.terms}
               </p>
             </div>
@@ -1198,7 +1205,10 @@ function RequestItem({
                   <> · {formatRelative(request.decidedAt, now)}</>
                 )}
               </p>
-              <p className="mt-1 whitespace-pre-wrap text-sm text-foreground/80">
+              <p
+                dir="auto"
+                className="mt-1 whitespace-pre-wrap text-sm text-foreground/80"
+              >
                 {request.reply}
               </p>
             </div>
@@ -2079,7 +2089,10 @@ function AuditLogView({ requestId, now }: { requestId: string; now: number }) {
               </span>
             </div>
             {entry.terms && (
-              <p className="mt-1.5 whitespace-pre-wrap text-[11px] text-emerald-200/80">
+              <p
+                dir="auto"
+                className="mt-1.5 whitespace-pre-wrap text-[11px] text-emerald-200/80"
+              >
                 <span className="font-bold uppercase tracking-wider text-emerald-400/60">
                   Terms:
                 </span>{" "}
@@ -2087,7 +2100,10 @@ function AuditLogView({ requestId, now }: { requestId: string; now: number }) {
               </p>
             )}
             {entry.reply && (
-              <p className="mt-1.5 whitespace-pre-wrap text-[11px] text-foreground/70">
+              <p
+                dir="auto"
+                className="mt-1.5 whitespace-pre-wrap text-[11px] text-foreground/70"
+              >
                 {entry.reply}
               </p>
             )}
@@ -2402,7 +2418,7 @@ function AutoRuleCard({
               </span>
             )}
           </div>
-          <p className="mt-1.5 text-xs text-foreground/80">{summary}</p>
+          <p dir="auto" className="mt-1.5 text-xs text-foreground/80">{summary}</p>
         </div>
 
         {/* Toggle + edit + delete */}

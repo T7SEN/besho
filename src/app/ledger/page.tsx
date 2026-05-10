@@ -716,14 +716,20 @@ function EntryItem({
               {entry.category}
             </span>
             {isViolation && entry.ruleSnapshot && (
-              <span className="flex items-center gap-1 rounded-full bg-white/5 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-muted-foreground/80">
+              <span
+                dir="auto"
+                className="flex items-center gap-1 rounded-full bg-white/5 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-muted-foreground/80"
+              >
                 <ScrollText className="h-2.5 w-2.5" />
                 {entry.ruleSnapshot.title}
               </span>
             )}
           </div>
 
-          <p className="mt-1.5 text-sm font-bold text-foreground">
+          <p
+            dir="auto"
+            className="mt-1.5 text-sm font-bold text-foreground"
+          >
             {entry.title}
           </p>
 

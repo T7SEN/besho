@@ -362,7 +362,10 @@ export function PunishmentOverlay() {
               </div>
             </div>
 
-            <p className="mt-4 text-base leading-relaxed text-foreground">
+            <p
+              dir="auto"
+              className="mt-4 text-base leading-relaxed text-foreground"
+            >
               {punishment.reason}
             </p>
 
@@ -413,7 +416,10 @@ export function PunishmentOverlay() {
             <p className="text-[10px] font-bold uppercase tracking-widest text-destructive/80">
               Punishment timer running
             </p>
-            <p className="mt-2 max-w-sm text-sm text-muted-foreground">
+            <p
+              dir="auto"
+              className="mt-2 max-w-sm text-sm text-muted-foreground"
+            >
               {punishment.reason}
             </p>
           </div>
@@ -533,7 +539,10 @@ export function PunishmentOverlay() {
             <p className="truncate text-xs font-bold text-foreground">
               {accent.label}
             </p>
-            <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/60">
+            <p
+              dir="auto"
+              className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/60"
+            >
               {punishment.reason}
             </p>
           </div>

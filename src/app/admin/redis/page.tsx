@@ -235,7 +235,10 @@ function Stat({
 
 function PreBlock({ children }: { children: string }) {
   return (
-    <pre className="overflow-x-auto rounded-lg border border-border/40 bg-card/30 p-3 text-[11px] leading-relaxed">
+    <pre
+      dir="auto"
+      className="overflow-x-auto rounded-lg border border-border/40 bg-card/30 p-3 text-[11px] leading-relaxed"
+    >
       {children}
     </pre>
   );

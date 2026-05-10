@@ -216,7 +216,10 @@ export default function AdminDirectivePage() {
                     </span>
                   )}
                 </div>
-                <p className="mt-1.5 text-sm font-bold text-foreground">
+                <p
+                  dir="auto"
+                  className="mt-1.5 text-sm font-bold text-foreground"
+                >
                   {active.title}
                 </p>
                 {active.body && (
@@ -412,7 +415,10 @@ export default function AdminDirectivePage() {
                         </span>
                       )}
                     </div>
-                    <p className="mt-1 text-sm font-bold text-foreground">
+                    <p
+                      dir="auto"
+                      className="mt-1 text-sm font-bold text-foreground"
+                    >
                       {d.title}
                     </p>
                     <p className="mt-1 text-[10px] font-semibold text-muted-foreground/40">

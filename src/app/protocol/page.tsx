@@ -563,7 +563,10 @@ function DiffLineRow({ line }: { line: DiffLine }) {
     return (
       <div className="flex items-stretch border-l-2 border-emerald-500/60 bg-emerald-500/10">
         <span className="select-none px-2 py-0.5 text-emerald-400/80">+</span>
-        <span className="flex-1 whitespace-pre-wrap py-0.5 pr-3 text-emerald-200/90">
+        <span
+          dir="auto"
+          className="flex-1 whitespace-pre-wrap py-0.5 pr-3 text-emerald-200/90"
+        >
           {display}
         </span>
       </div>
@@ -573,7 +576,10 @@ function DiffLineRow({ line }: { line: DiffLine }) {
     return (
       <div className="flex items-stretch border-l-2 border-rose-500/60 bg-rose-500/10">
         <span className="select-none px-2 py-0.5 text-rose-400/80">−</span>
-        <span className="flex-1 whitespace-pre-wrap py-0.5 pr-3 text-rose-200/80 line-through decoration-rose-500/40">
+        <span
+          dir="auto"
+          className="flex-1 whitespace-pre-wrap py-0.5 pr-3 text-rose-200/80 line-through decoration-rose-500/40"
+        >
           {display}
         </span>
       </div>
@@ -584,7 +590,10 @@ function DiffLineRow({ line }: { line: DiffLine }) {
       <span className="select-none px-2 py-0.5 text-muted-foreground/30">
         &nbsp;
       </span>
-      <span className="flex-1 whitespace-pre-wrap py-0.5 pr-3 text-foreground/60">
+      <span
+        dir="auto"
+        className="flex-1 whitespace-pre-wrap py-0.5 pr-3 text-foreground/60"
+      >
         {display}
       </span>
     </div>

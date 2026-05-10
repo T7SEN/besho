@@ -298,7 +298,10 @@ export function DirectiveDialog() {
               </div>
             </div>
 
-            <h2 className="mt-4 text-lg font-bold leading-tight text-foreground">
+            <h2
+              dir="auto"
+              className="mt-4 text-lg font-bold leading-tight text-foreground"
+            >
               {directive.title}
             </h2>
 
@@ -372,7 +375,10 @@ export function DirectiveDialog() {
             </div>
 
             <div className="min-w-0 flex-1">
-              <p className="truncate text-xs font-bold text-foreground">
+              <p
+                dir="auto"
+                className="truncate text-xs font-bold text-foreground"
+              >
                 {directive.title}
               </p>
               <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/60">
@@ -452,7 +458,10 @@ export function DirectiveDialog() {
             <p className="truncate text-xs font-bold text-foreground">
               Directive completed
             </p>
-            <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/60">
+            <p
+              dir="auto"
+              className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/60"
+            >
               {directive.title}
             </p>
           </div>

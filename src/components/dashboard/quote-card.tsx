@@ -59,6 +59,7 @@ export function QuoteCard() {
               className="flex flex-col gap-3"
             >
               <p
+                dir="auto"
                 className={cn(
                   "text-lg font-medium leading-relaxed italic",
                   "text-foreground/90 whitespace-pre-wrap",
@@ -66,7 +67,10 @@ export function QuoteCard() {
               >
                 &quot;{quoteData.text}&quot;
               </p>
-              <p className="text-sm font-semibold text-primary/80">
+              <p
+                dir="auto"
+                className="text-sm font-semibold text-primary/80"
+              >
                 — {quoteData.author}
               </p>
             </motion.div>

@@ -271,12 +271,18 @@ function TierProgressBar({ weekState }: { weekState: ObedienceWeekState }) {
   return (
     <div className="mt-4">
       <div className="mb-1.5 flex items-center justify-between text-xs">
-        <span className={cn("font-semibold", color.text)}>
+        <span
+          dir="auto"
+          className={cn("font-semibold", color.text)}
+        >
           {reachedIdx >= 0
             ? `${tiers[reachedIdx].emoji ?? ""} ${tiers[reachedIdx].name}`
             : "Below Tier I"}
         </span>
-        <span className={cn("font-semibold", nextColor.text)}>
+        <span
+          dir="auto"
+          className={cn("font-semibold", nextColor.text)}
+        >
           {nextTier.emoji ?? ""} {nextTier.name}
         </span>
       </div>
@@ -295,7 +301,7 @@ function TierProgressBar({ weekState }: { weekState: ObedienceWeekState }) {
         <span className="font-semibold text-foreground">
           {ceiling - score}
         </span>{" "}
-        more pts to {nextTier.name}.
+        more pts to <span dir="auto">{nextTier.name}</span>.
       </p>
     </div>
   );
@@ -525,7 +531,10 @@ function TierCrossCelebration({
         <p className="text-center text-xs font-bold uppercase tracking-widest text-primary/80">
           New tier reached
         </p>
-        <p className="mt-1 text-center text-2xl font-bold">
+        <p
+          dir="auto"
+          className="mt-1 text-center text-2xl font-bold"
+        >
           {tier.emoji && <span className="mr-1">{tier.emoji}</span>}
           {tier.name}
         </p>
@@ -748,7 +757,7 @@ function CurrentWeekClaimSection({
           <Gift className="h-4 w-4 text-amber-400" />
           This week (test) —{" "}
           {tier.emoji && <span className="mr-1">{tier.emoji}</span>}
-          {tier.name} unlocked
+          <span dir="auto">{tier.name}</span> unlocked
         </h2>
         <p className="text-sm text-muted-foreground">
           {Math.max(0, besho.displayedScore)} pts so far. kitten can claim
@@ -944,7 +953,10 @@ function TierLadderCard({ weekState }: { weekState: ObedienceWeekState }) {
                 {tier.emoji && (
                   <span className="text-base leading-none">{tier.emoji}</span>
                 )}
-                <span className="flex-1 text-sm font-semibold">
+                <span
+                  dir="auto"
+                  className="flex-1 text-sm font-semibold"
+                >
                   {tier.name}
                 </span>
                 <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
@@ -1026,7 +1038,10 @@ function TierLadderCard({ weekState }: { weekState: ObedienceWeekState }) {
         const c = tierColorOf(idx);
         return (
           <div className={cn("mt-4 rounded-lg border px-3 py-3", c.border, c.bgSoft)}>
-            <p className={cn("text-base font-semibold", c.text)}>
+            <p
+              dir="auto"
+              className={cn("text-base font-semibold", c.text)}
+            >
               {weekState.unlockedTier.emoji ?? "🎁"}{" "}
               {weekState.unlockedTier.name} unlocked this week.
             </p>
@@ -1163,7 +1178,7 @@ function PriorWeekSection({
         <p className="text-sm text-muted-foreground">
           {Math.max(0, priorBesho.displayedScore)} pts • Unlocked{" "}
           {tier.emoji && <span className="mr-1">{tier.emoji}</span>}
-          {tier.name}. Awaiting her claim.
+          <span dir="auto">{tier.name}</span>. Awaiting her claim.
         </p>
       </section>
     );
@@ -1264,7 +1279,7 @@ function ClaimPicker({
         {Math.max(0, priorBesho.displayedScore)} pts{" "}
         {testMode ? "this week (test mode)" : "last week"} —{" "}
         {tier.emoji && <span className="mr-1">{tier.emoji}</span>}
-        {tier.name} unlocked. Pick a reward at this tier or any below.
+        <span dir="auto">{tier.name}</span> unlocked. Pick a reward at this tier or any below.
       </p>
       <p className="mb-4 text-sm italic text-muted-foreground/70">
         Pick blind. The description reveals once you commit.
@@ -1277,6 +1292,7 @@ function ClaimPicker({
         <div className="flex flex-wrap gap-2">
           {claimableTiers.map((t) => (
             <button
+              dir="auto"
               key={t.id}
               type="button"
               onClick={() => {
@@ -1465,7 +1481,7 @@ function SirClaimRow({
         <span>{formatWeekRange(claim.weekKey)}</span>
         <span>•</span>
         {claim.tierEmoji && <span>{claim.tierEmoji}</span>}
-        <span>{claim.tierName}</span>
+        <span dir="auto">{claim.tierName}</span>
         <span
           className={cn(
             "ml-auto rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider",
@@ -1588,7 +1604,7 @@ function ClaimStatusCard({
       <p className="text-sm text-muted-foreground">
         {formatWeekRange(claim.weekKey)} •{" "}
         {claim.tierEmoji && <span className="mr-1">{claim.tierEmoji}</span>}
-        {claim.tierName}
+        <span dir="auto">{claim.tierName}</span>
       </p>
       <p className="mt-2 flex items-center gap-2 text-sm font-semibold">
         {claim.rewardEmoji && (
@@ -1809,7 +1825,7 @@ function PendingClaimCard({
       <p className="text-sm text-muted-foreground">
         {formatWeekRange(claim.weekKey)} •{" "}
         {claim.tierEmoji && <span className="mr-1">{claim.tierEmoji}</span>}
-        {claim.tierName} • {claim.claimedScore} pts
+        <span dir="auto">{claim.tierName}</span> • {claim.claimedScore} pts
       </p>
       <p className="mt-2 flex items-center gap-2 text-sm font-semibold">
         {claim.rewardEmoji && (
@@ -1909,7 +1925,7 @@ function ClaimHistoryCard({ claims }: { claims: RewardClaim[] }) {
                 {c.tierEmoji && (
                   <span className="text-base leading-none">{c.tierEmoji}</span>
                 )}
-                <span>{c.tierName} —</span>
+                <span dir="auto">{c.tierName} —</span>
                 {c.rewardEmoji && (
                   <span className="text-base leading-none">{c.rewardEmoji}</span>
                 )}
@@ -1988,7 +2004,7 @@ function HistoryRow({ entry }: { entry: RewardsHistoryEntry }) {
       <div className="mt-1 flex items-center justify-between gap-2 text-xs text-muted-foreground">
         <span className="flex items-center gap-1">
           {tier?.emoji && <span>{tier.emoji}</span>}
-          <span>{tier ? tier.name : "no tier"}</span>
+          <span dir="auto">{tier ? tier.name : "no tier"}</span>
         </span>
         {claim && (
           <span className="flex items-center gap-1.5">
@@ -2166,6 +2182,7 @@ function RewardUnlockOverlay({
           initial={{ opacity: 0, y: -8 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: reduced ? 0 : 1.25, duration: 0.3 }}
+          dir="auto"
           className="text-center text-xs font-bold uppercase tracking-widest text-primary/80"
         >
           {claim.tierEmoji && (

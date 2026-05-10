@@ -1565,6 +1565,7 @@ function SimStat({
         {label}
       </p>
       <p
+        dir="auto"
         className={cn(
           "mt-0.5 truncate text-sm font-bold tabular-nums",
           highlight ? "text-foreground" : "text-muted-foreground",
@@ -1967,7 +1968,7 @@ function EventRow({
         {entry.points >= 0 ? "+" : ""}
         {entry.points}
       </span>
-      <span className="truncate">
+      <span dir="auto" className="truncate">
         {entry.type === "manual_adjust" && entry.reason
           ? entry.reason
           : (OBEDIENCE_EVENT_LABELS[entry.type] ?? entry.type)}

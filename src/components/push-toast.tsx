@@ -143,10 +143,16 @@ export function PushToast() {
               }}
               className="flex-1 text-left"
             >
-              <p className="text-sm font-bold text-foreground">
+              <p
+                dir="auto"
+                className="text-sm font-bold text-foreground"
+              >
                 {toast.payload.title}
               </p>
-              <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground/70">
+              <p
+                dir="auto"
+                className="mt-0.5 text-xs leading-relaxed text-muted-foreground/70"
+              >
                 {toast.payload.body}
               </p>
             </button>

@@ -697,7 +697,7 @@ function RitualItem({
 
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <p className="text-sm font-bold text-foreground">{ritual.title}</p>
+            <p dir="auto" className="text-sm font-bold text-foreground">{ritual.title}</p>
             <span
               className={cn(
                 "rounded-full px-2 py-0.5 text-[9px] font-black uppercase tracking-wider ring-1",
@@ -792,7 +792,10 @@ function RitualItem({
               <p className="text-[9px] font-bold uppercase tracking-widest text-muted-foreground/40">
                 {TITLE_BY_AUTHOR[ritual.owner]}&rsquo;s submission
               </p>
-              <p className="mt-1 whitespace-pre-wrap text-sm text-foreground/80">
+              <p
+                dir="auto"
+                className="mt-1 whitespace-pre-wrap text-sm text-foreground/80"
+              >
                 {ritual.todaySubmission.text}
               </p>
             </div>

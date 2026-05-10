@@ -337,7 +337,7 @@ function ActivityTabBody({ now }: { now: number }) {
                   {formatRelativeTs(r.at, now)}
                 </span>
               </div>
-              <p className="mt-1.5 text-sm font-medium">{r.message}</p>
+              <p dir="auto" className="mt-1.5 text-sm font-medium">{r.message}</p>
               {r.context && Object.keys(r.context).length > 0 && (
                 <pre className="mt-2 overflow-x-auto rounded-md bg-muted p-2 font-mono text-[10px] text-muted-foreground">
                   {JSON.stringify(r.context, null, 2)}

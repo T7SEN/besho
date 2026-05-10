@@ -219,7 +219,10 @@ export default function AdminPunishmentTimerPage() {
                     </span>
                   )}
                 </div>
-                <p className="mt-1.5 text-sm font-bold text-foreground">
+                <p
+                  dir="auto"
+                  className="mt-1.5 text-sm font-bold text-foreground"
+                >
                   {active.reason}
                 </p>
                 <p className="mt-2 text-[10px] font-semibold text-muted-foreground/40">
@@ -373,7 +376,10 @@ export default function AdminPunishmentTimerPage() {
                         {Math.round(p.durationSec / 60)} min
                       </span>
                     </div>
-                    <p className="mt-1 text-sm font-bold text-foreground">
+                    <p
+                      dir="auto"
+                      className="mt-1 text-sm font-bold text-foreground"
+                    >
                       {p.reason}
                     </p>
                     <p className="mt-1 text-[10px] font-semibold text-muted-foreground/40">

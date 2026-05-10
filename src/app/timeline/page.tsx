@@ -471,7 +471,10 @@ function MilestoneItem({
       >
         <div className="flex items-start justify-between gap-2">
           <div className="flex-1">
-            <p className="text-base font-bold leading-snug text-foreground">
+            <p
+              dir="auto"
+              className="text-base font-bold leading-snug text-foreground"
+            >
               {milestone.title}
             </p>
 

@@ -712,6 +712,7 @@ function TaskItem({
       <div className="relative z-10 min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-2">
           <p
+            dir="auto"
             className={cn(
               "text-sm font-bold",
               isCompleted

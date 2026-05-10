@@ -522,7 +522,10 @@ export default function TrashPage() {
                           by {TITLE_BY_AUTHOR[entry.deletedBy as Author]}
                         </span>
                       </div>
-                      <p className="mt-1.5 truncate text-sm font-medium">
+                      <p
+                        dir="auto"
+                        className="mt-1.5 truncate text-sm font-medium"
+                      >
                         {entry.label || entry.id}
                       </p>
                       <p className="mt-0.5 text-[10px] text-muted-foreground">
