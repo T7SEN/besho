@@ -304,9 +304,18 @@ async function updateClaimDecision(
     if (existing.status === "revoked") {
       return { error: "Revoked claims can't be re-decided." };
     }
-    // Re-decides allowed: pending → delivered/denied (initial),
-    // delivered → denied, denied → delivered (Sir changed his mind).
-    // Only revoked is terminal.
+    // Re-decides allowed:
+    //   pending  → delivered / denied  (initial decision)
+    //   delivered ⇄ denied              (Sir changed his mind)
+    //   rerolled → delivered / denied   (Sir reverses his own reroll —
+    //     either honors the originally-claimed reward after all, or
+    //     hardens the refusal into a denial). The per-week slot key
+    //     is intentionally NOT re-set when transitioning out of
+    //     rerolled — kitten may have already claimed something else
+    //     for the week. Sir manages double-claim cases via revoke
+    //     on the newer record if needed.
+    // Only `revoked` is terminal; rerolled accepts deliver/deny but
+    // can't be re-rerolled (see `rerollClaim` pending-only guard).
 
     const now = Date.now();
     const updated: RewardClaim = {
@@ -326,14 +335,22 @@ async function updateClaimDecision(
     pipeline.set(claimKey(claimId), updated);
     pipeline.zrem(CLAIMS_PENDING_KEY, claimId);
     // Audit only when this is a re-decide (existing was already
-    // decided). First decisions skip the audit since there's no
-    // prior state worth preserving.
+    // decided OR was rerolled). First decisions on a pending claim
+    // skip the audit since there's no prior state worth preserving.
     if (existing.status !== "pending") {
+      // Pick the "note" capturing the prior state: delivered/denied
+      // carry it on `sirNote`; rerolled carries it on `rerollReason`.
+      // This way the History pill's audit list shows Sir's prior
+      // reasoning even when reversing a reroll.
+      const priorNote =
+        existing.status === "rerolled"
+          ? existing.rerollReason
+          : existing.sirNote;
       const entry: ClaimAuditEntry = {
         status: existing.status,
         changedAt: now,
         changedBy: by,
-        ...(existing.sirNote && { note: existing.sirNote }),
+        ...(priorNote && { note: priorNote }),
       };
       pipeline.lpush(claimAuditKey(claimId), JSON.stringify(entry));
       pipeline.ltrim(claimAuditKey(claimId), 0, CLAIM_AUDIT_LIMIT - 1);
@@ -396,6 +413,12 @@ export async function revokeClaim(
     if (existing.status === "revoked") {
       return { error: "Already revoked." };
     }
+    if (existing.status === "rerolled") {
+      return {
+        error:
+          "Rerolled claims can't be revoked directly — deliver or deny first, then revoke if needed.",
+      };
+    }
     if (existing.status === "pending") {
       return {
         error:
@@ -446,6 +469,97 @@ export async function revokeClaim(
   } catch (err) {
     logger.error("[rewards] revoke failed", err);
     return { error: "Revoke failed." };
+  }
+}
+
+// ── Reroll ───────────────────────────────────────────────────────────────
+//
+// Sir-only third option on a pending claim — "not this one, pick again."
+// Distinct from deny (which consumes kitten's once-per-week claim slot
+// and ends the cycle) and from revoke (which annuls a prior decision).
+// Reroll DELs the per-week slot so kitten can immediately claim a
+// different reward in the same week. The original record stays in
+// history with status "rerolled" (terminal for THIS record; kitten can
+// still claim in this week).
+//
+// Allowed only on `pending` claims. Once Sir has delivered or denied,
+// he uses revoke / re-decide instead — reroll is a first-decision
+// alternative, not an undo path.
+//
+// No obedience emit. Reroll is operational, not behavioral.
+
+export async function rerollClaim(
+  claimId: string,
+  reasonRaw: string,
+): Promise<{ success?: boolean; error?: string }> {
+  const session = await getSession();
+  if (!session?.author) return { error: "Not authenticated." };
+  if (session.author !== "T7SEN") {
+    return { error: "Only Sir can reroll claims." };
+  }
+  const reason = (reasonRaw ?? "").trim();
+  if (!reason) return { error: "Reason is required." };
+  if (reason.length > SIR_NOTE_MAX) {
+    return { error: `Reason too long (max ${SIR_NOTE_MAX}).` };
+  }
+  try {
+    const existing = await redis.get<RewardClaim>(claimKey(claimId));
+    if (!existing) return { error: "Claim not found." };
+    if (existing.status !== "pending") {
+      return {
+        error:
+          existing.status === "rerolled"
+            ? "Already rerolled."
+            : "Only pending claims can be rerolled — use revoke or re-decide instead.",
+      };
+    }
+
+    const now = Date.now();
+    const updated: RewardClaim = {
+      ...existing,
+      status: "rerolled",
+      rerolledAt: now,
+      rerollReason: reason,
+      respondedAt: now,
+      respondedBy: session.author,
+    };
+
+    const pipeline = redis.pipeline();
+    pipeline.set(claimKey(claimId), updated);
+    pipeline.zrem(CLAIMS_PENDING_KEY, claimId);
+    // Free the per-week slot — kitten can immediately claim again in
+    // the same week. The new claim becomes the slot's value.
+    pipeline.del(claimByWeekKey(existing.author, existing.weekKey));
+    // Audit entry capturing the prior pending state. Mirrors the
+    // revoke pattern so the History pill reflects this transition.
+    const entry: ClaimAuditEntry = {
+      status: "pending",
+      changedAt: now,
+      changedBy: session.author,
+    };
+    pipeline.lpush(claimAuditKey(claimId), JSON.stringify(entry));
+    pipeline.ltrim(claimAuditKey(claimId), 0, CLAIM_AUDIT_LIMIT - 1);
+    await pipeline.exec();
+
+    await sendNotification(existing.author, {
+      title: "🔄 Pick another reward",
+      body: `${existing.tierName}: ${existing.rewardLabel} — ${reason}`,
+      url: "/rewards",
+    });
+
+    logger.interaction("[rewards] claim rerolled", {
+      claimId,
+      tier: existing.tierId,
+      reward: existing.rewardId,
+      weekKey: existing.weekKey,
+      reason,
+      by: session.author,
+    });
+    revalidatePath("/rewards");
+    return { success: true };
+  } catch (err) {
+    logger.error("[rewards] reroll failed", err);
+    return { error: "Reroll failed." };
   }
 }
 

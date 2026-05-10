@@ -520,7 +520,42 @@ Score-based reward system on top of `/ledger` (which stays as Sir's manual log).
 
 - Displayed score = `round(rawScore * multiplier)`. Multiplier comes from `multiplierForStreak(streakEntering, multipliers[])`. Past weeks use the frozen multiplier captured at finalize.
 - Unlocked tier = highest tier with `threshold ≤ displayedScore`.
-- Claim window: only the immediately prior week is claimable. Older lapses. `rewards:claims:by-week:*` enforces 1 claim per week.
+- Claim window: only the immediately prior week is claimable. Older lapses. `rewards:claims:by-week:*` enforces 1 claim per week — UNLESS Sir rerolls the current pending claim (`rerollClaim` DELs that key, freeing the slot).
+
+### Claim status transitions
+
+Five states with one fully-terminal endpoint (`revoked`). `rerolled` is half-terminal — it accepts deliver/deny flips but not re-reroll and not direct revoke.
+
+| From       | To          | Driver                          | Audit entry?                                              | Slot key (`rewards:claims:by-week:*`) |
+| ---------- | ----------- | ------------------------------- | --------------------------------------------------------- | ------------------------------------- |
+| pending    | delivered   | `deliverClaim`                  | No (first decision)                                       | kept                                  |
+| pending    | denied      | `denyClaim`                     | No (first decision)                                       | kept                                  |
+| pending    | rerolled    | `rerollClaim` (Sir-only)        | Yes (captures `pending`)                                  | **DEL'd** — kitten can claim again    |
+| delivered  | denied      | `denyClaim` (re-decide)         | Yes (captures `delivered` + prior `sirNote`)              | kept                                  |
+| denied     | delivered   | `deliverClaim` (re-decide)      | Yes (captures `denied` + prior `sirNote`)                 | kept                                  |
+| rerolled   | delivered   | `deliverClaim` (Sir reverses reroll)  | Yes (captures `rerolled` + prior `rerollReason`)    | **NOT re-set** — see note below       |
+| rerolled   | denied      | `denyClaim` (Sir hardens reroll into deny) | Yes (captures `rerolled` + prior `rerollReason`)| **NOT re-set** — see note below       |
+| delivered  | revoked     | `revokeClaim`                   | Yes (captures `delivered`)                                | kept                                  |
+| denied     | revoked     | `revokeClaim`                   | Yes (captures `denied`)                                   | kept                                  |
+| (anywhere) | rerolled    | refused after pending           | —                                                         | —                                     |
+| rerolled   | revoked     | refused — deliver/deny first, then revoke | —                                               | —                                     |
+| revoked    | (any)       | refused (terminal)              | —                                                         | —                                     |
+
+**Reroll vs deny vs revoke distinction:**
+- **deny** ends kitten's week — she got nothing, slot consumed.
+- **reroll** is a redirect — Sir says "not this, pick again." Slot is freed; kitten can claim a different reward from her earned tier immediately. The original record stays as `rerolled` with `rerollReason` captured for audit.
+- **revoke** annuls a *prior* decision (delivered or denied). Terminal. Captures `revokeReason`.
+- **rerolled re-decided** = Sir reversed his own reroll. The original claim flips to delivered or denied via the standard re-decide path. The audit row captures the prior `rerolled` state and carries `rerollReason` as the `note`.
+
+**Why the slot is NOT re-set on rerolled → delivered/denied:** when Sir rerolled, the slot was DEL'd, and kitten may have already claimed something else in the same week. Re-setting the slot to the (now-delivered/denied) original would orphan kitten's newer claim record from the by-week lookup. The cleaner model: leave the slot alone; if Sir wants to prevent double-rewarding, he revokes the newer record explicitly. Both records remain in history.
+
+Reroll fires no obedience event (operational, not behavioral). Same as cancel on directives / punishments. A follow-up rerolled → delivered/denied flip also emits no extra event — claim decisions are not obedience-scored directly.
+
+### The "History N×" pill
+
+Decorated on `RewardClaim` at fetch time via `auditCount = LLEN reward:claim:audit:{id}`. Renders in the UI whenever > 0. Counts every transition that wrote to the audit log per the table above. First decisions (pending → delivered / denied) write no audit, so a freshly delivered claim shows no pill. A rerolled or revoked claim shows "History 1×" (the terminal transition wrote one entry). A claim that flipped delivered → denied → revoked shows "History 2×".
+
+The pill is intentionally neutral — it counts the audit log, not "Sir changed his mind." The earlier label "Changed N×" implied the latter and was misleading for rerolls and revokes; renamed to "History N×" for clarity.
 
 ### Finalization
 

@@ -114,7 +114,8 @@ export type ClaimStatus =
   | "pending"
   | "delivered"
   | "denied"
-  | "revoked";
+  | "revoked"
+  | "rerolled";
 
 export interface RewardClaim {
   id: string;
@@ -141,6 +142,14 @@ export interface RewardClaim {
    *  carries the timestamp. Re-revoking is a no-op. */
   revokedAt?: number;
   revokeReason?: string;
+  /** Set when Sir rerolls a pending claim — "not this one, pick
+   *  again." Status is "rerolled" (terminal for this record). The
+   *  per-week claim slot `claim:by-week:Besho:{weekKey}` is DEL'd in
+   *  the same pipeline so kitten can immediately claim a different
+   *  reward in the same week. Reroll is only allowed on pending
+   *  claims — see `rerollClaim` in `src/app/actions/rewards.ts`. */
+  rerolledAt?: number;
+  rerollReason?: string;
   /** Set when Besho confirms receipt of a delivered reward. Optional
    *  thank-you note is captured. Status remains "delivered" — ack is
    *  a parallel field, not a new state. */

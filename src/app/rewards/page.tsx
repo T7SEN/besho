@@ -30,6 +30,7 @@ import {
   claimReward,
   denyClaim,
   deliverClaim,
+  rerollClaim,
   getClaimAudit,
   getLifetimeStats,
   getRewardsBundle,
@@ -94,6 +95,7 @@ const CLAIM_STATUS_LABEL: Record<ClaimStatus, string> = {
   delivered: "Delivered",
   denied: "Denied",
   revoked: "Revoked",
+  rerolled: "Rerolled",
 };
 
 const CLAIM_STATUS_TEXT_CLASS: Record<ClaimStatus, string> = {
@@ -101,6 +103,10 @@ const CLAIM_STATUS_TEXT_CLASS: Record<ClaimStatus, string> = {
   delivered: "text-emerald-400",
   denied: "text-rose-400",
   revoked: "text-rose-500",
+  // Violet — distinct from deny/revoke (rose tones) so the user
+  // immediately sees "this wasn't a refusal, Sir asked for a different
+  // pick." Same hue family the History pill uses for visual continuity.
+  rerolled: "text-violet-400",
 };
 
 // ── Visual helpers ───────────────────────────────────────────────────────
@@ -1753,7 +1759,10 @@ function ClaimAuditChip({ claim }: { claim: RewardClaim }) {
         className="rounded-full border border-violet-400/40 bg-violet-400/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-violet-400 transition-colors hover:bg-violet-400/20"
         aria-expanded={open}
       >
-        {busy ? "…" : `Changed ${claim.auditCount}×`}
+        {/* Renamed from "Changed N×" — the audit log counts every
+            state transition (re-decide, revoke, reroll), not just
+            decision flips. "History" is neutral and accurate. */}
+        {busy ? "…" : `History ${claim.auditCount}×`}
       </button>
       {open && entries && entries.length > 0 && (
         <ul className="mt-2 w-full space-y-1 rounded-lg border border-border/40 bg-card/40 p-2 text-xs">
@@ -1797,17 +1806,28 @@ function PendingClaimCard({
   onRefresh: () => Promise<void>;
 }) {
   const [note, setNote] = useState("");
-  const [busy, setBusy] = useState<"deliver" | "deny" | null>(null);
+  const [busy, setBusy] = useState<"deliver" | "deny" | "reroll" | null>(
+    null,
+  );
   const [localError, setLocalError] = useState<string | null>(null);
 
-  const submit = async (decision: "deliver" | "deny") => {
+  const submit = async (decision: "deliver" | "deny" | "reroll") => {
+    // Reroll requires a reason — block client-side too so Sir doesn't
+    // round-trip just to see "Reason is required" from the server.
+    // Deliver / deny notes remain optional.
+    if (decision === "reroll" && !note.trim()) {
+      setLocalError("Reason is required to reroll. Tell kitten why.");
+      return;
+    }
     setBusy(decision);
     setLocalError(null);
     void vibrate(40, "medium");
     const result =
       decision === "deliver"
         ? await deliverClaim(claim.id, note || undefined)
-        : await denyClaim(claim.id, note || undefined);
+        : decision === "deny"
+          ? await denyClaim(claim.id, note || undefined)
+          : await rerollClaim(claim.id, note.trim());
     setBusy(null);
     if (result.error) {
       setLocalError(result.error);
@@ -1845,7 +1865,7 @@ function PendingClaimCard({
       <textarea
         value={note}
         onChange={(e) => setNote(e.target.value)}
-        placeholder="Optional note (kitten will see this)"
+        placeholder="Note — optional for deliver/deny, required for reroll"
         rows={2}
         maxLength={500}
         dir="auto"
@@ -1871,6 +1891,20 @@ function PendingClaimCard({
             <CheckCircle2 className="h-3.5 w-3.5" />
           )}
           Deliver
+        </button>
+        <button
+          type="button"
+          onClick={() => void submit("reroll")}
+          disabled={busy !== null}
+          title="Ask kitten to pick a different reward — frees her claim slot for this week."
+          className="flex flex-1 items-center justify-center gap-1.5 rounded-full bg-violet-500/80 px-3 py-2 text-xs font-bold uppercase tracking-wider text-white transition-opacity active:scale-95 disabled:opacity-60"
+        >
+          {busy === "reroll" ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <RefreshCw className="h-3.5 w-3.5" />
+          )}
+          Reroll
         </button>
         <button
           type="button"
