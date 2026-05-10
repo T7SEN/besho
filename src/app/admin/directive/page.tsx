@@ -275,6 +275,7 @@ export default function AdminDirectivePage() {
               Title *
             </label>
             <input
+              dir="auto"
               id="directive-title"
               name="title"
               type="text"

@@ -316,6 +316,7 @@ function BulkDecideEditor({
           <div className="mt-2 grid gap-2 md:grid-cols-3">
             <Field label="Category">
               <select
+                dir="auto"
                 value={denyCategory}
                 onChange={(e) =>
                   setDenyCategory(e.target.value as PermissionCategory)
@@ -331,6 +332,7 @@ function BulkDecideEditor({
             </Field>
             <Field label="Reason (optional)">
               <select
+                dir="auto"
                 value={denyReason}
                 onChange={(e) =>
                   setDenyReason(
@@ -436,6 +438,7 @@ function AutoRulesEditor({
         a parse or schema error aborts the whole write.
       </p>
       <textarea
+        dir="auto"
         value={text}
         onChange={(e) => setText(e.target.value)}
         spellCheck={false}
@@ -524,6 +527,7 @@ function QuotasEditor({
         cap. <code>maxPending</code> is optional; omit for no cap.
       </p>
       <textarea
+        dir="auto"
         value={text}
         onChange={(e) => setText(e.target.value)}
         spellCheck={false}
@@ -641,6 +645,7 @@ function AutoRuleSimulator({ bundle }: { bundle: PermissionsAdminBundle }) {
         <div className="grid gap-3 md:grid-cols-3">
           <Field label="Category">
             <select
+              dir="auto"
               value={category}
               onChange={(e) =>
                 setCategory(e.target.value as PermissionCategory | "")

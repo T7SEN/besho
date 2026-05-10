@@ -355,6 +355,7 @@ function LedgerInner() {
                       Category *
                     </label>
                     <select
+                      dir="auto"
                       id="ledger-category"
                       name="category"
                       required
@@ -386,6 +387,7 @@ function LedgerInner() {
                         Violated rule *
                       </label>
                       <select
+                        dir="auto"
                         id="ledger-rule"
                         name="ruleId"
                         required
@@ -452,6 +454,7 @@ function LedgerInner() {
                     Title *
                   </label>
                   <input
+                    dir="auto"
                     id="ledger-title"
                     name="title"
                     type="text"

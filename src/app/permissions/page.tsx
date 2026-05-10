@@ -1285,6 +1285,7 @@ function RequestItem({
                     Terms (optional)
                   </label>
                   <input
+                    dir="auto"
                     id={`terms-${request.id}`}
                     type="text"
                     placeholder="e.g. only this weekend, max $30…"
@@ -1562,6 +1563,7 @@ function RequestForm({
               Category
             </label>
             <select
+              dir="auto"
               id="permission-category"
               name="category"
               value={category}
@@ -1642,6 +1644,7 @@ function RequestForm({
               Who with? *
             </label>
             <input
+              dir="auto"
               id="permission-whowith"
               name="whoWith"
               type="text"
@@ -1668,6 +1671,7 @@ function RequestForm({
               Reference protocol section (optional)
             </label>
             <select
+              dir="auto"
               id="permission-protocolref"
               name="protocolRef"
               defaultValue=""
@@ -2588,6 +2592,7 @@ function AutoRuleEditor({
       </p>
       <div className="mb-3 space-y-2">
         <select
+          dir="auto"
           value={category}
           onChange={(e) =>
             setCategory(e.target.value as PermissionCategory | "")
@@ -2616,6 +2621,7 @@ function AutoRuleEditor({
         />
 
         <input
+          dir="auto"
           type="text"
           value={keywordsStr}
           onChange={(e) => setKeywordsStr(e.target.value)}
@@ -2643,6 +2649,7 @@ function AutoRuleEditor({
             Auto-applied terms (optional)
           </p>
           <input
+            dir="auto"
             type="text"
             value={terms}
             onChange={(e) => setTerms(e.target.value)}
@@ -2697,6 +2704,7 @@ function AutoRuleEditor({
           Reply (optional)
         </p>
         <input
+          dir="auto"
           type="text"
           value={reply}
           onChange={(e) => setReply(e.target.value)}

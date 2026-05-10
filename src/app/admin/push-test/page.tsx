@@ -261,6 +261,7 @@ export default function PushTestPage() {
             Title
           </span>
           <input
+            dir="auto"
             type="text"
             name="title"
             required
@@ -277,6 +278,7 @@ export default function PushTestPage() {
             Body
           </span>
           <textarea
+            dir="auto"
             name="body"
             required
             maxLength={240}
@@ -292,6 +294,7 @@ export default function PushTestPage() {
             URL <span className="font-normal normal-case">(optional)</span>
           </span>
           <input
+            dir="auto"
             type="text"
             name="url"
             placeholder="/notes"

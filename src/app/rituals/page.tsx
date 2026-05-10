@@ -975,6 +975,7 @@ function SubmitForm({
       <form action={action} className="mt-3 space-y-3">
         <input type="hidden" name="ritualId" value={ritualId} />
         <textarea
+          dir="auto"
           name="text"
           rows={3}
           required
@@ -1082,6 +1083,7 @@ function RitualForm({
           Title *
         </label>
         <input
+          dir="auto"
           id="ritual-title"
           name="title"
           type="text"
@@ -1128,6 +1130,7 @@ function RitualForm({
             Fulfilled by
           </label>
           <select
+            dir="auto"
             id="ritual-owner"
             name="owner"
             defaultValue={existingRitual?.owner ?? "Besho"}
@@ -1149,6 +1152,7 @@ function RitualForm({
             Cadence
           </label>
           <select
+            dir="auto"
             id="ritual-cadence"
             name="cadence"
             value={cadence}

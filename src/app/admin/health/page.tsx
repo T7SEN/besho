@@ -821,6 +821,7 @@ function TimezoneConverter({ now }: { now: number }) {
       <div className="grid grid-cols-[1fr_auto_1fr] items-end gap-3">
         <ConverterField label="From">
           <select
+            dir="auto"
             value={source}
             onChange={(e) => setSource(e.target.value as ZoneKey)}
             className="w-full rounded border border-border/60 bg-input/40 px-2 py-1.5 text-sm focus:border-primary focus:outline-none"
@@ -839,6 +840,7 @@ function TimezoneConverter({ now }: { now: number }) {
         </button>
         <ConverterField label="To">
           <input
+            dir="auto"
             type="text"
             value={targetZone.label}
             readOnly

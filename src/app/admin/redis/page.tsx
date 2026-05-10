@@ -95,6 +95,7 @@ export default function RedisInspectorPage() {
               Key
             </span>
             <input
+              dir="auto"
               type="text"
               value={keyInput}
               onChange={(e) => setKeyInput(e.target.value)}

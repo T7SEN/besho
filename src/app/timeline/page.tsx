@@ -288,6 +288,7 @@ export default function TimelinePage() {
                     Title *
                   </label>
                   <input
+                    dir="auto"
                     id="timeline-title"
                     name="title"
                     type="text"

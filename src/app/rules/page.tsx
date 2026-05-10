@@ -426,6 +426,7 @@ export default function RulesPage() {
                     Rule *
                   </label>
                   <input
+                    dir="auto"
                     id="rule-title"
                     name="title"
                     type="text"

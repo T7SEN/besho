@@ -829,6 +829,7 @@ export default function NotesPage() {
             <div className="relative">
               <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/40" />
               <input
+                dir="auto"
                 type="search"
                 placeholder="Search notes…"
                 value={searchQuery}

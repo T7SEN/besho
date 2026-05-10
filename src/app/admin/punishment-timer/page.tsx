@@ -269,6 +269,7 @@ export default function AdminPunishmentTimerPage() {
               Reason *
             </label>
             <input
+              dir="auto"
               id="punishment-reason"
               name="reason"
               type="text"

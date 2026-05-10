@@ -397,6 +397,7 @@ export default function TasksPage() {
                     Task *
                   </label>
                   <input
+                    dir="auto"
                     id="task-title"
                     name="title"
                     type="text"
@@ -443,6 +444,7 @@ export default function TasksPage() {
                       Priority
                     </label>
                     <select
+                      dir="auto"
                       id="task-priority"
                       name="priority"
                       defaultValue="medium"

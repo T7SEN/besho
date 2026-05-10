@@ -104,6 +104,7 @@ export default function LoginPage() {
           >
             <div className="space-y-2">
               <input
+                dir="auto"
                 type="password"
                 name="passcode"
                 placeholder="Passcode"

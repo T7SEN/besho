@@ -481,6 +481,7 @@ function ManualAdjustEditor({
       <div className="grid gap-3 md:grid-cols-[1fr_1fr_2fr]">
         <Field label="Author">
           <select
+            dir="auto"
             value={author}
             onChange={(e) => setAuthor(e.target.value as Author)}
             className="w-full rounded border border-border/60 bg-input/40 px-2 py-1 text-sm focus:border-primary focus:outline-none"
@@ -679,6 +680,7 @@ function TierCatalogEditor({
             <div className="grid gap-3 md:grid-cols-[auto_1fr_auto_auto]">
               <Field label="Emoji">
                 <input
+                  dir="auto"
                   type="text"
                   value={tier.emoji ?? ""}
                   maxLength={TIER_EMOJI_MAX}
@@ -746,6 +748,7 @@ function TierCatalogEditor({
                   >
                     <div className="grid gap-2 md:grid-cols-[auto_1fr_auto]">
                       <input
+                        dir="auto"
                         type="text"
                         value={r.emoji ?? ""}
                         maxLength={REWARD_EMOJI_MAX}
@@ -1011,6 +1014,7 @@ function StreakSettingsEditor({
         </Field>
         <Field label="Multipliers (comma-separated)">
           <input
+            dir="auto"
             type="text"
             value={multipliersText}
             onChange={(e) => setMultipliersText(e.target.value)}
@@ -1088,6 +1092,7 @@ function StreakOverrideEditor({
       <div className="grid gap-3 md:grid-cols-[1fr_1fr_auto]">
         <Field label="Author">
           <select
+            dir="auto"
             value={author}
             onChange={(e) => setAuthor(e.target.value as Author)}
             className="w-full rounded border border-border/60 bg-input/40 px-2 py-1 text-sm focus:border-primary focus:outline-none"
@@ -1717,6 +1722,7 @@ function EventLogViewer({ initialWeekKey }: { initialWeekKey: string }) {
       <div className="grid gap-3 md:grid-cols-[auto_1fr_auto]">
         <Field label="Author">
           <select
+            dir="auto"
             value={author}
             onChange={(e) => setAuthor(e.target.value as Author)}
             className="w-full rounded border border-border/60 bg-input/40 px-2 py-1 text-sm focus:border-primary focus:outline-none"
@@ -1818,6 +1824,7 @@ function EventLogViewer({ initialWeekKey }: { initialWeekKey: string }) {
         ))}
         <div className="relative">
           <select
+            dir="auto"
             value={typeFilter}
             onChange={(e) => setTypeFilter(e.target.value as TypeFilter)}
             className="appearance-none rounded-full border border-border/40 bg-card pr-7 pl-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-muted-foreground focus:border-primary focus:outline-none"
