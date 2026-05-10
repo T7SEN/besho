@@ -41,6 +41,17 @@ interface NavItem {
   badgeKey?: keyof ReturnType<typeof useNavBadges>;
 }
 
+/** Active when the pathname matches the item's href exactly OR is a
+ *  sub-route of it (e.g. `/admin/directive` activates the `/admin`
+ *  item). The `/` home item special-cases to exact-match only — every
+ *  path technically begins with `/`, but Home should not light up on
+ *  every route. */
+function isNavItemActive(item: NavItem, pathname: string): boolean {
+  if (item.href === "/") return pathname === "/";
+  if (pathname === item.href) return true;
+  return pathname.startsWith(item.href + "/");
+}
+
 const PRIMARY_ITEMS: NavItem[] = [
   { name: "Home", href: "/", icon: Home },
   { name: "Notes", href: "/notes", icon: BookHeart },
@@ -107,7 +118,7 @@ export function FloatingNavbar() {
   );
 
   const activeMoreItem =
-    moreItems.find((item) => item.href === pathname) ?? null;
+    moreItems.find((item) => isNavItemActive(item, pathname)) ?? null;
   const moreActive = activeMoreItem !== null;
   const moreBadgeCount = moreItems.reduce(
     (sum, item) => sum + (item.badgeKey ? badges[item.badgeKey] : 0),
@@ -120,7 +131,7 @@ export function FloatingNavbar() {
       <div className="fixed bottom-6 left-1/2 z-50 -translate-x-1/2">
         <nav className="flex items-center gap-1 rounded-full border border-white/10 bg-black/60 px-3 py-2 backdrop-blur-md shadow-xl shadow-black/40">
           {PRIMARY_ITEMS.map((item) => {
-            const isActive = pathname === item.href;
+            const isActive = isNavItemActive(item, pathname);
             const Icon = item.icon;
             const badgeCount = item.badgeKey ? badges[item.badgeKey] : 0;
             const hasBadge = badgeCount > 0;
@@ -321,7 +332,7 @@ export function FloatingNavbar() {
                   <div className="grid grid-cols-2 gap-3 px-6 pb-4 sm:grid-cols-3">
                     {moreItems.map((item) => {
                       const Icon = item.icon;
-                      const isActive = pathname === item.href;
+                      const isActive = isNavItemActive(item, pathname);
                       const badgeCount = item.badgeKey
                         ? badges[item.badgeKey]
                         : 0;
