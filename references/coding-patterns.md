@@ -1419,6 +1419,122 @@ const moreItems = useMemo(
 
 ---
 
+## 31. Bilingual Text — `dir="auto"` on Every Text-Bearing Element
+
+Both authors are bilingual (Arabic + English). Every element that holds typed-by-a-user text — whether it's an input being typed into OR a display surface rendering a stored field — MUST set `dir="auto"`. The browser's BiDi algorithm uses the first strong directional character to decide RTL or LTR alignment, so Arabic content right-aligns automatically and English left-aligns, with no toggle, no user setting, and no JS.
+
+This is not a "sometimes" rule. New components that render user text MUST include `dir="auto"` from the first commit. New input primitives MUST default to it like the shadcn `<Textarea>` does.
+
+### Where to apply
+
+**Inputs (where the user types):**
+
+- All raw `<input>` of types `text` / `search` / `email` / `url` / `tel` / `password` / no-type.
+- All raw `<textarea>`.
+- All raw `<select>`.
+
+**Display surfaces (where user-entered text renders):**
+
+- Any `<p>`, `<span>`, `<div>`, `<h1>…<h6>`, etc. whose content includes a user-supplied field. Common field names: `.title`, `.body`, `.description`, `.content`, `.text`, `.notes`, `.note`, `.reason`, `.reply`, `.terms`, `.message`, `.label`, `.feedback`, `.author` (when sourced from quote APIs that may be Arabic), record snapshots like `.ruleSnapshot.title`, etc.
+
+### Where it's already handled (don't duplicate)
+
+- **`<Textarea>` primitive** (`src/components/ui/textarea.tsx`) defaults to `dir="auto"`. Consumers can still override.
+- **`<MarkdownRenderer>`** (`src/components/ui/markdown-renderer.tsx`) sets `dir="auto"` on its outer `<div>`. Anything piping user text through `<MarkdownRenderer content={...} />` is fine — don't add a redundant attribute on a wrapping element.
+- **`<RichTextEditor>`** uses both: the textarea via the primitive default, the preview via `<MarkdownRenderer>`.
+
+### Where NOT to apply
+
+These are deliberately skipped — `dir="auto"` is meaningless or actively harmful:
+
+- **Browser-chromed inputs:** `<input type="checkbox">`, `radio`, `hidden`, `datetime-local`, `date`, `time`, `number`, `range`, `color`, `file`. The native UI controls layout; `dir="auto"` interferes with the chrome.
+- **Static UI labels:** "Submit", "Cancel", "Approved", category chips, status pills, timestamps, IDs, hashes, navigation item names, form `<label>` text.
+- **Constants from static catalogs:** `ADMIN_SETTINGS`, `OBEDIENCE_EVENT_LABELS`, `WEEKDAY_LABELS`, `TITLE_BY_AUTHOR`, mood/zodiac labels, default category names — these are static English (or static Arabic where i18n applies later), not user-typed.
+- **Computed strings:** counts, badges, derived metrics, formatted dates.
+
+### Convention: first attribute
+
+Place `dir="auto"` as the FIRST attribute after the tag name, before any other attributes. Keeps the diff readable across the codebase, signals intent, and makes the rule auditable with grep.
+
+### Wrong (display surface)
+
+```tsx
+<p className="mt-1 whitespace-pre-wrap text-sm text-emerald-100/90">
+  {request.terms}
+</p>
+```
+
+Arabic content here renders left-aligned because the default `<p>` direction is inherited from the document (LTR).
+
+### Right (display surface)
+
+```tsx
+<p
+  dir="auto"
+  className="mt-1 whitespace-pre-wrap text-sm text-emerald-100/90"
+>
+  {request.terms}
+</p>
+```
+
+### Wrong (input)
+
+```tsx
+<input
+  id="reason"
+  name="reason"
+  type="text"
+  required
+/>
+```
+
+### Right (input)
+
+```tsx
+<input
+  dir="auto"
+  id="reason"
+  name="reason"
+  type="text"
+  required
+/>
+```
+
+### Right (primitive default)
+
+```tsx
+function Textarea({
+  className,
+  dir = "auto",
+  ...props
+}: React.ComponentProps<"textarea">) {
+  return <textarea dir={dir} className={cn(...)} {...props} />
+}
+```
+
+The default is overridable via prop. Consumers that explicitly want LTR-only (e.g. a code-input box) can pass `dir="ltr"` and bypass auto-detection.
+
+### Form serialization is unaffected
+
+`dir="auto"` is purely a render hint. Form submissions encode the typed string as the user typed it; the server receives the same characters regardless of direction. No special handling needed in server actions.
+
+### Why `dir="auto"` and not `dir="rtl"` for Arabic
+
+`dir="rtl"` forces RTL regardless of content — Arabic AND English would both be right-aligned, which looks wrong for English text. `dir="auto"` flips per-element based on content, so the same input renders correctly whichever language the user chose.
+
+### Sweep audit
+
+When adding a new feature, grep for these patterns in your touched files:
+
+```
+grep -E "<(input|textarea|select)" path/to/file.tsx | grep -v 'dir='
+grep -E "{[a-z]+\.(title|body|description|reason|reply|terms|notes|message|label|feedback|content|text)}" path/to/file.tsx
+```
+
+Anything turning up in the first grep needs `dir="auto"` (with the type-skip exceptions above). Anything in the second grep needs review — confirm it's wrapped in `<MarkdownRenderer>` or has `dir="auto"` on the rendering element.
+
+---
+
 ## Cross-References
 
 - `src/lib/native.ts` — `isNative()` and `globalThis` cast example
