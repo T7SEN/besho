@@ -867,38 +867,41 @@ export async function adminForceRecomputeWeek(
 }
 
 // ──────────────────────────────────────────────────────────────────
-// Recovery: grant a reward retroactively.
+// Recovery: reopen the claim window for a past week.
 //
 // Use case: kitten claimed a reward for a past week, Sir denied then
-// revoked the denial (or some other terminal-state mishap), and the
-// reward never got delivered. The normal claim flow is closed — only
-// the immediately prior week is claimable, the revoked record is
-// terminal, and the per-week slot key may still be held.
+// revoked the denial (or some other deny → revoke / rerolled-then-
+// abandoned chain), and the reward never got delivered. Sir wants
+// kitten to claim again for that week — but the normal claim window
+// is closed (only immediately-prior week is claimable, the per-week
+// slot may still be held).
 //
-// This action creates a FRESH `reward:claim:{id}` record directly in
-// `delivered` state. It does NOT touch the existing claim record(s)
-// for that week — those stay as historical audit. It does NOT touch
-// the per-week slot key (intentionally — the slot's semantic is
-// "kitten's choice for the week"; this is Sir's grant, parallel).
+// This action does NOT touch the week's score, multiplier, or
+// finalize state. It does NOT pick a tier/reward — kitten goes
+// through the normal claim flow, sees the tier her frozen score
+// unlocks, picks what she wants. The action only:
+//   1. Frees the per-week claim slot (DEL `claim:by-week:*`).
+//   2. SETs `rewards:claim-reopen:Besho:{weekKey}` = ts.
+//   3. ZADDs the index ZSET so `getRewardsBundle` can enumerate.
+//   4. Fires an FCM to kitten with the week range + optional note.
 //
-// Constraints:
-//   - Sir picks the tier + reward from the current tier catalog.
-//   - The week must be a past week. Future weeks make no sense for
-//     a retroactive grant; current week kitten can claim normally.
-//   - Tier-threshold enforcement is bypassed — Sir's discretion.
+// The reopen is one-shot. When kitten claims (in `claimReward`), the
+// flag + index entry are DEL'd. If Sir denies or rerolls the new
+// claim and wants to allow another pick, he re-clicks Reopen.
+//
+// Existing claim records for that week (denied, revoked, rerolled,
+// whatever) stay in history — this action doesn't rewrite them.
 // ──────────────────────────────────────────────────────────────────
 
-export interface AdminGrantPastRewardArgs {
+export interface AdminReopenClaimWindowArgs {
   author: Author;
   weekKey: string;
-  tierId: string;
-  rewardId: string;
   sirNote?: string;
 }
 
-export async function adminGrantPastReward(
-  args: AdminGrantPastRewardArgs,
-): Promise<{ success?: boolean; error?: string; claimId?: string }> {
+export async function adminReopenClaimWindow(
+  args: AdminReopenClaimWindowArgs,
+): Promise<{ success?: boolean; error?: string }> {
   const guard = await requireSir();
   if (!guard.ok) return { error: guard.error };
   if (args.author !== "T7SEN" && args.author !== "Besho") {
@@ -916,82 +919,100 @@ export async function adminGrantPastReward(
   }
 
   try {
-    const tiers = await readTiers();
-    const tier = tiers.find((t) => t.id === args.tierId);
-    if (!tier) return { error: "Tier not found in catalog." };
-    const reward = tier.rewards.find((r) => r.id === args.rewardId);
-    if (!reward) return { error: "Reward not found in tier." };
-
-    // Read the week's actual displayedScore for the audit trail —
-    // even though we're bypassing the threshold check.
+    // Read the week state so the notification can reference what
+    // tier she has access to. Doesn't mutate anything.
     const score = await computeWeekScore(args.author, args.weekKey);
 
-    const now = Date.now();
-    const id = crypto.randomUUID();
-    const claim: RewardClaim = {
-      id,
-      author: args.author,
-      weekKey: args.weekKey,
-      tierId: tier.id,
-      tierName: tier.name,
-      ...(tier.emoji && { tierEmoji: tier.emoji }),
-      rewardId: reward.id,
-      rewardLabel: reward.label,
-      ...(reward.body && { rewardBody: reward.body }),
-      ...(reward.emoji && { rewardEmoji: reward.emoji }),
-      status: "delivered",
-      requestedAt: now,
-      respondedAt: now,
-      respondedBy: guard.session.author,
-      ...(note.length > 0 && { sirNote: note }),
-      // Snapshot the score at grant time. Threshold-bypass is
-      // surfaced by `claimedScore < claimedTierThreshold`.
-      claimedScore: score.displayedScore,
-      claimedTierThreshold: tier.threshold,
-    };
+    // ── Overwrite cleanup ────────────────────────────────────────
+    //
+    // The user explicitly asked for "overwrite" semantics — when Sir
+    // reopens a week, the existing claim records for that week
+    // should NOT linger in "Last week's claim" / "Recent decisions"
+    // / "Score history." Walk the by-author claim ZSET, find every
+    // record whose `weekKey` matches the target, and hard-delete
+    // them along with their audit lists + nudge sentinels + pending
+    // ZSET membership.
+    //
+    // Trade-off: this loses the audit trail of the prior denied /
+    // revoked / rerolled records. The doc note "Reward claims are
+    // append-only" no longer holds for this specific path. Documented
+    // in `references/anti-hallucination.md`.
+    let cleanedRecords = 0;
+    try {
+      const allIds = ((await redis.zrange<unknown[]>(
+        `rewards:claims:by-author:${args.author}`,
+        0,
+        -1,
+      )) ?? []).map(String);
+      if (allIds.length > 0) {
+        const records =
+          (await redis.mget<RewardClaim[]>(
+            ...allIds.map((id) => `reward:claim:${id}`),
+          )) ?? [];
+        const idsToDelete = allIds.filter(
+          (_id, i) => records[i] && records[i].weekKey === args.weekKey,
+        );
+        if (idsToDelete.length > 0) {
+          const cleanup = redis.pipeline();
+          for (const id of idsToDelete) {
+            cleanup.del(`reward:claim:${id}`);
+            cleanup.zrem(`rewards:claims:by-author:${args.author}`, id);
+            cleanup.zrem("rewards:claims:pending", id);
+            cleanup.del(`reward:claim:audit:${id}`);
+            cleanup.del(`reward:claim:nudge-sent:${id}`);
+          }
+          await cleanup.exec();
+          cleanedRecords = idsToDelete.length;
+        }
+      }
+    } catch (err) {
+      // Best-effort. If cleanup fails, the reopen still proceeds —
+      // kitten can claim afresh, but stale records may linger in
+      // the views. Sir can re-run the action to retry cleanup.
+      logger.warn("[admin] reopen cleanup partial-fail", { err });
+    }
 
+    const now = Date.now();
     const pipeline = redis.pipeline();
-    pipeline.set(`reward:claim:${id}`, claim);
-    pipeline.zadd(`rewards:claims:by-author:${args.author}`, {
+    pipeline.del(`rewards:claims:by-week:${args.author}:${args.weekKey}`);
+    pipeline.set(
+      `rewards:claim-reopen:${args.author}:${args.weekKey}`,
+      String(now),
+    );
+    pipeline.zadd(`rewards:claim-reopen:index:${args.author}`, {
       score: now,
-      member: id,
+      member: args.weekKey,
     });
-    // Skip CLAIMS_PENDING_KEY (it's delivered, not pending).
-    // Skip claim:by-week — intentional. This is a parallel admin
-    // grant, not kitten's choice. Existing records for that week
-    // (denied, revoked, rerolled, whatever) stay as history.
     await pipeline.exec();
 
-    // Notify kitten with celebratory wording — this isn't a normal
-    // delivery, it's a make-good.
     try {
       await sendNotification(args.author, {
-        title: "🎁 Reward granted retroactively",
-        body: note.length > 0
-          ? `${tier.name}: ${reward.label} — ${note}`
-          : `${tier.name}: ${reward.label}`,
+        title: "🎁 Claim window reopened",
+        body:
+          note.length > 0
+            ? `Pick a reward for that week — ${note}`
+            : "Pick a reward for that week. Your tier is unlocked.",
         url: "/rewards",
       });
     } catch (err) {
-      logger.error("[admin] retroactive grant notify failed", err, {
-        claimId: id,
+      logger.error("[admin] reopen notify failed", err, {
+        weekKey: args.weekKey,
       });
     }
 
-    logger.interaction("[admin] retroactive reward granted", {
+    logger.interaction("[admin] claim window reopened", {
       by: guard.session.author,
       author: args.author,
       weekKey: args.weekKey,
-      tierId: tier.id,
-      rewardId: reward.id,
-      claimId: id,
+      displayedScore: score.displayedScore,
+      cleanedRecords,
       note: note.length > 0 ? note : undefined,
     });
     revalidatePath("/admin/rewards");
     revalidatePath("/rewards");
-    return { success: true, claimId: id };
+    return { success: true };
   } catch (err) {
-    logger.error("[admin] retroactive grant failed", err);
-    return { error: "Grant failed." };
+    logger.error("[admin] reopen claim window failed", err);
+    return { error: "Reopen failed." };
   }
 }

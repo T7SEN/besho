@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import {
   ArrowLeft,
@@ -22,7 +22,7 @@ import {
   adminPurgeTestClaims,
   adminSetStreakRaw,
   adminForceRecomputeWeek,
-  adminGrantPastReward,
+  adminReopenClaimWindow,
   getObedienceAdminSnapshot,
   getObedienceEventLog,
   getTestModeState,
@@ -201,10 +201,7 @@ export default function AdminRewardsPage() {
 
           <TabsContent value="recovery" className="space-y-6">
             <ForceRecomputeWeekEditor onSaved={fetchSnapshot} />
-            <GrantPastRewardEditor
-              tiers={snapshot.tiers}
-              onSaved={fetchSnapshot}
-            />
+            <ReopenClaimWindowEditor onSaved={fetchSnapshot} />
           </TabsContent>
         </Tabs>
       )}
@@ -2130,12 +2127,121 @@ function Skeleton() {
 //      explicit entry-streak. Use when the original finalize captured
 //      the wrong streak (e.g. first-ever week with stale streak left
 //      over from testing).
-//   2. GrantPastRewardEditor — create a fresh delivered claim record
-//      for a past week. Use when the original claim was lost to a
-//      deny → revoke chain and kitten deserves the reward anyway.
+//   2. ReopenClaimWindowEditor — re-open the claim window for a past
+//      week so kitten can claim normally (her actual frozen score
+//      drives the tier she sees; no manual tier/reward selection by
+//      Sir, no rescore, no refinalize). Use when an earlier claim was
+//      lost to deny → revoke and kitten deserves the reward.
+//
+// Both share the WeekKeyStepper — same picker shape as the Event log
+// (prev/next chevrons, current-week label, date picker that snaps to
+// the containing Sunday). Past-only — "Next" is disabled at the
+// current Sunday.
+
+/** Reusable week-key stepper. Past-only: disables "Next →" when at
+ *  the current week's Sunday so the picker can't drift into the
+ *  future. Initializes to the immediately-prior Sunday so the most
+ *  common recovery target (just-ended week) is one tap away. */
+function WeekKeyStepper({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (next: string) => void;
+}) {
+  const [currentSunday] = useState(() => computeCurrentSunday());
+  const isAtCurrent = value === currentSunday;
+  const isAtFuture = value > currentSunday;
+
+  const goPrev = () => {
+    void vibrate(15, "light");
+    onChange(addDaysCairo(value, -7));
+  };
+  const goNext = () => {
+    if (isAtCurrent || isAtFuture) return;
+    void vibrate(15, "light");
+    onChange(addDaysCairo(value, 7));
+  };
+  const goCurrent = () => {
+    if (isAtCurrent) return;
+    void vibrate(15, "light");
+    onChange(currentSunday);
+  };
+  const onDatePick = (picked: string) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(picked)) return;
+    const sunday = snapToContainingSunday(picked);
+    if (sunday === value) return;
+    void vibrate(20, "light");
+    onChange(sunday);
+  };
+
+  return (
+    <div className="flex flex-wrap items-end gap-1">
+      <div className="flex items-stretch gap-1">
+        <button
+          type="button"
+          onClick={goPrev}
+          aria-label="Previous week"
+          className="flex items-center justify-center rounded border border-border/60 bg-input/40 px-2 text-muted-foreground transition-colors hover:border-primary/40 hover:text-primary active:scale-95"
+        >
+          <ChevronLeft className="h-3.5 w-3.5" />
+        </button>
+        <div
+          className={cn(
+            "flex flex-1 items-center justify-center gap-1.5 rounded border bg-input/40 px-3 py-1.5 text-sm tabular-nums",
+            isAtCurrent
+              ? "border-primary/50 text-foreground"
+              : isAtFuture
+                ? "border-rose-500/40 text-rose-400"
+                : "border-border/60 text-muted-foreground",
+          )}
+          title={value}
+        >
+          <CalendarDays className="h-3.5 w-3.5 opacity-60" />
+          <span className="font-medium">{formatWeekLabel(value)}</span>
+          {isAtCurrent && (
+            <span className="text-[9px] font-bold uppercase tracking-wider text-primary">
+              this wk
+            </span>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={goNext}
+          disabled={isAtCurrent || isAtFuture}
+          aria-label="Next week"
+          className="flex items-center justify-center rounded border border-border/60 bg-input/40 px-2 text-muted-foreground transition-colors hover:border-primary/40 hover:text-primary active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          <ChevronRight className="h-3.5 w-3.5" />
+        </button>
+      </div>
+      <input
+        type="date"
+        aria-label="Pick any date in the target week"
+        value={value}
+        onChange={(e) => onDatePick(e.target.value)}
+        className="rounded border border-border/60 bg-input/40 px-2 py-1.5 text-xs tabular-nums focus:border-primary focus:outline-none"
+      />
+      <button
+        type="button"
+        onClick={goCurrent}
+        disabled={isAtCurrent}
+        className="rounded-full border border-border/60 px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground active:scale-95 disabled:opacity-40"
+      >
+        Today
+      </button>
+    </div>
+  );
+}
+
+/** Default-target the immediately-prior Sunday — the most common
+ *  recovery scenario (Sir is correcting the just-ended week). */
+function computePriorSunday(): string {
+  return addDaysCairo(computeCurrentSunday(), -7);
+}
 
 function ForceRecomputeWeekEditor({ onSaved }: { onSaved: () => Promise<void> }) {
-  const [weekKey, setWeekKey] = useState("");
+  const [weekKey, setWeekKey] = useState<string>(() => computePriorSunday());
   const [entryStreak, setEntryStreak] = useState("0");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -2144,10 +2250,6 @@ function ForceRecomputeWeekEditor({ onSaved }: { onSaved: () => Promise<void> })
   const submit = async () => {
     setErr(null);
     setMsg(null);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(weekKey)) {
-      setErr("Week key must be YYYY-MM-DD (a Sunday).");
-      return;
-    }
     const n = Number(entryStreak);
     if (!Number.isFinite(n) || n < 0) {
       setErr("Entry streak must be a non-negative integer.");
@@ -2190,30 +2292,27 @@ function ForceRecomputeWeekEditor({ onSaved }: { onSaved: () => Promise<void> })
         frozen multipliers, but their displayed streak-entering will shift.
         Re-run this on each subsequent week if you want a clean cascade.
       </p>
-      <div className="space-y-2">
-        <label className="block text-[10px] font-bold uppercase tracking-widest text-muted-foreground/60">
-          Week key (Sunday YYYY-MM-DD)
-        </label>
-        <input
-          dir="auto"
-          type="text"
-          value={weekKey}
-          onChange={(e) => setWeekKey(e.target.value.trim())}
-          placeholder="2026-05-03"
-          className="w-full rounded-lg border border-border/60 bg-input/50 px-3 py-2 text-sm placeholder:text-muted-foreground/60 focus:border-primary focus:outline-none"
-        />
-        <label className="block text-[10px] font-bold uppercase tracking-widest text-muted-foreground/60">
-          Entry streak (0 = first week / fresh start)
-        </label>
-        <input
-          dir="auto"
-          type="number"
-          min={0}
-          step={1}
-          value={entryStreak}
-          onChange={(e) => setEntryStreak(e.target.value)}
-          className="w-full rounded-lg border border-border/60 bg-input/50 px-3 py-2 text-sm focus:border-primary focus:outline-none"
-        />
+      <div className="space-y-3">
+        <div>
+          <label className="mb-1.5 block text-[10px] font-bold uppercase tracking-widest text-muted-foreground/60">
+            Week
+          </label>
+          <WeekKeyStepper value={weekKey} onChange={setWeekKey} />
+        </div>
+        <div>
+          <label className="mb-1.5 block text-[10px] font-bold uppercase tracking-widest text-muted-foreground/60">
+            Entry streak (0 = first week / fresh start)
+          </label>
+          <input
+            dir="auto"
+            type="number"
+            min={0}
+            step={1}
+            value={entryStreak}
+            onChange={(e) => setEntryStreak(e.target.value)}
+            className="w-full rounded-lg border border-border/60 bg-input/50 px-3 py-2 text-sm focus:border-primary focus:outline-none"
+          />
+        </div>
       </div>
       {err && (
         <p className="mt-2 rounded-lg border border-destructive/40 bg-destructive/10 p-2 text-xs text-destructive">
@@ -2238,64 +2337,25 @@ function ForceRecomputeWeekEditor({ onSaved }: { onSaved: () => Promise<void> })
   );
 }
 
-function GrantPastRewardEditor({
-  tiers,
+function ReopenClaimWindowEditor({
   onSaved,
 }: {
-  tiers: RewardTier[];
   onSaved: () => Promise<void>;
 }) {
-  const [weekKey, setWeekKey] = useState("");
-  const [tierId, setTierId] = useState(tiers[0]?.id ?? "");
-  const selectedTier = useMemo(
-    () => tiers.find((t) => t.id === tierId) ?? null,
-    [tiers, tierId],
-  );
-  const [rewardId, setRewardId] = useState(
-    selectedTier?.rewards[0]?.id ?? "",
-  );
+  const [weekKey, setWeekKey] = useState<string>(() => computePriorSunday());
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
 
-  // Reset the reward picker when tier changes. Deferred setState
-  // per § 4 pattern.
-  useEffect(() => {
-    if (!selectedTier) {
-      setTimeout(() => setRewardId(""), 0);
-      return;
-    }
-    if (!selectedTier.rewards.find((r) => r.id === rewardId)) {
-      setTimeout(
-        () => setRewardId(selectedTier.rewards[0]?.id ?? ""),
-        0,
-      );
-    }
-  }, [selectedTier, rewardId]);
-
   const submit = async () => {
     setErr(null);
     setMsg(null);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(weekKey)) {
-      setErr("Week key must be YYYY-MM-DD (a Sunday).");
-      return;
-    }
-    if (!tierId) {
-      setErr("Pick a tier.");
-      return;
-    }
-    if (!rewardId) {
-      setErr("Pick a reward.");
-      return;
-    }
     setBusy(true);
     void vibrate(40, "medium");
-    const result = await adminGrantPastReward({
+    const result = await adminReopenClaimWindow({
       author: "Besho",
       weekKey,
-      tierId,
-      rewardId,
       sirNote: note.trim() || undefined,
     });
     setBusy(false);
@@ -2303,81 +2363,50 @@ function GrantPastRewardEditor({
       setErr(result.error);
       return;
     }
-    setMsg(`Granted. Claim id: ${result.claimId}.`);
+    setMsg("Claim window reopened. Kitten can now claim a reward for that week.");
     setNote("");
     void onSaved();
   };
 
   return (
     <section className="rounded-2xl border border-border/40 bg-card p-5">
-      <h2 className="mb-2 text-sm font-semibold">
-        Grant a reward retroactively
-      </h2>
+      <h2 className="mb-2 text-sm font-semibold">Reopen a past claim window</h2>
       <p className="mb-3 text-xs text-muted-foreground">
-        Creates a fresh <code className="rounded bg-muted px-1">delivered</code>{" "}
-        claim record for a past week. Use when a claim was lost to a deny
-        → revoke chain (or similar) and kitten deserves the reward anyway.
-        Does NOT touch existing claim records for that week — those stay as
-        history. Bypasses the normal claim-window restriction AND the tier-
-        threshold check (Sir&apos;s discretion).
+        Frees kitten&apos;s claim slot for the selected week and marks the
+        window open. She&apos;ll see the week as claimable on{" "}
+        <code className="rounded bg-muted px-1">/rewards</code> and can pick
+        a reward from the tier her frozen score unlocks — same flow as the
+        normal prior-week claim. <strong>Does NOT</strong> touch the
+        week&apos;s score, multiplier, or finalize state. Existing claim
+        records (denied / revoked / etc.) stay in history; her new claim is
+        a fresh record.
       </p>
-      <div className="space-y-2">
-        <label className="block text-[10px] font-bold uppercase tracking-widest text-muted-foreground/60">
-          Week key (Sunday YYYY-MM-DD)
-        </label>
-        <input
-          dir="auto"
-          type="text"
-          value={weekKey}
-          onChange={(e) => setWeekKey(e.target.value.trim())}
-          placeholder="2026-05-03"
-          className="w-full rounded-lg border border-border/60 bg-input/50 px-3 py-2 text-sm placeholder:text-muted-foreground/60 focus:border-primary focus:outline-none"
-        />
-        <label className="block text-[10px] font-bold uppercase tracking-widest text-muted-foreground/60">
-          Tier
-        </label>
-        <select
-          dir="auto"
-          value={tierId}
-          onChange={(e) => setTierId(e.target.value)}
-          className="w-full rounded-lg border border-border/60 bg-input/50 px-3 py-2 text-sm focus:border-primary focus:outline-none"
-        >
-          {tiers.map((t) => (
-            <option key={t.id} value={t.id}>
-              {t.emoji ? `${t.emoji} ` : ""}
-              {t.name}
-            </option>
-          ))}
-        </select>
-        <label className="block text-[10px] font-bold uppercase tracking-widest text-muted-foreground/60">
-          Reward
-        </label>
-        <select
-          dir="auto"
-          value={rewardId}
-          onChange={(e) => setRewardId(e.target.value)}
-          disabled={!selectedTier}
-          className="w-full rounded-lg border border-border/60 bg-input/50 px-3 py-2 text-sm focus:border-primary focus:outline-none disabled:opacity-60"
-        >
-          {selectedTier?.rewards.map((r) => (
-            <option key={r.id} value={r.id}>
-              {r.emoji ? `${r.emoji} ` : ""}
-              {r.label}
-            </option>
-          )) ?? null}
-        </select>
-        <label className="block text-[10px] font-bold uppercase tracking-widest text-muted-foreground/60">
-          Note for kitten (optional)
-        </label>
-        <textarea
-          dir="auto"
-          value={note}
-          onChange={(e) => setNote(e.target.value)}
-          rows={2}
-          maxLength={SIR_NOTE_MAX}
-          placeholder="Optional message — appears in kitten's push notification."
-          className="w-full rounded-lg border border-border/60 bg-input/50 px-3 py-2 text-sm placeholder:text-muted-foreground/60 focus:border-primary focus:outline-none"
-        />
+      <p className="mb-3 rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-2 text-[11px] text-emerald-200/90">
+        One-shot: when kitten claims, the reopen flag clears. If you want to
+        let her pick again after that (e.g. you reject and want a re-pick),
+        click Reopen again.
+      </p>
+      <div className="space-y-3">
+        <div>
+          <label className="mb-1.5 block text-[10px] font-bold uppercase tracking-widest text-muted-foreground/60">
+            Week
+          </label>
+          <WeekKeyStepper value={weekKey} onChange={setWeekKey} />
+        </div>
+        <div>
+          <label className="mb-1.5 block text-[10px] font-bold uppercase tracking-widest text-muted-foreground/60">
+            Note for kitten (optional)
+          </label>
+          <textarea
+            dir="auto"
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            rows={2}
+            maxLength={SIR_NOTE_MAX}
+            placeholder="Optional message — appears in kitten's push notification."
+            className="w-full rounded-lg border border-border/60 bg-input/50 px-3 py-2 text-sm placeholder:text-muted-foreground/60 focus:border-primary focus:outline-none"
+          />
+        </div>
       </div>
       {err && (
         <p className="mt-2 rounded-lg border border-destructive/40 bg-destructive/10 p-2 text-xs text-destructive">
@@ -2396,7 +2425,7 @@ function GrantPastRewardEditor({
         className="mt-3 flex items-center gap-1.5 rounded-full bg-emerald-500/90 px-4 py-2 text-xs font-bold uppercase tracking-wider text-black transition-opacity active:scale-95 disabled:opacity-60"
       >
         {busy && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-        Grant reward
+        Reopen claim window
       </button>
     </section>
   );

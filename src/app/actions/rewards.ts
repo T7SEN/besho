@@ -41,6 +41,21 @@ const claimByWeekKey = (author: Author, weekKey: string) =>
  *  state taken before the next mutation; the latest state is on the
  *  claim record itself. */
 const claimAuditKey = (id: string) => `reward:claim:audit:${id}`;
+/** Per-(author, weekKey) flag set by `adminReopenClaimWindow`. When
+ *  present, `claimReward` accepts the week even if it's outside the
+ *  normal claim window (immediately-prior week, or current week in
+ *  test mode). DEL'd on successful claim — one-shot. Value is the
+ *  reopen timestamp (string), but only truthiness is consulted.
+ *  Not exported — `'use server'` files allow only async exports; the
+ *  admin action constructs the same key inline. */
+const claimReopenKey = (author: Author, weekKey: string) =>
+  `rewards:claim-reopen:${author}:${weekKey}`;
+/** ZSET index of currently-reopened weeks per author. Score = reopen
+ *  ts, member = weekKey. Lets `getRewardsBundle` enumerate active
+ *  reopen flags without SCAN. ZREM'd alongside the flag on
+ *  successful claim. Not exported (see `claimReopenKey`). */
+const claimReopenIndexKey = (author: Author) =>
+  `rewards:claim-reopen:index:${author}`;
 
 async function getSession() {
   const cookieStore = await cookies();
@@ -50,6 +65,20 @@ async function getSession() {
 }
 
 // ── Bundle for /rewards page ─────────────────────────────────────────────
+
+/** A past week that Sir reopened via `adminReopenClaimWindow`.
+ *  Kitten can claim from this week's tier (driven by her actual
+ *  frozen score) until she submits one claim — then the reopen
+ *  flag clears and this entry disappears from the bundle. */
+export interface ReopenedClaimWindow {
+  weekKey: string;
+  /** Week state — same shape as `priorBesho`, so the UI can reuse
+   *  the existing claim-card rendering. Driven by the frozen
+   *  multiplier (or live fallback for unfinalized weeks). */
+  weekState: ObedienceWeekState;
+  /** Reopen timestamp — for sort + display. */
+  reopenedAt: number;
+}
 
 export interface RewardsBundle {
   viewer: Author;
@@ -72,6 +101,10 @@ export interface RewardsBundle {
   testModeOn: boolean;
   streakThreshold: number;
   multipliers: readonly number[];
+  /** Sir-reopened past weeks. Each entry has its own claim-card.
+   *  Empty when no past-week reopens are active. Sorted newest-first
+   *  by reopen timestamp. */
+  reopenedWeeks: ReopenedClaimWindow[];
 }
 
 /** Both authors. Sir gets Besho's score view; Besho gets her own. */
@@ -126,6 +159,53 @@ export async function getRewardsBundle(): Promise<{
       pendingClaim = await readMostRecentPendingClaim();
     }
 
+    // Sir-reopened past weeks. ZRANGE with withScores gives us the
+    // reopen timestamps; we hydrate each week's state. Filter out
+    // any whose flag was already DEL'd (e.g. half-failed pipeline)
+    // so the UI doesn't render stale entries.
+    const reopenedWeeks: ReopenedClaimWindow[] = [];
+    try {
+      const indexRaw =
+        ((await redis.zrange<(string | number)[]>(
+          claimReopenIndexKey("Besho"),
+          0,
+          -1,
+          { rev: true, withScores: true },
+        )) as (string | number)[]) ?? [];
+      for (let i = 0; i < indexRaw.length; i += 2) {
+        const wk = String(indexRaw[i]);
+        const ts = Number(indexRaw[i + 1]) || 0;
+        // Verify the per-week flag still exists. The ZSET index is
+        // managed in lockstep with the flag, but a half-failed
+        // pipeline could leave stale ZSET members.
+        const flag = await redis.get<string | number>(
+          claimReopenKey("Besho", wk),
+        );
+        if (!flag) continue;
+        // Exclude current week — those go through the normal
+        // current-week flow (test mode etc.); they shouldn't show
+        // up as "reopened" in the UI.
+        if (wk >= current) continue;
+        // Exclude the immediately prior week — the standard
+        // PriorWeekSection already renders it as claimable (slot
+        // was DEL'd by the reopen). Rendering both the prior
+        // card AND a reopened card for the same week duplicates
+        // the surface. Kitten's push notification carries the
+        // "Sir reopened it" framing; the visual cue isn't
+        // strictly necessary on /rewards.
+        if (wk === prior) continue;
+        const state = await getWeekState("Besho", wk);
+        reopenedWeeks.push({
+          weekKey: wk,
+          weekState: state,
+          reopenedAt: ts,
+        });
+      }
+    } catch (err) {
+      logger.warn("[rewards] reopen-index read failed", { err });
+      // Empty list rather than failing the whole bundle.
+    }
+
     return {
       bundle: {
         viewer: session.author,
@@ -140,6 +220,7 @@ export async function getRewardsBundle(): Promise<{
         testModeOn,
         streakThreshold: threshold,
         multipliers: mults,
+        reopenedWeeks,
       },
     };
   } catch (err) {
@@ -177,7 +258,16 @@ export async function claimReward(
   // immediately prior week is claimable; older weeks lapse.
   const testMode = await getTestMode();
   const allowed = testMode ? new Set([prior, current]) : new Set([prior]);
-  if (!allowed.has(args.weekKey)) {
+  // Sir's one-shot reopen flag — when present, the week is claimable
+  // regardless of the normal window. Set by `adminReopenClaimWindow`.
+  // DEL'd on successful claim below so the window is single-use; Sir
+  // re-clicks to allow another pick if she's denied/rerolled.
+  const reopened = await redis.get<string | number>(
+    claimReopenKey("Besho", args.weekKey),
+  );
+  const reopenAllowed = !!reopened;
+
+  if (!allowed.has(args.weekKey) && !reopenAllowed) {
     if (args.weekKey >= current) {
       return {
         error: testMode
@@ -237,6 +327,13 @@ export async function claimReward(
     });
     pipeline.zadd(CLAIMS_PENDING_KEY, { score: now, member: claim.id });
     pipeline.set(claimByWeekKey("Besho", args.weekKey), claim.id);
+    // If this claim consumed a Sir-set reopen window, clear the flag
+    // + index entry so the window is one-shot. Sir re-clicks Reopen
+    // if he wants to allow another pick (e.g. after a deny/reroll).
+    if (reopenAllowed) {
+      pipeline.del(claimReopenKey("Besho", args.weekKey));
+      pipeline.zrem(claimReopenIndexKey("Besho"), args.weekKey);
+    }
     await pipeline.exec();
 
     await sendNotification("T7SEN", {

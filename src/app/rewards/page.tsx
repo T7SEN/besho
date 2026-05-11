@@ -607,6 +607,19 @@ function RewardsView({
         onRefresh={onRefresh}
       />
 
+      {/* Sir-reopened past weeks. Each renders as its own claim card —
+          kitten picks normally from the tier her frozen score unlocks.
+          One-shot: the reopen flag clears when she claims (the card
+          disappears on the next bundle fetch). */}
+      {bundle.reopenedWeeks.map((rw) => (
+        <ReopenedWeekSection
+          key={rw.weekKey}
+          weekState={rw.weekState}
+          viewer={bundle.viewer}
+          onRefresh={onRefresh}
+        />
+      ))}
+
       {isSir && bundle.pendingClaim && (
         <PendingClaimCard
           claim={bundle.pendingClaim}
@@ -1196,6 +1209,84 @@ function PriorWeekSection({
       tier={tier}
       onRefresh={onRefresh}
     />
+  );
+}
+
+// ── Reopened past week section ────────────────────────────────────────────
+//
+// Renders a claim card for a past week that Sir reopened via the
+// /admin/rewards Recovery tab. Mirrors `PriorWeekSection` shape but
+// uses Sir-reopened framing ("Reopened by Sir for …") so kitten knows
+// this is a make-good, not the regular weekly claim.
+//
+// The `ClaimPicker` uses `weekState.weekKey` to call `claimReward`,
+// which honors `rewards:claim-reopen:Besho:{weekKey}` flag set by
+// Sir's action. On successful claim, the flag clears and this section
+// disappears on the next bundle fetch.
+
+function ReopenedWeekSection({
+  weekState,
+  viewer,
+  onRefresh,
+}: {
+  weekState: ObedienceWeekState;
+  viewer: "T7SEN" | "Besho";
+  onRefresh: () => Promise<void>;
+}) {
+  const tier = weekState.unlockedTier;
+
+  if (!tier) {
+    const headline = Math.max(0, weekState.displayedScore);
+    const penalized = weekState.displayedScore < 0;
+    return (
+      <section className="rounded-2xl border border-amber-500/30 bg-amber-500/5 p-5 backdrop-blur-md shadow-xl shadow-black/30">
+        <h2 className="mb-2 flex items-center gap-2 text-sm font-semibold">
+          <Gift className="h-4 w-4 text-amber-400/80" />
+          Reopened by Sir — {formatWeekRange(weekState.weekKey)}
+        </h2>
+        <p className="text-sm text-muted-foreground">
+          {headline} pts
+          {penalized && (
+            <>
+              {" "}
+              <span className="text-rose-400">
+                (−{Math.abs(weekState.displayedScore)} penalty)
+              </span>
+            </>
+          )}
+          . No tier reached — nothing claimable.
+        </p>
+      </section>
+    );
+  }
+
+  if (viewer === "T7SEN") {
+    return (
+      <section className="rounded-2xl border border-amber-500/30 bg-amber-500/5 p-5 backdrop-blur-md shadow-xl shadow-black/30">
+        <h2 className="mb-2 flex items-center gap-2 text-sm font-semibold">
+          <Gift className="h-4 w-4 text-amber-400/80" />
+          Reopened by you — {formatWeekRange(weekState.weekKey)}
+        </h2>
+        <p className="text-sm text-muted-foreground">
+          {Math.max(0, weekState.displayedScore)} pts • Unlocked{" "}
+          {tier.emoji && <span className="mr-1">{tier.emoji}</span>}
+          <span dir="auto">{tier.name}</span>. Awaiting her claim.
+        </p>
+      </section>
+    );
+  }
+
+  return (
+    <div className="rounded-2xl border border-amber-500/30 bg-amber-500/5 p-1 shadow-xl shadow-black/30">
+      <p className="px-4 pt-3 text-[10px] font-bold uppercase tracking-widest text-amber-400/80">
+        Reopened by Sir — pick a reward
+      </p>
+      <ClaimPicker
+        priorBesho={weekState}
+        tier={tier}
+        onRefresh={onRefresh}
+      />
+    </div>
   );
 }
 
