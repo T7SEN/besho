@@ -351,3 +351,33 @@ export async function getRestraintHistory(
     return { error: "Failed to read history." };
   }
 }
+
+/**
+ * Hard-deletes the restraint history ZSET. Sir-only. The current
+ * restraint state (engaged/lifted) is stored separately and is NOT
+ * affected — this only wipes the audit trail of past transitions.
+ */
+export async function clearRestraintHistory(): Promise<{
+  success?: boolean;
+  error?: string;
+  deletedCount?: number;
+}> {
+  const guard = await requireSir();
+  if (!guard.ok) return { error: guard.error };
+  try {
+    const count = (await redis.zcard(RESTRAINT_HISTORY_KEY)) ?? 0;
+    await redis.del(RESTRAINT_HISTORY_KEY);
+    logger.interaction("[admin] restraint history cleared", {
+      by: guard.session.author,
+      deletedCount: count,
+    });
+    revalidatePath("/admin/logs");
+    return {
+      success: true,
+      deletedCount: typeof count === "number" ? count : 0,
+    };
+  } catch (err) {
+    logger.error("[admin] restraint history clear failed", err);
+    return { error: "Clear failed." };
+  }
+}

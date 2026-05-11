@@ -271,3 +271,34 @@ export async function resendNotification(
     return { error: "Re-send failed." };
   }
 }
+
+/**
+ * Hard-deletes the outbound notification audit ZSET. Sir-only. The
+ * per-user notification drawers (`notifications:{author}`) are
+ * SEPARATE and NOT affected — this only wipes the audit trail Sir
+ * uses to re-fire pushes. Each user clears their own drawer
+ * independently.
+ */
+export async function clearOutboundNotificationAudit(): Promise<{
+  success?: boolean;
+  error?: string;
+  deletedCount?: number;
+}> {
+  const guard = await requireSir();
+  if (!guard.ok) return { error: guard.error };
+  try {
+    const count = (await redis.zcard(NOTIFICATION_AUDIT_KEY)) ?? 0;
+    await redis.del(NOTIFICATION_AUDIT_KEY);
+    logger.interaction("[admin] outbound audit cleared", {
+      by: guard.session.author,
+      deletedCount: count,
+    });
+    return {
+      success: true,
+      deletedCount: typeof count === "number" ? count : 0,
+    };
+  } catch (err) {
+    logger.error("[admin] outbound audit clear failed", err);
+    return { error: "Clear failed." };
+  }
+}

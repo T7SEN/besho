@@ -265,6 +265,7 @@ src/
 │   ├── dashboard/              # Cards: Mood, Counter (with anniversary countdown), Weather, Moon, Distance, Quote, SafeWord, Birthday, TodayStrip
 │   ├── review/                 # Form, reveal card, summary panel, history drawer (Sir-only per-week delete)
 │   ├── admin/                  # PurgeButton + SummonButton + RestraintToggle — Sir-only controls (caller gates render on isT7SEN)
+│   │   └── logs/               # CopyButton, ClearTabButton, LiveToggle, SearchBar, LogEntryShell — shared building blocks for /admin/logs
 │   │                           # /admin pages live under src/app/admin/, not here
 │   └── ui/                     # shadcn primitives + RichTextEditor, MarkdownRenderer, ErrorBoundary, Sheet
 ├── hooks/                      # use-presence, use-refresh-listener, use-local-notifications, use-keyboard, use-network, use-nav-badges, use-pull-to-refresh

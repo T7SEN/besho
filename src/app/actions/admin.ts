@@ -1276,6 +1276,7 @@ import {
   getRestraintState as _getRestraintState,
   setRestraintState as _setRestraintState,
   getRestraintHistory as _getRestraintHistory,
+  clearRestraintHistory as _clearRestraintHistory,
 } from "./admin/devices";
 
 // devices bucket
@@ -1286,6 +1287,7 @@ export async function listDevices(...args: Parameters<typeof _listDevices>): Ret
 export async function getRestraintState(...args: Parameters<typeof _getRestraintState>): ReturnType<typeof _getRestraintState> { return _getRestraintState(...args); }
 export async function setRestraintState(...args: Parameters<typeof _setRestraintState>): ReturnType<typeof _setRestraintState> { return _setRestraintState(...args); }
 export async function getRestraintHistory(...args: Parameters<typeof _getRestraintHistory>): ReturnType<typeof _getRestraintHistory> { return _getRestraintHistory(...args); }
+export async function clearRestraintHistory(...args: Parameters<typeof _clearRestraintHistory>): ReturnType<typeof _clearRestraintHistory> { return _clearRestraintHistory(...args); }
 export type {
   PresenceInfo,
   PushInfo,
@@ -1430,6 +1432,7 @@ import {
   sendTestPushAction as _sendTestPushAction,
   getOutboundNotificationAudit as _getOutboundNotificationAudit,
   resendNotification as _resendNotification,
+  clearOutboundNotificationAudit as _clearOutboundNotificationAudit,
 } from "./admin/notifications";
 
 // notifications bucket
@@ -1437,6 +1440,7 @@ export async function summonKitten(...args: Parameters<typeof _summonKitten>): R
 export async function sendTestPushAction(...args: Parameters<typeof _sendTestPushAction>): ReturnType<typeof _sendTestPushAction> { return _sendTestPushAction(...args); }
 export async function getOutboundNotificationAudit(...args: Parameters<typeof _getOutboundNotificationAudit>): ReturnType<typeof _getOutboundNotificationAudit> { return _getOutboundNotificationAudit(...args); }
 export async function resendNotification(...args: Parameters<typeof _resendNotification>): ReturnType<typeof _resendNotification> { return _resendNotification(...args); }
+export async function clearOutboundNotificationAudit(...args: Parameters<typeof _clearOutboundNotificationAudit>): ReturnType<typeof _clearOutboundNotificationAudit> { return _clearOutboundNotificationAudit(...args); }
 export type {
   SummonResult,
   SendTestPushResult,
