@@ -18,12 +18,20 @@
 //   push <to> <body...>       Fire a one-off FCM.
 //   logout <besho|sir>        Force-logout the target author.
 //   status                    Read-only system snapshot.
+//   directive "<title>"       Issue / cancel / list real-time directives.
+//   punish "<reason>"         Issue / cancel / list punishment timers.
+//   rules                     List rules with their UUIDs.
+//   violation <ruleId> ...    Log a rule-violation ledger entry.
 
 import { summonCommand } from "./commands/summon.ts";
 import { restrainCommand } from "./commands/restrain.ts";
 import { pushCommand } from "./commands/push.ts";
 import { logoutCommand } from "./commands/logout.ts";
 import { statusCommand } from "./commands/status.ts";
+import { directiveCommand } from "./commands/directive.ts";
+import { punishCommand } from "./commands/punish.ts";
+import { rulesCommand } from "./commands/rules.ts";
+import { violationCommand } from "./commands/violation.ts";
 import { ApiError } from "./lib/api.ts";
 import { c, fail } from "./lib/format.ts";
 
@@ -40,6 +48,10 @@ const COMMANDS: Record<string, CommandFn> = {
   push: pushCommand,
   logout: logoutCommand,
   status: statusCommand,
+  directive: directiveCommand,
+  punish: punishCommand,
+  rules: rulesCommand,
+  violation: violationCommand,
 };
 
 function printTopLevelHelp(): void {
@@ -54,6 +66,10 @@ function printTopLevelHelp(): void {
       "  push <to> <body...>       Fire a one-off FCM.",
       "  logout <besho|sir>        Force-logout the target author.",
       "  status                    Read-only system snapshot.",
+      "  directive <title|...>     Issue / cancel / list real-time directives.",
+      "  punish <reason|...>       Issue / cancel / list punishment timers.",
+      "  rules                     List rules with their UUIDs.",
+      "  violation <ruleId> ...    Log a rule-violation ledger entry.",
       "",
       c.bold("Per-command help"),
       "  ourspace <command> --help",

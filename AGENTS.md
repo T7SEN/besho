@@ -243,7 +243,13 @@ src/
 │           ├── restrain/                    # POST {on, note?} / GET — toggle / read Besho's restraint
 │           ├── push/                        # POST — generic FCM ({to: besho/sir/both, title, body, url?, bypassPresence?})
 │           ├── logout/                      # POST {author} — bump session epoch
-│           └── status/                      # GET — presence, cron telemetry, restraint, FCM token counts
+│           ├── status/                      # GET — presence, cron telemetry, restraint, FCM token counts
+│           ├── directive/                   # POST {title, body?, durationSec?} — issue directive (single-slot); GET — active + recent
+│           │   └── cancel/                  # POST {id?} — cancel active (or specified) directive
+│           ├── punish/                      # POST {reason, durationSec} — issue punishment timer; GET — active + recent
+│           │   └── cancel/                  # POST {id?} — cancel active (or specified) punishment
+│           ├── rules/                       # GET ?status=active|pending|completed — list rules with UUIDs (lookup for violation)
+│           └── violation/                   # POST {ruleId, severity, title, description?} — log rule-violation ledger entry (severity ∈ minor/moderate/major)
 ├── components/
 │   ├── biometric-gate.tsx
 │   ├── fcm-provider.tsx

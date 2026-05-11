@@ -246,6 +246,14 @@ CLI ops log with `by: "T7SEN (cli)"` so `/admin/logs` Activity tab can visually 
 | `/api/admin/cli/push` | POST | `{ to, title, body, url?, bypassPresence? }` | Generic FCM. `to` is `T7SEN`/`Besho`/`both`. |
 | `/api/admin/cli/logout` | POST | `{ author }` | Bump session epoch for target. |
 | `/api/admin/cli/status` | GET | (none) | Read-only: presence, cron telemetry, restraint, FCM token counts. |
+| `/api/admin/cli/directive` | POST | `{ title, body?, durationSec? }` | Issue a real-time directive overlay against Besho. Single-slot (409 if active); cancel first. `durationSec` ∈ [60, 3600] or null for open-ended. Fires presence-aware FCM with `data.kind: "directive"`. |
+| `/api/admin/cli/directive` | GET | `?limit=N` | `{ active, recent }` — active directive (if any) + recent history. |
+| `/api/admin/cli/directive/cancel` | POST | `{ id? }` | Cancel active directive (omit `id`) or specified directive. Sets state → "cancelled" and clears the active sentinel. |
+| `/api/admin/cli/punish` | POST | `{ reason, durationSec }` | Issue a punishment timer. `durationSec` ∈ [60, 7200], required. Single-slot. Fires `bypassPresence: true` high-priority FCM with `data.kind: "punishment"`. |
+| `/api/admin/cli/punish` | GET | `?limit=N` | `{ active, recent }` — active punishment (if any) + recent history. |
+| `/api/admin/cli/punish/cancel` | POST | `{ id? }` | Cancel active punishment (omit `id`) or specified punishment. |
+| `/api/admin/cli/rules` | GET | `?status=pending\|active\|completed` | List rules with UUIDs. Used by `ourspace violation` to resolve `ruleId`. |
+| `/api/admin/cli/violation` | POST | `{ ruleId, severity, title, description?, timestamp? }` | Log a rule-violation ledger entry. `severity` ∈ `minor`/`moderate`/`major`. Snapshots the rule body. Fires severity-scaled `rule_violation_${severity}` obedience emit + FCM. |
 
 ### Don't propose
 

@@ -42,6 +42,17 @@ export function formatAge(ageMs: number | null): string {
   return `${Math.round(ageMs / 86_400_000)}d ago`;
 }
 
+/** Forward-looking duration formatter — for "expires in 5m". Unlike
+ *  formatAge this assumes positive input (future) and renders as a
+ *  bare duration without the "ago" suffix. */
+export function formatDuration(ms: number): string {
+  if (ms <= 0) return c.red("0s");
+  if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m`;
+  if (ms < 86_400_000) return `${Math.round(ms / 3_600_000)}h`;
+  return `${Math.round(ms / 86_400_000)}d`;
+}
+
 export function ok(msg: string): void {
   process.stdout.write(`${c.green("✓")} ${msg}\n`);
 }
