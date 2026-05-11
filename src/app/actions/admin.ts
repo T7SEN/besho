@@ -56,21 +56,53 @@ export async function getActivityFeed(
   }
 }
 
-export async function clearActivityFeed(): Promise<{
+/**
+ * Sir-only activity feed clearer. Pass a level to clear only entries
+ * at that level (e.g. just warnings); omit to clear the whole feed.
+ * Mirrors the level filter chips on `/admin/logs#activity`:
+ *   - undefined  → "Clear" on the All chip  → DEL key
+ *   - interaction → clear only interactions
+ *   - warn        → clear only warnings
+ *   - error       → clear only errors
+ *   - fatal       → clear only fatal entries
+ *
+ * Levels outside the known set are rejected at the boundary, not
+ * silently coerced — better to surface a misuse than to nuke the
+ * whole log by accident.
+ */
+export async function clearActivityFeed(
+  level?: ActivityRecord["level"],
+): Promise<{
   success?: boolean;
   error?: string;
   deletedCount?: number;
+  level?: ActivityRecord["level"];
 }> {
   const guard = await requireSir();
   if (!guard.ok) return { error: guard.error };
+  if (
+    level !== undefined &&
+    level !== "interaction" &&
+    level !== "info" &&
+    level !== "warn" &&
+    level !== "error" &&
+    level !== "fatal"
+  ) {
+    return { error: "Invalid level." };
+  }
   try {
-    const n = await clearActivity();
+    const n = await clearActivity(level);
     logger.interaction("[admin] activity cleared", {
       by: guard.session.author,
       deletedCount: n,
+      ...(level && { level }),
     });
     revalidatePath("/admin/logs");
-    return { success: true, deletedCount: n };
+    return {
+      success: true,
+      deletedCount: n,
+      ...(level && { level }),
+    };
   } catch (err) {
     logger.error("[admin] activity clear failed", err);
     return { error: "Clear failed." };

@@ -207,6 +207,21 @@ const ACTIVITY_LEVEL_FILTERS: ReadonlyArray<{
   { value: "fatal", label: "Fatal" },
 ];
 
+/** Pluralized noun rendered after the count in the Clear-confirm
+ *  button label ("Clear 12 warnings"). The "all" key yields the
+ *  whole-feed wording. */
+const CLEAR_LABEL_BY_LEVEL: Record<
+  ActivityRecord["level"] | "all",
+  string
+> = {
+  all: "activity",
+  interaction: "interactions",
+  info: "info entries",
+  warn: "warnings",
+  error: "errors",
+  fatal: "fatal entries",
+};
+
 function ActivityTabBody({
   now,
   onCountChange,
@@ -247,13 +262,24 @@ function ActivityTabBody({
     if (records) onCountChange(records.length);
   }, [records, onCountChange]);
 
+  // Level-specific clear. Scoped to the currently-selected filter
+  // chip — Clear on "All" wipes everything; Clear on "Warn" wipes
+  // only warnings; etc. The level-filtered count (NOT the search-
+  // filtered count) is what gets removed.
   const handleClear = async () => {
-    const result = await clearActivityFeed();
+    const level = levelFilter === "all" ? undefined : levelFilter;
+    const result = await clearActivityFeed(level);
     if (result.error) {
       setError(result.error);
       return;
     }
-    setRecords([]);
+    if (level === undefined) {
+      setRecords([]);
+    } else {
+      setRecords((prev) =>
+        prev ? prev.filter((r) => r.level !== level) : prev,
+      );
+    }
     setExpanded(new Set());
   };
 
@@ -273,6 +299,18 @@ function ActivityTabBody({
     });
   }, [records, levelFilter, search]);
 
+  // Level-keyed counts power the Clear button's "Clear N <kind>" label.
+  // Count is the level-only filter (ignoring search) so Sir knows
+  // exactly how many entries his next tap will destroy regardless of
+  // what's currently visible.
+  const clearCount = useMemo(() => {
+    if (!records) return 0;
+    if (levelFilter === "all") return records.length;
+    return records.filter((r) => r.level === levelFilter).length;
+  }, [records, levelFilter]);
+
+  const clearLabel = CLEAR_LABEL_BY_LEVEL[levelFilter];
+
   const toggleExpanded = (key: string) =>
     setExpanded((prev) => {
       const next = new Set(prev);
@@ -285,8 +323,8 @@ function ActivityTabBody({
     <>
       <TabToolbar
         leftLabel={`Last ${ACTIVITY_LIMIT} interaction / warn / error events. Capped at 500 server-side.`}
-        clearLabel="activity"
-        count={records?.length ?? 0}
+        clearLabel={clearLabel}
+        count={clearCount}
         onClear={handleClear}
         onLiveTick={fetchFeed}
         searchValue={search}

@@ -87,10 +87,62 @@ export async function getActivity(limit = 100): Promise<ActivityRecord[]> {
   return out;
 }
 
-export async function clearActivity(): Promise<number> {
+/**
+ * Clears activity entries. With no argument, hard-deletes the whole
+ * ZSET (the "Clear on the All tab" path). When passed a level, scans
+ * the ZSET, filters in-memory, and ZREMs only the matching members —
+ * so "Clear" on the Warnings filter chip removes warnings but leaves
+ * interactions / errors / fatals intact.
+ *
+ * The ZSET is capped at 500 entries, so the read-and-ZREM path is
+ * cheap. Returns the count of entries actually removed.
+ *
+ * Round-trip on object members: Upstash auto-deserializes JSON-encoded
+ * ZSET members back into objects on read. To ZREM by member, we re-
+ * stringify with `JSON.stringify`. V8's JSON.parse + JSON.stringify is
+ * deterministic (insertion-order preserving), so the round-trip
+ * matches the originally-written string and ZREM hits. If any record
+ * fails the round-trip (e.g. a future malformed write), it stays in
+ * the ZSET — better than corrupting the audit by removing the wrong
+ * entry.
+ */
+export async function clearActivity(
+  level?: ActivityRecord["level"],
+): Promise<number> {
   const r = getRedis();
   if (!r) return 0;
-  const count = (await r.zcard(ACTIVITY_KEY)) ?? 0;
-  await r.del(ACTIVITY_KEY);
-  return typeof count === "number" ? count : 0;
+
+  if (!level) {
+    const count = (await r.zcard(ACTIVITY_KEY)) ?? 0;
+    await r.del(ACTIVITY_KEY);
+    return typeof count === "number" ? count : 0;
+  }
+
+  const raw =
+    ((await r.zrange<unknown[]>(ACTIVITY_KEY, 0, -1)) ?? []) as unknown[];
+  const toRemove: string[] = [];
+  for (const entry of raw) {
+    let parsed: ActivityRecord | null = null;
+    let memberStr: string;
+    if (typeof entry === "string") {
+      memberStr = entry;
+      try {
+        parsed = JSON.parse(entry) as ActivityRecord;
+      } catch {
+        continue;
+      }
+    } else if (entry && typeof entry === "object") {
+      parsed = entry as ActivityRecord;
+      memberStr = JSON.stringify(entry);
+    } else {
+      continue;
+    }
+    if (parsed && parsed.level === level) {
+      toRemove.push(memberStr);
+    }
+  }
+
+  if (toRemove.length === 0) return 0;
+  await r.zrem(ACTIVITY_KEY, ...toRemove);
+  return toRemove.length;
 }
