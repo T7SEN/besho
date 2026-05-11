@@ -81,8 +81,19 @@ All set in **Vercel → Project → Settings → Environment Variables**. Produc
 | `FIREBASE_PRIVATE_KEY`  | Service account private key with **literal `\n`** |
 | `SENTRY_AUTH_TOKEN`     | For source-map upload at build time               |
 | `CRON_SECRET`           | Bearer token for Vercel Cron auth — required for `/api/cron/*` to run; Vercel injects it into the cron request as `Authorization: Bearer ...` |
+| `ADMIN_CLI_TOKEN`       | Bearer token for `/api/admin/cli/*` — consumed by the `ourspace` desktop CLI in `packages/cli`. 32+ char high-entropy random string (generate with `openssl rand -base64 48`). Server refuses anything shorter with 503. Sir mirrors this as `OURSPACE_CLI_TOKEN` in his shell profile. Sir-level credentials; never log, rotate by updating both ends. |
 
 > **Removed:** `VAPID_EMAIL`, `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `NEXT_PUBLIC_VAPID_PUBLIC_KEY` are no longer used. Web Push was removed when PWA was dropped. If your Vercel project still has these set, delete them — they're dead config.
+
+### Desktop CLI setup (one-time, on Sir's Windows machine)
+
+1. Generate a token (any machine): `openssl rand -base64 48` → copy.
+2. Vercel: add `ADMIN_CLI_TOKEN` env var with the value. Redeploy.
+3. Sir's PowerShell profile (`$PROFILE`): add `$env:OURSPACE_CLI_TOKEN = '<token>'`. Reload (`. $PROFILE`).
+4. Optional: `$env:OURSPACE_BASE_URL = 'http://localhost:3000'` for local-dev sessions; otherwise it defaults to production.
+5. From the repo root: `pnpm cli --help`. Smoke-test with `pnpm cli status` — should print presence + cron telemetry.
+
+Rotation: regenerate token, update Vercel env, redeploy, update `$PROFILE`. Old token rejects on the next request after redeploy completes.
 
 ### `FIREBASE_PRIVATE_KEY` quirk
 

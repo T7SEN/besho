@@ -1,0 +1,24 @@
+{
+  "name": "ourspace-cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Sir-only command-line for Our Space admin ops (summon, restrain, push, logout, status). Bearer-authed against /api/admin/cli/*.",
+  "bin": {
+    "ourspace": "./src/index.ts"
+  },
+  "scripts": {
+    "start": "tsx ./src/index.ts",
+    "lint": "eslint ./src"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "tsx": "^4.19.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5"
+  }
+}

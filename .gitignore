@@ -1,10 +1,11 @@
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 
 # ────────────────────────────────────────────────────────────────────────────
-# Dependencies
+# Dependencies — match at any nesting depth (workspace packages live in
+# packages/*, each with its own node_modules / .bin tree)
 # ────────────────────────────────────────────────────────────────────────────
-/node_modules
-/.pnp
+node_modules
+.pnp
 .pnp.*
 .yarn/*
 !.yarn/patches
@@ -13,11 +14,12 @@
 !.yarn/versions
 
 # ────────────────────────────────────────────────────────────────────────────
-# Build output
+# Build output — match at any depth so workspace packages stay clean
 # ────────────────────────────────────────────────────────────────────────────
-/.next/
-/out/
-/build
+.next/
+out/
+build/
+dist/
 *.tsbuildinfo
 next-env.d.ts
 

@@ -195,6 +195,66 @@ Every server action consumed by `useActionState` returns `{ success?: true; erro
 
 ---
 
+## 4.5 Desktop CLI authentication
+
+The `ourspace` desktop CLI (`packages/cli`) is a separate auth surface — **bearer-token only**, no cookie. It exists because Sir wants keyboard-driven admin ops without opening a browser to `/admin/*` for every action. It targets the same Redis cluster + FCM tier as the web app, just through dedicated routes that don't pretend a session exists.
+
+### The token
+
+- Env var name: `ADMIN_CLI_TOKEN` on Vercel.
+- Mirror env var name: `OURSPACE_CLI_TOKEN` on Sir's Windows machine (PowerShell profile or system env). Same value, different name so the client/server distinction is obvious in logs and config.
+- Minimum length: 32 chars, enforced server-side (`requireCliAuth` refuses shorter tokens with a 503). Generate with `openssl rand -base64 48` or equivalent.
+- Treat it as Sir-level admin credentials. Loss is equivalent to a stolen `/admin` session.
+- Rotation: update the Vercel env → redeploy → update Sir's shell profile. Brief window where the old token still works (until the new deploy rolls out) — acceptable for a 2-user app.
+
+### The validation path
+
+`src/lib/admin-cli-auth.ts::requireCliAuth(req)` does the work. Every `/api/admin/cli/*` route calls it first thing:
+
+```ts
+export async function POST(req: Request) {
+  const guard = requireCliAuth(req);
+  if (!guard.ok) return cliAuthError(guard);
+  // ... handle request ...
+}
+```
+
+Internals:
+
+1. Read `process.env.ADMIN_CLI_TOKEN`. If missing or < 32 chars → 503 with "ADMIN_CLI_TOKEN not configured."
+2. Read `Authorization: Bearer <token>` header. Missing scheme / empty → 401.
+3. Length-aware constant-time compare via Node's `crypto.timingSafeEqual`. Mismatched lengths run a dummy compare against an equal-length buffer first to keep timing flat-ish.
+4. Match → `{ ok: true }`. Mismatch → 401 "Invalid token."
+
+The dummy compare on length mismatch is paranoia for a 2-user app, but cheap to include and the right pattern if anyone copies this auth helper elsewhere.
+
+### Why no cookie fallback
+
+The web `/admin/*` routes use JWT cookie + `requireSir()`. The CLI routes deliberately do NOT fall back to cookie auth if the bearer is missing — bearer-only is the contract. If a future contributor wants to merge the surfaces, they should pick one auth mode per route, not both.
+
+### Audit trail
+
+CLI ops log with `by: "T7SEN (cli)"` so `/admin/logs` Activity tab can visually distinguish desktop ops from in-app /admin clicks. Same `logger.interaction` / `logger.warn` paths as the existing admin actions — no separate log stream.
+
+### Route inventory
+
+| Route | Method | Body | Effect |
+|---|---|---|---|
+| `/api/admin/cli/summon` | POST | (none) | Fire Sir → Besho summon push (safeword channel, max priority). |
+| `/api/admin/cli/restrain` | POST | `{ on: boolean, note?: string }` | Toggle Besho's restraint. Fires `restraint_engaged` obedience event on off→on transition. Writes restraint-history audit entry. |
+| `/api/admin/cli/restrain` | GET | (none) | Read current restraint state. |
+| `/api/admin/cli/push` | POST | `{ to, title, body, url?, bypassPresence? }` | Generic FCM. `to` is `T7SEN`/`Besho`/`both`. |
+| `/api/admin/cli/logout` | POST | `{ author }` | Bump session epoch for target. |
+| `/api/admin/cli/status` | GET | (none) | Read-only: presence, cron telemetry, restraint, FCM token counts. |
+
+### Don't propose
+
+- A "ourspace CLI without the token" mode for local dev. The 503 fail-closed behavior protects against accidentally shipping no-auth routes if env vars get misconfigured.
+- Routing CLI commands through the existing server actions via cookie injection. Server actions are React-specific transport; the CLI is a Node script over HTTP. Replicating the underlying primitives (`sendNotification`, `setRestraintRaw`, `revokeAuthorSessions`, etc.) is the right pattern.
+- Logging the token value to debug auth failures. The 503 message tells the operator exactly what's wrong without exposing the secret.
+
+---
+
 ## 5. Cross-References
 
 - `SKILL.md` Section 0 — pre-flight checklist (role-context identification step)
