@@ -206,6 +206,76 @@ Soft-delete via `moveToTrash` with `feature: "punishments"`. **Refuses to delete
 
 ---
 
+## Truth or Dare (`/games/truth-or-dare`, admin at `/admin/games/truth-or-dare`)
+
+| Key                          | Type   | TTL                                       | Description                                                                                                                                                                                |
+| ---------------------------- | ------ | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `tod:challenge:{id}`         | JSON   | none (until soft-delete)                  | `{ id, issuer, recipient, truthPrompt, darePrompt, pick, status, response, createdAt, pickedAt, respondedAt, closedAt, expiresAt, refuseReason?, cancellationReason?, withdrawReason? }`    |
+| `tod:challenges:index`       | ZSET   | none                                      | All challenge ids scored by `createdAt`. Walked by `expireDueChallenges` and rendered as the both-author history list.                                                                     |
+| `tod:active:T7SEN`           | STRING | `TOD_PENDING_TTL_SEC` (7d) → `TOD_PICKED_TTL_SEC` (48h) on pick | Single-slot sentinel for Sir's outgoing direction. `SET` on `issueChallenge`, refreshed (tighter TTL) on `pickPrompt`, `DEL` on terminal transition.                                       |
+| `tod:active:Besho`           | STRING | same as `tod:active:T7SEN`                | Single-slot sentinel for Kitten's outgoing direction. The game is symmetric — both authors have their own outgoing slot. Up to 2 active challenges at any time (one each direction).      |
+| `tod:stats:{author}`         | HASH   | none                                      | Per-author counters: `issued` / `truthsAnswered` / `daresCompleted` / `refused` / `safeworded` / `expired` / `withdrawn`. Both authors' stats are visible to both — same transparency as `/review` and `/rewards`. |
+
+`status` is `'pending'` | `'picked'` | `'completed'` | `'refused'` | `'safeworded'` | `'expired'` | `'withdrawn'` | `'cancelled'`. `'pending'` and `'picked'` are active; everything else is terminal. Writes via `issueChallenge` / `pickPrompt` / `submitResponse` / `refuseChallenge` / `safewordChallenge` / `withdrawChallenge` (user-facing) and `forceCancelTodChallenge` / `resetTodStats` / `adjustTodStat` / `purgeAllTodChallenges` (Sir-only admin). `expireDueChallenges` is **cron-only** — page reads MUST NOT mutate state.
+
+### Single-slot guard (per direction)
+
+Two independent sentinels — `tod:active:T7SEN` for Sir's outgoing, `tod:active:Besho` for Kitten's outgoing. `issueChallenge` reads the issuer's sentinel before pipelining the new record; if present, the call returns an error and the issuer must `withdrawChallenge` first. From any given author's POV: their `outgoing` is `readActiveByIssuer(me)`, their `incoming` is `readActiveByIssuer(partnerOf(me))`. The sentinel TTL is the challenge's live `expiresAt` (the page-level countdown chip reads the same field) — `pickPrompt` refreshes both the record's `expiresAt` AND the sentinel TTL to the tighter `TOD_PICKED_TTL_SEC` window. Soft-fail tolerance: if a transient Redis read fails, the issue path falls through; the worst case is a brief active-slot overlap that the cron + next sentinel write reconciles.
+
+### Pick + response phase
+
+`pickPrompt(id, "truth" | "dare")` locks the recipient into one prompt type and resets the expiry to `pickedAt + TOD_PICKED_TTL_SEC`. The other prompt is discarded conceptually but stays on the record (rendered in admin history). `submitResponse(id, formData)` requires `status === "picked"` and a non-empty response ≤ `MAX_RESPONSE_LEN` (2000 chars); writes the response, flips to `completed`, increments the recipient's `truthsAnswered` or `daresCompleted` (chosen by `pick`), DEL's the issuer's active sentinel, and emits the obedience event (Kitten only). No optimistic UI on `submitResponse` — the response field is the load-bearing artifact and a rollback would leave it visually present but server-absent.
+
+### Refuse vs safeword
+
+Both are recipient-only and terminal. They differ ONLY in obedience emission and stats counter:
+
+- **`refuseChallenge`** — sets `status: "refused"`, increments `tod:stats:{recipient}.refused`, emits `tod_refused` (−6 default) for Kitten recipients. Captures optional `refuseReason` (≤ `MAX_REFUSE_REASON_LEN` = 200 chars).
+- **`safewordChallenge`** — sets `status: "safeworded"`, increments `tod:stats:{recipient}.safeworded`, emits NOTHING. Hard-no on this specific prompt is intentionally free — refusal cost would conflate "this dare is unsafe" with "I'm being non-compliant."
+
+Distinct from the global `/safeword` route — that's a panic channel for distress with bypass-presence FCM to Sir. TOD safeword is local to the challenge, no FCM to Sir beyond the standard refusal-style toast.
+
+### Withdraw vs admin force-cancel
+
+- **`withdrawChallenge(id, reason?)`** — issuer-initiated cancel of their own outgoing. Status → `withdrawn`, increments issuer's `withdrawn` counter, no obedience emit either direction. `assertWriteAllowed` gates Kitten withdrawing her own (initiating write on her own slot).
+- **`forceCancelTodChallenge(id, reason?)`** (Sir-only admin) — Sir override on either direction. Status → `cancelled`, NO stat increment, NO obedience emit. Pure rollback; the `cancellationReason` field is Sir's audit trail.
+
+`cancelAllActiveTodChallenges` is a Sir-only convenience that walks both sentinels and force-cancels each — useful when the game state is wedged across an unexpected app-state interaction.
+
+### Restraint interaction (diverges from directive analog)
+
+`assertWriteAllowed(author)` gates `issueChallenge` and `withdrawChallenge` for Kitten — both are initiating writes on her own outgoing slot. It is **intentionally NOT called** from `pickPrompt` / `submitResponse` / `refuseChallenge` / `safewordChallenge` — those are responsive actions on a challenge Sir already issued. Without that asymmetry, a restraint-engage mid-challenge would force the game to stall until restraint lifts (kitten can neither respond nor refuse), with no clean recovery short of admin force-cancel. The directive analog `acknowledgeDirective` DOES call `assertWriteAllowed` — TOD differs by design. If you want directive-style locking for TOD, add the guard to the four response-side actions; document the choice and the resulting UX.
+
+### Soft-delete + restore
+
+Soft-delete via `moveToTrash` with `feature: "tod_challenges"`. **Refuses to delete a record still in `pending` or `picked`** — terminal-state-only, mirrors directive/punishment. The active sentinel is not part of the trash payload. Sir-only — there is no Kitten-facing delete affordance. `purgeAllTodChallenges` similarly refuses while any active challenge exists.
+
+### Obedience emit
+
+Kitten-recipient direction only. Sir's responses increment stats but emit nothing — there is no Sir obedience axis. Idempotent via `{eventType}:{challengeId}` member key on the events ZSET.
+
+- `submitResponse` → `tod_truth_answered` (+3 default) when `pick === "truth"`.
+- `submitResponse` → `tod_dare_completed` (+6 default) when `pick === "dare"`.
+- `refuseChallenge` → `tod_refused` (−6 default).
+- `expireDueChallenges` (cron-only) → `tod_expired` (−10 default).
+- `safewordChallenge` / `withdrawChallenge` / `forceCancelTodChallenge` → no emit.
+
+The 4 event types register in `OBEDIENCE_EVENT_TYPES` + `DEFAULT_OBEDIENCE_WEIGHTS` + `OBEDIENCE_EVENT_LABELS`. `TUNABLE_EVENT_TYPES` picks them up automatically — Sir adjusts the weights from the existing `/admin/rewards` Weights tab; there is no TOD-specific weights UI.
+
+### FCM payload
+
+`data: { url: "/games/truth-or-dare", kind: "tod_challenge", challengeId, title, body }`. The `kind` field is a routing discriminant; the foreground listener in `<FCMProvider>` falls through to the standard PushToast path for `kind === "tod_challenge"` (no dedicated in-app overlay component — TOD updates land on the next refresh, mirroring the polling-cadence-update model used by permissions). Background notifications carry the standard banner. Presence-aware: if the recipient is on `/games/truth-or-dare`, the push is skipped and the page refresh-listener picks up the change.
+
+### Expiration sweep
+
+`/api/cron/timer-expire` calls `expireDueChallenges(200)` alongside `expireDueDirectives` and `expireDuePunishments`. Walks the most-recent 200 challenges, transitions any active record past `expiresAt` to `expired`, increments `tod:stats:{recipient}.expired`, emits `tod_expired` (Kitten only), and fires a both-author FCM (the expiry is bilateral information — both lost something). Soft-fail per record — per-challenge errors log but don't abort the sweep.
+
+### Admin landing dashboard count
+
+`getAdminLandingSummary.activeTodChallenges` reads both active sentinels and returns 0–2 (each direction is single-slot). Surfaces on the `/admin` landing strip as the "Active TOD" chip alongside pending perms / claims / cron freshness / errors-24h.
+
+---
+
 ## Permissions (`/permissions`)
 
 | Key                                 | Type   | TTL    | Description                                                            |
@@ -343,7 +413,7 @@ Every namespace below is read or written exclusively by `src/app/actions/admin.t
 | `trash:index`             | ZSET   | none   | Global index, score = `deletedAt` ms, member = `{feature}::{id}`     |
 | `trash:index:{feature}`   | ZSET   | none   | Per-feature index, score = `deletedAt` ms, member = `id`             |
 
-`{feature}` is one of `notes` / `rules` / `tasks` / `ledger` / `permissions` / `rituals` / `timeline` / `reviews` (from `TrashFeature` in `src/lib/trash.ts`).
+`{feature}` is one of `notes` / `rules` / `tasks` / `ledger` / `permissions` / `rituals` / `timeline` / `reviews` / `directives` / `punishments` / `tod_challenges` (from `TrashFeature` in `src/lib/trash.ts`).
 
 `TrashEntry` shape (also in `src/lib/trash.ts`):
 
@@ -742,4 +812,8 @@ Add a sentinel for any back-fill. Idempotency matters because every cold-start c
 - `src/lib/obedience.ts` — `recordObedienceEvent`, `recordObedienceEventForWeek`, `getWeekState`, `computeWeekScore`, `currentWeekKey`, `finalizeWeek`, `catchUpFinalizations`, `getEventLog`, `deleteObedienceEvent`, weight/tier/streak/multiplier read+write helpers (5s in-process cache mirroring `restraint.ts`)
 - `src/lib/reward-types.ts` — `ObedienceEventType`, `RewardTier`, `RewardItem`, `RewardClaim`, `ObedienceWeights`, `ObedienceWeekState`, default seeds + validation bounds
 - `src/app/actions/rewards.ts` — `getRewardsBundle`, `getRewardsHistory`, `getLifetimeStats`, `claimReward`, `deliverClaim`, `denyClaim`, `revokeClaim`, `acknowledgeClaim`, `getClaimAudit`, `listAllClaims`, `listPendingClaims`, `listClaimsForAuthor`, `bulkDeliverPending`, `bulkDenyOlderThan`, `previewMultiplierForStreak`, `purgeTestClaimsRaw`
+- `src/lib/games/registry.ts` — `GameDescriptor`, `GAMES`, `getGameDescriptor` — game launcher catalog
+- `src/lib/games/truth-or-dare-constants.ts` — `ChallengeStatus` / `ChallengeType` / `TodChallenge` / `TodStats` types, `ACTIVE_STATUSES` / `TERMINAL_STATUSES` literals, `MAX_PROMPT_LEN` / `MAX_RESPONSE_LEN` / `MAX_REFUSE_REASON_LEN` / `MAX_CANCEL_REASON_LEN` bounds, `TOD_PENDING_TTL_SEC` / `TOD_PICKED_TTL_SEC` / `TOD_HISTORY_PAGE_SIZE`, `TOD_PAYLOAD_KIND`, Redis key helpers (`TOD_INDEX_KEY`, `todChallengeKey`, `todActiveKey`, `todStatsKey`), `STATUS_LABELS` / `TOD_STAT_LABELS` display maps
+- `src/app/actions/games/truth-or-dare.ts` — `issueChallenge`, `pickPrompt`, `submitResponse`, `refuseChallenge`, `safewordChallenge`, `withdrawChallenge`, `deleteChallenge`, `getActiveChallenges`, `getChallengeHistory`, `getStatsBundle`, `getTodBundle`, cron-only `expireDueChallenges`
+- `src/app/actions/admin/games.ts` — `getTodAdminBundle`, `forceCancelTodChallenge`, `cancelAllActiveTodChallenges`, `resetTodStats`, `adjustTodStat`, `purgeAllTodChallenges`, `getActiveTodCount`
 - `src/app/api/cron/obedience-sweep/route.ts` — daily missed-event sweep + week finalization; bearer-auth, no `vercel.json`

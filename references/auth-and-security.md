@@ -62,6 +62,8 @@ Surfaces under `/admin`:
 | `/admin/rewards`            | Tabbed: Tiers / Weights / Streak / Status (with score simulator) / Event log                  | `getObedienceAdminSnapshot`, `setRewardTiers`, `setObedienceWeights`, `setStreakSettings`, `adminSetStreakRaw`, `getObedienceEventLog`, `adminAdjustScore`, `adminDeleteObedienceEvent`, `setTestModeState`, `adminPurgeTestClaims`, `recomputeWeek` |
 | `/admin/permissions`        | Tabbed: Bulk decide / Auto-rules JSON / Quotas JSON / Simulate                                | `getPermissionsAdminBundle`, `adminSaveAutoRulesJson`, `adminSaveQuotasJson`, `bulkApprovePendingOlderThan`, `bulkDenyPendingByCategory`, `simulateAutoRules` |
 | `/admin/redis`              | Read-only key inspector                                                                       | `inspectRedisKey`                                                                                         |
+| `/admin/games`              | Registry-driven landing — one tile per registered game                                        | (no actions; reads `GAMES` from `src/lib/games/registry.ts`)                                              |
+| `/admin/games/truth-or-dare`| Tabbed: Active (force-cancel, mass-cancel) / History (per-item delete, purge-all) / Stats (per-stat edit, reset) | `getTodAdminBundle`, `forceCancelTodChallenge`, `cancelAllActiveTodChallenges`, `resetTodStats`, `adjustTodStat`, `purgeAllTodChallenges`, `getActiveTodCount`, `deleteChallenge` |
 
 **Five consolidations landed mid-development**:
 1. Inspector merged into Devices — `/admin/inspector` deleted; its presence + FCM token cards moved to a "Right now" section atop `/admin/devices`.
@@ -141,7 +143,9 @@ Every state-mutating server action **must** check `session.author` server-side, 
 | Delete a note (any author's)                                                   | ✓           | ✗              |
 | Delete a permission request (any author's)                                     | ✓           | ✗              |
 | Delete a revealed review week (any author's)                                   | ✓           | ✗              |
-| Purge any feature wholesale (notes / rules / tasks / ledger / timeline / etc.) | ✓           | ✗              |
+| Purge any feature wholesale (notes / rules / tasks / ledger / timeline / directives / punishments / tod_challenges / etc.) | ✓           | ✗              |
+| Force-cancel any active TOD challenge (no penalty, either direction)           | ✓           | ✗              |
+| Edit / reset TOD stats counters for either author                              | ✓           | ✗              |
 
 The Sir-only destructive admin tier (delete + purge) is enforced in the relevant `purgeAll*` and `delete*` server actions in `src/app/actions/`; the UI gates rendering on `currentAuthor === "T7SEN"` for cosmetic discipline only — server-side rejection is the boundary.
 

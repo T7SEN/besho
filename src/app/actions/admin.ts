@@ -1127,6 +1127,9 @@ export async function purgeTrashAction(
 export interface AdminLandingSummary {
   pendingPermissions: number;
   pendingClaims: number;
+  /** Active Truth or Dare challenges across both directions (Sir→Kitten
+   *  AND Kitten→Sir). Up to 2 because each direction is single-slot. */
+  activeTodChallenges: number;
   cronStaleCount: number;
   cronTotal: number;
   errorsLast24h: number;
@@ -1157,6 +1160,8 @@ export async function getAdminLandingSummary(): Promise<AdminLandingSummaryResul
       pendingClaimIdsRaw,
       cronSnapshots,
       activityRaw,
+      todSirActive,
+      todKittenActive,
     ] = await Promise.all([
       redis.zrange<string[]>(PERMISSIONS_INDEX, 0, -1).catch(() => []),
       redis
@@ -1171,6 +1176,8 @@ export async function getAdminLandingSummary(): Promise<AdminLandingSummaryResul
           { byScore: true },
         )
         .catch(() => [] as unknown[]),
+      redis.get<string>("tod:active:T7SEN").catch(() => null),
+      redis.get<string>("tod:active:Besho").catch(() => null),
     ]);
 
     // Pending permissions — mget records and count those still pending.
@@ -1222,10 +1229,19 @@ export async function getAdminLandingSummary(): Promise<AdminLandingSummaryResul
       }
     }
 
+    let activeTodChallenges = 0;
+    if (typeof todSirActive === "string" && todSirActive.length > 0) {
+      activeTodChallenges++;
+    }
+    if (typeof todKittenActive === "string" && todKittenActive.length > 0) {
+      activeTodChallenges++;
+    }
+
     return {
       summary: {
         pendingPermissions,
         pendingClaims,
+        activeTodChallenges,
         cronStaleCount,
         cronTotal: cronSnapshots.length,
         errorsLast24h,
@@ -1480,3 +1496,27 @@ export type {
   NotificationAuditPair,
   NotificationAuditResult,
 } from "./admin/notifications";
+
+import {
+  getTodAdminBundle as _getTodAdminBundle,
+  forceCancelTodChallenge as _forceCancelTodChallenge,
+  cancelAllActiveTodChallenges as _cancelAllActiveTodChallenges,
+  resetTodStats as _resetTodStats,
+  adjustTodStat as _adjustTodStat,
+  purgeAllTodChallenges as _purgeAllTodChallenges,
+  getActiveTodCount as _getActiveTodCount,
+} from "./admin/games";
+
+// games bucket
+export async function getTodAdminBundle(...args: Parameters<typeof _getTodAdminBundle>): ReturnType<typeof _getTodAdminBundle> { return _getTodAdminBundle(...args); }
+export async function forceCancelTodChallenge(...args: Parameters<typeof _forceCancelTodChallenge>): ReturnType<typeof _forceCancelTodChallenge> { return _forceCancelTodChallenge(...args); }
+export async function cancelAllActiveTodChallenges(...args: Parameters<typeof _cancelAllActiveTodChallenges>): ReturnType<typeof _cancelAllActiveTodChallenges> { return _cancelAllActiveTodChallenges(...args); }
+export async function resetTodStats(...args: Parameters<typeof _resetTodStats>): ReturnType<typeof _resetTodStats> { return _resetTodStats(...args); }
+export async function adjustTodStat(...args: Parameters<typeof _adjustTodStat>): ReturnType<typeof _adjustTodStat> { return _adjustTodStat(...args); }
+export async function purgeAllTodChallenges(...args: Parameters<typeof _purgeAllTodChallenges>): ReturnType<typeof _purgeAllTodChallenges> { return _purgeAllTodChallenges(...args); }
+export async function getActiveTodCount(...args: Parameters<typeof _getActiveTodCount>): ReturnType<typeof _getActiveTodCount> { return _getActiveTodCount(...args); }
+export type {
+  TodAdminBundle,
+  TodAdminBundleResult,
+  AdjustTodStatArgs,
+} from "./admin/games";

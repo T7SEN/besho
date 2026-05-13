@@ -23,6 +23,7 @@ import {
   Clock,
   Gift,
   History,
+  MessageCircleQuestion,
   ShieldCheck,
 } from "lucide-react";
 import {
@@ -73,7 +74,7 @@ export function AdminDashboardStrip() {
   useRefreshListener(fetchSummary);
 
   return (
-    <div className="mb-6 grid grid-cols-2 gap-2 md:grid-cols-4">
+    <div className="mb-6 grid grid-cols-2 gap-2 md:grid-cols-5">
       <DashboardChip
         href="/permissions"
         icon={ShieldCheck}
@@ -96,6 +97,19 @@ export function AdminDashboardStrip() {
           !summary
             ? "muted"
             : summary.pendingClaims === 0
+              ? "ok"
+              : "amber"
+        }
+      />
+      <DashboardChip
+        href="/admin/games/truth-or-dare"
+        icon={MessageCircleQuestion}
+        label="Active TOD"
+        value={summary?.activeTodChallenges}
+        tone={
+          !summary
+            ? "muted"
+            : summary.activeTodChallenges === 0
               ? "ok"
               : "amber"
         }

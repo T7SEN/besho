@@ -26,6 +26,10 @@ export type ObedienceEventType =
   | "mood_checkin"
   | "restraint_engaged"
   | "ledger_punishment"
+  | "tod_truth_answered"
+  | "tod_dare_completed"
+  | "tod_refused"
+  | "tod_expired"
   | "manual_adjust";
 
 export const OBEDIENCE_EVENT_TYPES: readonly ObedienceEventType[] = [
@@ -48,6 +52,10 @@ export const OBEDIENCE_EVENT_TYPES: readonly ObedienceEventType[] = [
   "mood_checkin",
   "restraint_engaged",
   "ledger_punishment",
+  "tod_truth_answered",
+  "tod_dare_completed",
+  "tod_refused",
+  "tod_expired",
   "manual_adjust",
 ] as const;
 
@@ -228,6 +236,17 @@ export const DEFAULT_OBEDIENCE_WEIGHTS: ObedienceWeights = {
    *  emit is suppressed for `type === "violation"` so the score isn't
    *  double-counted. */
   ledger_punishment: -10,
+  /** Truth or Dare game outcomes — Kitten direction only. The game is
+   *  symmetric (both can issue), but Sir has no obedience score, so
+   *  only Kitten's responses move the needle. Truth = textarea answer.
+   *  Dare = self-reported completion note. Refusal counts as a
+   *  compliance miss. Expiry (cron sweep past pending/picked TTL) is
+   *  the harshest — ghosting an issued challenge. Safewording on a
+   *  specific dare is intentionally free (no emit at all). */
+  tod_truth_answered: 3,
+  tod_dare_completed: 6,
+  tod_refused: -6,
+  tod_expired: -10,
   /** Manual adjustments always supply their own points value at emit
    *  time. The default of 0 here is a placeholder so the type is
    *  satisfied; never used as a fallback. */
@@ -316,6 +335,10 @@ export const OBEDIENCE_EVENT_LABELS: Record<ObedienceEventType, string> = {
   mood_checkin: "Mood check-in",
   restraint_engaged: "Restraint engaged",
   ledger_punishment: "Ledger punishment",
+  tod_truth_answered: "Truth answered (TOD)",
+  tod_dare_completed: "Dare completed (TOD)",
+  tod_refused: "TOD refused",
+  tod_expired: "TOD expired",
   manual_adjust: "Manual adjustment",
 };
 

@@ -12,6 +12,7 @@ import {
   BookOpen,
   CalendarClock,
   CheckSquare,
+  Gamepad2,
   Gift,
   Hand,
   ScrollText,
@@ -86,6 +87,7 @@ const MORE_ITEMS: NavItem[] = [
   { name: "Ledger", href: "/ledger", icon: Award },
   { name: "Rewards", href: "/rewards", icon: Gift },
   { name: "Review", href: "/review", icon: MessageSquareQuote },
+  { name: "Games", href: "/games", icon: Gamepad2 },
   { name: "Protocol", href: "/protocol", icon: BookOpen },
 ];
 

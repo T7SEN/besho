@@ -8,6 +8,8 @@
 //   1. Directives — expires past `expiresAt`, emits `directive_missed`.
 //   2. Punishments — bails past `endsAt + BACKGROUND_GRACE_SEC`,
 //      auto-creates a "bailed" ledger entry, emits `punishment_bailed`.
+//   3. Truth or Dare challenges — expires past `expiresAt`, emits
+//      `tod_expired` for Kitten direction only.
 //
 // Auth: `Authorization: Bearer ${CRON_SECRET}`. Triggered by
 // cron-job.org (out-of-band, no `vercel.json` per Hobby tier rule).
@@ -17,6 +19,7 @@
 import { NextRequest } from "next/server";
 import { expireDueDirectives } from "@/app/actions/directive";
 import { expireDuePunishments } from "@/app/actions/punishment";
+import { expireDueChallenges } from "@/app/actions/games/truth-or-dare";
 import { logger } from "@/lib/logger";
 import { writeCronTelemetry } from "@/lib/cron-telemetry";
 
@@ -38,6 +41,8 @@ export async function GET(req: NextRequest) {
   let directiveExpired = 0;
   let punishmentScanned = 0;
   let punishmentBailed = 0;
+  let todScanned = 0;
+  let todExpired = 0;
 
   try {
     const directiveSweep = await expireDueDirectives(200);
@@ -48,6 +53,10 @@ export async function GET(req: NextRequest) {
     punishmentScanned = punishmentSweep.scanned;
     punishmentBailed = punishmentSweep.bailed;
 
+    const todSweep = await expireDueChallenges(200);
+    todScanned = todSweep.scanned;
+    todExpired = todSweep.expired;
+
     const durationMs = Date.now() - startedAt;
     await writeCronTelemetry("timer-expire", {
       ok: true,
@@ -57,6 +66,8 @@ export async function GET(req: NextRequest) {
         directiveExpired,
         punishmentScanned,
         punishmentBailed,
+        todScanned,
+        todExpired,
       },
     });
 
@@ -65,6 +76,7 @@ export async function GET(req: NextRequest) {
       durationMs,
       directives: { scanned: directiveScanned, expired: directiveExpired },
       punishments: { scanned: punishmentScanned, bailed: punishmentBailed },
+      tod: { scanned: todScanned, expired: todExpired },
     });
   } catch (err) {
     logger.error("[cron/timer-expire] tick failed", err);
@@ -77,6 +89,8 @@ export async function GET(req: NextRequest) {
         directiveExpired,
         punishmentScanned,
         punishmentBailed,
+        todScanned,
+        todExpired,
       },
       error: err instanceof Error ? err.message : "Tick failed.",
     });
@@ -87,6 +101,7 @@ export async function GET(req: NextRequest) {
         durationMs,
         directives: { scanned: directiveScanned, expired: directiveExpired },
         punishments: { scanned: punishmentScanned, bailed: punishmentBailed },
+        tod: { scanned: todScanned, expired: todExpired },
       },
       { status: 500 },
     );

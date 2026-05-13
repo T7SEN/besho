@@ -191,10 +191,11 @@ Some payloads route to a feature surface (overlay, toast, full-screen dialog) ra
 
 ### Currently routed kinds
 
-| `data.kind`     | Foreground handler                                                           | Background handler                                                                                                  |
-| --------------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `"directive"`   | Dispatches `ourspace:directive-arrived` CustomEvent → `<DirectiveDialog>` refetches and opens. PushToast NOT shown. | Standard heads-up banner. Tap → navigates to `data.url` (`/`); `<DirectiveDialog>` reads active state on mount. |
-| `"punishment"`  | Dispatches `ourspace:punishment-arrived` → `<PunishmentOverlay>` refetches and opens. PushToast NOT shown. Sender uses `bypassPresence: true` + `priority: "high"` so the timer engages immediately regardless of which page kitten is on. | Standard heads-up banner. Tap → navigates to `data.url` (`/`); `<PunishmentOverlay>` reads active state on mount. Channel is `default`, NOT `safeword`. |
+| `data.kind`        | Foreground handler                                                           | Background handler                                                                                                  |
+| ------------------ | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `"directive"`      | Dispatches `ourspace:directive-arrived` CustomEvent → `<DirectiveDialog>` refetches and opens. PushToast NOT shown. | Standard heads-up banner. Tap → navigates to `data.url` (`/`); `<DirectiveDialog>` reads active state on mount. |
+| `"punishment"`     | Dispatches `ourspace:punishment-arrived` → `<PunishmentOverlay>` refetches and opens. PushToast NOT shown. Sender uses `bypassPresence: true` + `priority: "high"` so the timer engages immediately regardless of which page kitten is on. | Standard heads-up banner. Tap → navigates to `data.url` (`/`); `<PunishmentOverlay>` reads active state on mount. Channel is `default`, NOT `safeword`. |
+| `"tod_challenge"`  | **No dedicated foreground branch yet** — falls through to the standard `dispatchPushToast(...)` path. `TOD_ARRIVED_EVENT = "ourspace:tod-arrived"` is reserved in `truth-or-dare-constants.ts` for a future overlay component; wiring it up means adding the FCM-provider branch + a subscriber on `/games/truth-or-dare`. | Standard heads-up banner. Tap → navigates to `data.url` (`/games/truth-or-dare`); the page refetches its bundle on mount. |
 
 ### Adding a kind
 

@@ -8,6 +8,7 @@ import {
   Database,
   Download,
   FileText,
+  Gamepad2,
   HeartPulse,
   Send,
   ShieldCheck,
@@ -110,6 +111,12 @@ const TOOLS = [
     title: "Redis inspector",
     description: "Read-only probe by exact key. Type, TTL, capped preview.",
     Icon: Database,
+  },
+  {
+    href: "/admin/games",
+    title: "Games",
+    description: "Per-game admin — force-cancel, stat edits, history purge.",
+    Icon: Gamepad2,
   },
 ] as const;
 
