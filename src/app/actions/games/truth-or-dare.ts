@@ -27,6 +27,7 @@ import { cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { decrypt } from "@/lib/auth-utils";
 import { sendNotification } from "@/app/actions/notifications";
+import { getReactionsForTargets } from "@/app/actions/reactions";
 import { logger } from "@/lib/logger";
 import { moveToTrash } from "@/lib/trash";
 import { recordObedienceEvent } from "@/lib/obedience";
@@ -34,11 +35,16 @@ import { assertWriteAllowed } from "@/lib/restraint";
 import { partnerOf, TITLE_BY_AUTHOR, type Author } from "@/lib/constants";
 import {
   ACTIVE_STATUSES,
+  CHANGE_PICK_WINDOW_SEC,
   DEFAULT_TOD_STATS,
+  MAX_PROMPT_LABEL_LEN,
   MAX_PROMPT_LEN,
+  MAX_PROMPTS_PER_LIBRARY,
   MAX_REFUSE_REASON_LEN,
   MAX_RESPONSE_LEN,
+  RESPONSE_EXCERPT_LEN,
   TERMINAL_STATUSES,
+  TOD_EXPIRE_WARN_THRESHOLD_SEC,
   TOD_HISTORY_MAX_LIMIT,
   TOD_HISTORY_PAGE_SIZE,
   TOD_INDEX_KEY,
@@ -47,9 +53,12 @@ import {
   TOD_PICKED_TTL_SEC,
   todActiveKey,
   todChallengeKey,
+  todExpireWarnSentinelKey,
+  todPromptsKey,
   todStatsKey,
   type ChallengeType,
   type TodChallenge,
+  type TodPrompt,
   type TodStats,
 } from "@/lib/games/truth-or-dare-constants";
 
@@ -60,6 +69,21 @@ async function getSession() {
   const value = cookieStore.get("session")?.value;
   if (!value) return null;
   return decrypt(value);
+}
+
+/** Truncate a response to `RESPONSE_EXCERPT_LEN`, preferring a word
+ *  boundary within the last 16 chars. Appends `…` on truncation. The
+ *  result is used in the issuer-side FCM body so Sir can skim the
+ *  answer without opening the app. Newlines collapse to spaces — the
+ *  push surface is single-line. */
+function formatResponseExcerpt(response: string): string {
+  const flat = response.replace(/\s+/g, " ").trim();
+  if (flat.length <= RESPONSE_EXCERPT_LEN) return flat;
+  const hard = flat.slice(0, RESPONSE_EXCERPT_LEN);
+  // Look for a space in the last 16 chars to break on a word boundary.
+  const lastSpace = hard.lastIndexOf(" ");
+  const breakAt = lastSpace >= RESPONSE_EXCERPT_LEN - 16 ? lastSpace : hard.length;
+  return `${hard.slice(0, breakAt).trimEnd()}…`;
 }
 
 // ── Read helpers ─────────────────────────────────────────────────────────
@@ -115,13 +139,18 @@ export async function getActiveChallenges(): Promise<{
 /** One page of challenge history returned by `getChallengeHistory`.
  *  `total` is the full ZCARD of the index so the caller can render a
  *  "showing N of M" affordance and load-more button without a separate
- *  count call. */
+ *  count call. `reactions` keys by challenge id; entry is the HASH
+ *  `{ author: emoji }` from `reactions:tod:{id}` — missing ids in
+ *  the map mean "no reactions yet" (no separate sentinel needed). */
 export interface TodHistoryPage {
   records: TodChallenge[];
   total: number;
   /** Echo of the limit + offset applied, so the client can paginate. */
   limit: number;
   offset: number;
+  /** Reactions per challenge id. Auxiliary state — not preserved on
+   *  soft-delete restore. */
+  reactions: Record<string, Record<string, string>>;
   error?: string;
 }
 
@@ -158,11 +187,13 @@ export async function getChallengeHistory(
         total: Number(total) || 0,
         limit: safeLimit,
         offset: safeOffset,
+        reactions: {},
       };
     }
-    const recs = await redis.mget<(TodChallenge | null)[]>(
-      ...ids.map(todChallengeKey),
-    );
+    const [recs, reactions] = await Promise.all([
+      redis.mget<(TodChallenge | null)[]>(...ids.map(todChallengeKey)),
+      getReactionsForTargets("tod", ids),
+    ]);
     const records = (recs ?? []).filter(
       (r): r is TodChallenge => r !== null,
     );
@@ -171,6 +202,7 @@ export async function getChallengeHistory(
       total: Number(total) || 0,
       limit: safeLimit,
       offset: safeOffset,
+      reactions,
     };
   } catch (err) {
     logger.error("[tod] getChallengeHistory failed", err);
@@ -179,6 +211,7 @@ export async function getChallengeHistory(
       total: 0,
       limit: safeLimit,
       offset: safeOffset,
+      reactions: {},
       error: "Failed to load history.",
     };
   }
@@ -347,11 +380,20 @@ export async function issueChallenge(
  * tighter `TOD_PICKED_TTL_SEC` window (48h). Idempotent — re-picking
  * the same type returns success silently. Intentionally NOT restraint-
  * gated: see file header (responsive vs initiating writes).
+ *
+ * Change-of-mind window: when the challenge is already `picked` and
+ * `now - pickedAt < CHANGE_PICK_WINDOW_SEC * 1000` (default 60s), the
+ * recipient can re-pick the OTHER type. The new pick replaces the
+ * old; `pickedAt` advances to the new flip time so the window resets
+ * from each successful change. Past the window OR once a response is
+ * drafted client-side, the original pick stands (server-side: any
+ * `picked → picked` flip outside the window returns the standard
+ * "no longer pending" error).
  */
 export async function pickPrompt(
   id: string,
   pick: ChallengeType,
-): Promise<{ success?: boolean; error?: string }> {
+): Promise<{ success?: boolean; error?: string; changed?: boolean }> {
   const session = await getSession();
   if (!session?.author) return { error: "Not authenticated." };
   if (pick !== "truth" && pick !== "dare") return { error: "Invalid pick." };
@@ -366,17 +408,29 @@ export async function pickPrompt(
     // The architectural call: restraint locks INITIATING writes only;
     // responding to a challenge already in flight stays open so the
     // game doesn't stall indefinitely. See file header.
-    if (record.status === "picked" && record.pick === pick) {
-      return { success: true };
-    }
-    if (record.status !== "pending") {
-      return { error: "Challenge is no longer pending a pick." };
-    }
-    if (record.expiresAt < Date.now()) {
+    const now = Date.now();
+    if (record.expiresAt < now) {
       return { error: "Challenge has expired." };
     }
 
-    const pickedAt = Date.now();
+    // Change-of-mind path: status is already picked, but the recipient
+    // wants to flip to the other type. Allowed within the grace
+    // window only.
+    const isChangeOfMind =
+      record.status === "picked" &&
+      record.pick !== null &&
+      record.pick !== pick &&
+      record.pickedAt !== null &&
+      now - record.pickedAt < CHANGE_PICK_WINDOW_SEC * 1000;
+
+    if (record.status === "picked" && record.pick === pick) {
+      return { success: true };
+    }
+    if (record.status !== "pending" && !isChangeOfMind) {
+      return { error: "Challenge is no longer pending a pick." };
+    }
+
+    const pickedAt = now;
     const newExpiresAt = pickedAt + TOD_PICKED_TTL_SEC * 1000;
     const updated: TodChallenge = {
       ...record,
@@ -393,20 +447,30 @@ export async function pickPrompt(
     });
     await pipeline.exec();
 
-    await sendNotification(record.issuer, {
-      title: pick === "truth" ? "🪞 Truth picked" : "🎯 Dare picked",
-      body: `${TITLE_BY_AUTHOR[record.recipient]} picked ${pick}.`,
-      url: "/games/truth-or-dare",
-    });
+    // Skip the issuer notification on change-of-mind flips —
+    // double-pinging within 60s of the original pick is annoying. The
+    // issuer's next bundle fetch will surface the new pick anyway via
+    // the standard refresh path.
+    if (!isChangeOfMind) {
+      await sendNotification(record.issuer, {
+        title: pick === "truth" ? "🪞 Truth picked" : "🎯 Dare picked",
+        body: `${TITLE_BY_AUTHOR[record.recipient]} picked ${pick}.`,
+        url: "/games/truth-or-dare",
+      });
+    }
 
-    logger.interaction("[tod] prompt picked", {
-      id,
-      pick,
-      recipient: record.recipient,
-    });
+    logger.interaction(
+      isChangeOfMind ? "[tod] pick changed" : "[tod] prompt picked",
+      {
+        id,
+        pick,
+        recipient: record.recipient,
+        ...(isChangeOfMind && { changedFrom: record.pick }),
+      },
+    );
     revalidatePath("/games/truth-or-dare");
     revalidatePath("/admin/games/truth-or-dare");
-    return { success: true };
+    return { success: true, changed: isChangeOfMind };
   } catch (err) {
     logger.error("[tod] pickPrompt failed", err);
     return { error: "Failed to pick." };
@@ -473,6 +537,31 @@ export async function submitResponse(
     pipeline.hincrby(todStatsKey(record.recipient), statCounterKey, 1);
     await pipeline.exec();
 
+    // Streak update — separate RTT so we can read the new value to
+    // compare against longestStreak. Best-effort: a streak hiccup
+    // doesn't roll back the response submit. `currentStreak` is the
+    // recipient's consecutive-response counter; high-water-mark
+    // tracked in `longestStreak`.
+    try {
+      const newStreak = await redis.hincrby(
+        todStatsKey(record.recipient),
+        "currentStreak",
+        1,
+      );
+      const longestRaw = await redis.hget<number | string>(
+        todStatsKey(record.recipient),
+        "longestStreak",
+      );
+      const longest = Number(longestRaw) || 0;
+      if (newStreak > longest) {
+        await redis.hset(todStatsKey(record.recipient), {
+          longestStreak: newStreak,
+        });
+      }
+    } catch {
+      // best-effort
+    }
+
     // Obedience emit — Kitten direction only. Sir's responses are
     // tracked in stats but don't move any score (he has none).
     if (record.recipient === "Besho") {
@@ -481,9 +570,15 @@ export async function submitResponse(
       void recordObedienceEvent("Besho", eventType, id, respondedAt);
     }
 
+    // Embed an excerpt of the response in the FCM body so the issuer
+    // can read it on the lock screen without opening the app. The
+    // biometric gate is the reason this is safe — only the device
+    // owner sees the notification. Trim to a word boundary when
+    // possible to avoid cutting mid-word; ellipsize on overflow.
+    const excerpt = formatResponseExcerpt(response);
     await sendNotification(record.issuer, {
       title: "✓ Challenge answered",
-      body: `${TITLE_BY_AUTHOR[record.recipient]} answered your ${record.pick}.`,
+      body: `${TITLE_BY_AUTHOR[record.recipient]} answered your ${record.pick}: ${excerpt}`,
       url: "/games/truth-or-dare",
     });
 
@@ -546,6 +641,10 @@ export async function refuseChallenge(
     pipeline.set(todChallengeKey(id), updated);
     pipeline.del(todActiveKey(record.issuer));
     pipeline.hincrby(todStatsKey(record.recipient), "refused", 1);
+    // Reset the recipient's current streak — refuse breaks the chain.
+    // Missing field reads as 0 via the stats fallback. Safeword and
+    // withdrawn intentionally do NOT reset (free outs by design).
+    pipeline.hdel(todStatsKey(record.recipient), "currentStreak");
     await pipeline.exec();
 
     if (record.recipient === "Besho") {
@@ -748,6 +847,8 @@ export async function expireDueChallenges(
         pipeline.set(todChallengeKey(record.id), updated);
         pipeline.del(todActiveKey(record.issuer));
         pipeline.hincrby(todStatsKey(record.recipient), "expired", 1);
+        // Expiry breaks the streak — same semantics as refuse.
+        pipeline.hdel(todStatsKey(record.recipient), "currentStreak");
         await pipeline.exec();
 
         if (record.recipient === "Besho") {
@@ -794,6 +895,205 @@ export async function expireDueChallenges(
     logger.error("[tod] expireDueChallenges sweep failed", err);
   }
   return { scanned, expired };
+}
+
+// ── Prompt library (per-author, private to the caller) ──────────────────
+
+/** Read the caller's own prompt library. Returns the array as stored;
+ *  empty array when no library exists yet. Each author sees only their
+ *  own — there is no cross-author view (`getSession().author` is the
+ *  only key into this storage). */
+export async function getTodPromptLibrary(): Promise<{
+  prompts: TodPrompt[];
+  error?: string;
+}> {
+  const session = await getSession();
+  if (!session?.author) return { prompts: [], error: "Not authenticated." };
+  try {
+    const raw = await redis.get<TodPrompt[]>(todPromptsKey(session.author));
+    if (!Array.isArray(raw)) return { prompts: [] };
+    return { prompts: raw };
+  } catch (err) {
+    logger.error("[tod] getTodPromptLibrary failed", err);
+    return { prompts: [], error: "Failed to load library." };
+  }
+}
+
+/** Append a new entry to the caller's library. Refuses past
+ *  `MAX_PROMPTS_PER_LIBRARY` so the JSON read stays bounded. Trims +
+ *  validates lengths against the same caps used by `issueChallenge`. */
+export async function saveTodPrompt(
+  args: { truthPrompt: string; darePrompt: string; label?: string },
+): Promise<{ success?: boolean; error?: string; prompt?: TodPrompt }> {
+  const session = await getSession();
+  if (!session?.author) return { error: "Not authenticated." };
+
+  // Saving is a write — Kitten can't curate her own library while
+  // restrained. Sir is never restrained.
+  const block = await assertWriteAllowed(session.author);
+  if (block) return block;
+
+  const truthPrompt = (args.truthPrompt ?? "").trim();
+  const darePrompt = (args.darePrompt ?? "").trim();
+  const label = (args.label ?? "").trim();
+
+  if (!truthPrompt) return { error: "Truth prompt is required." };
+  if (!darePrompt) return { error: "Dare prompt is required." };
+  if (truthPrompt.length > MAX_PROMPT_LEN) {
+    return { error: `Truth prompt is capped at ${MAX_PROMPT_LEN} chars.` };
+  }
+  if (darePrompt.length > MAX_PROMPT_LEN) {
+    return { error: `Dare prompt is capped at ${MAX_PROMPT_LEN} chars.` };
+  }
+  if (label.length > MAX_PROMPT_LABEL_LEN) {
+    return {
+      error: `Label is capped at ${MAX_PROMPT_LABEL_LEN} chars.`,
+    };
+  }
+
+  try {
+    const existing =
+      (await redis.get<TodPrompt[]>(todPromptsKey(session.author))) ?? [];
+    if (existing.length >= MAX_PROMPTS_PER_LIBRARY) {
+      return {
+        error: `Library is full (max ${MAX_PROMPTS_PER_LIBRARY}). Delete an entry first.`,
+      };
+    }
+
+    const prompt: TodPrompt = {
+      id: crypto.randomUUID(),
+      truthPrompt,
+      darePrompt,
+      ...(label.length > 0 && { label }),
+      createdAt: Date.now(),
+    };
+    const next = [prompt, ...existing];
+    await redis.set(todPromptsKey(session.author), next);
+
+    logger.interaction("[tod] prompt saved to library", {
+      author: session.author,
+      promptId: prompt.id,
+      hasLabel: label.length > 0,
+    });
+    revalidatePath("/games/truth-or-dare");
+    return { success: true, prompt };
+  } catch (err) {
+    logger.error("[tod] saveTodPrompt failed", err);
+    return { error: "Save failed." };
+  }
+}
+
+/** Remove one entry from the caller's library by id. Idempotent —
+ *  returns success even when the id wasn't present (the result is the
+ *  same: the entry isn't in the library). */
+export async function deleteTodPrompt(
+  promptId: string,
+): Promise<{ success?: boolean; error?: string }> {
+  const session = await getSession();
+  if (!session?.author) return { error: "Not authenticated." };
+
+  const block = await assertWriteAllowed(session.author);
+  if (block) return block;
+
+  try {
+    const existing =
+      (await redis.get<TodPrompt[]>(todPromptsKey(session.author))) ?? [];
+    const filtered = existing.filter((p) => p.id !== promptId);
+    if (filtered.length === existing.length) return { success: true };
+
+    if (filtered.length === 0) {
+      await redis.del(todPromptsKey(session.author));
+    } else {
+      await redis.set(todPromptsKey(session.author), filtered);
+    }
+    logger.interaction("[tod] prompt deleted from library", {
+      author: session.author,
+      promptId,
+    });
+    revalidatePath("/games/truth-or-dare");
+    return { success: true };
+  } catch (err) {
+    logger.error("[tod] deleteTodPrompt failed", err);
+    return { error: "Delete failed." };
+  }
+}
+
+// ── Cron-driven pre-warning ──────────────────────────────────────────────
+
+/** Walks the most-recent N challenges and fires a one-shot "expires
+ *  soon" push to the recipient for any active record where
+ *  `expiresAt - now < TOD_EXPIRE_WARN_THRESHOLD_SEC`. Dedups via
+ *  `tod:fcm:expire-warn:{id}` (SET NX EX). The sentinel TTL is bounded
+ *  by the challenge's remaining lifetime so the key auto-clears when
+ *  the challenge expires — a future challenge with the same id (or
+ *  the same one resurrected from trash) cannot accidentally re-trigger.
+ *  Best-effort: per-record FCM failures log but don't abort the sweep. */
+export async function warnExpiringChallenges(
+  scanLimit = 200,
+): Promise<{ scanned: number; warned: number }> {
+  let scanned = 0;
+  let warned = 0;
+  try {
+    const idsRaw = (await redis.zrange(
+      TOD_INDEX_KEY,
+      0,
+      Math.max(0, scanLimit - 1),
+      { rev: true },
+    )) as string[];
+    if (!idsRaw || idsRaw.length === 0) return { scanned, warned };
+    const records = await redis.mget<(TodChallenge | null)[]>(
+      ...idsRaw.map(todChallengeKey),
+    );
+    const now = Date.now();
+    const thresholdMs = TOD_EXPIRE_WARN_THRESHOLD_SEC * 1000;
+    for (const record of records ?? []) {
+      if (!record) continue;
+      scanned++;
+      if (!ACTIVE_STATUSES.includes(record.status)) continue;
+      const remainingMs = record.expiresAt - now;
+      // Skip if not within the warning window OR already expired (the
+      // expiry sweep handles those).
+      if (remainingMs <= 0 || remainingMs >= thresholdMs) continue;
+
+      // Sentinel TTL bounds to the remaining lifetime + a small floor
+      // so we don't try to set a 0-second TTL on edge cases.
+      const sentinelTtlSec = Math.max(60, Math.ceil(remainingMs / 1000));
+      try {
+        const acquired = await redis.set(
+          todExpireWarnSentinelKey(record.id),
+          String(now),
+          { nx: true, ex: sentinelTtlSec },
+        );
+        if (!acquired) continue; // already warned
+
+        const hours = Math.max(1, Math.round(remainingMs / 3_600_000));
+        const phaseLabel =
+          record.status === "pending" ? "pick" : "answer";
+        try {
+          await sendNotification(record.recipient, {
+            title: "⏳ TOD challenge expires soon",
+            body: `~${hours}h left to ${phaseLabel}.`,
+            url: "/games/truth-or-dare",
+          });
+        } catch (err) {
+          logger.warn("[tod] warn FCM failed", { id: record.id, err });
+        }
+
+        logger.interaction("[tod] expire warning fired", {
+          id: record.id,
+          recipient: record.recipient,
+          status: record.status,
+          remainingHours: hours,
+        });
+        warned++;
+      } catch (err) {
+        logger.error("[tod] warn per-record failed", err, { id: record.id });
+      }
+    }
+  } catch (err) {
+    logger.error("[tod] warnExpiringChallenges sweep failed", err);
+  }
+  return { scanned, warned };
 }
 
 // ── Soft-delete (Sir-only, terminal only) ────────────────────────────────
@@ -868,6 +1168,10 @@ export interface TodBundle {
   outgoing: TodChallenge | null;
   history: TodChallenge[];
   historyTotal: number;
+  /** Reactions for every loaded history record, keyed by challenge id.
+   *  Missing entries mean "no reactions yet." Auxiliary state — not
+   *  preserved on soft-delete restore. */
+  reactions: Record<string, Record<string, string>>;
   stats: TodStatsBundle;
   /** Who the caller is — drives header + role-gated UI. */
   me: Author | null;
@@ -888,6 +1192,7 @@ export async function getTodBundle(): Promise<TodBundle> {
       outgoing: null,
       history: [],
       historyTotal: 0,
+      reactions: {},
       stats: {
         T7SEN: { ...DEFAULT_TOD_STATS },
         Besho: { ...DEFAULT_TOD_STATS },
@@ -910,6 +1215,7 @@ export async function getTodBundle(): Promise<TodBundle> {
       outgoing,
       history: history.records,
       historyTotal: history.total,
+      reactions: history.reactions,
       stats,
       me,
     };
@@ -920,6 +1226,7 @@ export async function getTodBundle(): Promise<TodBundle> {
       outgoing: null,
       history: [],
       historyTotal: 0,
+      reactions: {},
       stats: {
         T7SEN: { ...DEFAULT_TOD_STATS },
         Besho: { ...DEFAULT_TOD_STATS },

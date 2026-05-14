@@ -87,6 +87,13 @@ export const MAX_PROMPT_LEN = 500;
 /** Cap on the recipient's response. Larger than prompts because a
  *  truthful answer or dare-completion note may need detail. */
 export const MAX_RESPONSE_LEN = 2000;
+/** Length of the response excerpt embedded in the issuer-side FCM
+ *  body when a response is submitted. Trims to a word boundary when
+ *  possible and appends an ellipsis on truncation so Sir can skim the
+ *  answer without opening the app. The full text is always retained
+ *  on the record. The device biometric gate is the reason it's safe
+ *  to surface intimate text on a lock screen at all. */
+export const RESPONSE_EXCERPT_LEN = 80;
 /** Cap on the optional refuse reason. Short — it's a note, not a defense. */
 export const MAX_REFUSE_REASON_LEN = 200;
 /** Cap on the Sir admin force-cancel reason. Same shape as refuse. */
@@ -95,13 +102,66 @@ export const MAX_CANCEL_REASON_LEN = 200;
 // ── TTLs (seconds) ───────────────────────────────────────────────────────
 
 /** Time from issue until the recipient must pick or refuse, otherwise
- *  the cron sweeps it as expired. 7d matches the leisurely async cadence
- *  of an LDR couple — kitten/Sir doesn't have to be on call. */
-export const TOD_PENDING_TTL_SEC = 7 * 24 * 60 * 60;
+ *  the cron sweeps it as expired. 72h fits the conversational half-life
+ *  of a dare/truth — issuer's mood and intent stay current for a few
+ *  days but go stale beyond that. Tighter than the original 7d so
+ *  stuck challenges clear faster; still loose enough that an LDR
+ *  couple has wiggle room without being on call. */
+export const TOD_PENDING_TTL_SEC = 72 * 60 * 60;
 /** Time from pick until the response must be submitted, otherwise the
  *  cron sweeps as expired. 48h tightens the window once the recipient
  *  has committed to a type. */
 export const TOD_PICKED_TTL_SEC = 48 * 60 * 60;
+
+/** Grace window after `pickPrompt` during which the recipient can
+ *  change their mind — re-pick the other type without penalty or new
+ *  state. Locked once a response is submitted (status → completed)
+ *  AND once the window elapses (60s from `pickedAt`). Implemented by
+ *  loosening `pickPrompt`'s guard to also accept `status === "picked"`
+ *  when the new pick differs and `now - pickedAt <
+ *  CHANGE_PICK_WINDOW_SEC * 1000`. */
+export const CHANGE_PICK_WINDOW_SEC = 60;
+
+/** Threshold for the cron-driven "expires soon" pre-warning push.
+ *  When `expiresAt - now < THRESHOLD`, the warner walker fires a
+ *  one-shot FCM to the recipient and sets the dedup sentinel below.
+ *  24h works for both the 72h pending TTL (fires at 48h elapsed) and
+ *  the 48h picked TTL (fires at 24h elapsed). */
+export const TOD_EXPIRE_WARN_THRESHOLD_SEC = 24 * 60 * 60;
+
+/** Dedup sentinel for the pre-warning push. SET NX EX with a TTL that
+ *  expires when the challenge does — naturally evicts so a future
+ *  resurrection of the same challenge id couldn't accidentally double-
+ *  warn. One sentinel per challenge id (covers both
+ *  pending→picked TTL refreshes since neither flows back into pending). */
+export const todExpireWarnSentinelKey = (id: string) =>
+  `tod:fcm:expire-warn:${id}`;
+
+// ── Prompt library ───────────────────────────────────────────────────────
+
+/** Per-author library of pre-authored truth+dare pairs. Stored as a
+ *  JSON array at `tod:prompts:{author}`. Each author manages their
+ *  own library — there is no cross-author view (Sir cannot see Kitten's
+ *  saved prompts, and vice versa). The library is private writer
+ *  state; the issue form pulls from it on demand. */
+export const todPromptsKey = (author: Author) => `tod:prompts:${author}`;
+
+export interface TodPrompt {
+  id: string;
+  truthPrompt: string;
+  darePrompt: string;
+  /** Optional short label rendered in the picker; falls back to a
+   *  truncated truth prompt when absent. */
+  label?: string;
+  createdAt: number;
+}
+
+/** Cap on saved prompt entries per author. Generous enough for a
+ *  thoughtful curator but bounded so the JSON read stays cheap. */
+export const MAX_PROMPTS_PER_LIBRARY = 50;
+
+/** Cap on the optional label per entry. */
+export const MAX_PROMPT_LABEL_LEN = 60;
 
 // ── Pagination ───────────────────────────────────────────────────────────
 
@@ -154,8 +214,11 @@ export interface TodChallenge {
   expiresAt: number;
   /** Free-form reason when the recipient refused. */
   refuseReason?: string;
-  /** Free-form reason when Sir force-cancelled via /admin/games. */
-  cancellationReason?: string;
+  /** Sir-supplied reason when force-cancelled via `/admin/games`.
+   *  Distinct from `refuseReason` (recipient-initiated) and
+   *  `withdrawReason` (issuer-initiated own-cancel) — the name makes
+   *  the origin clear in code reads. */
+  adminCancelReason?: string;
   /** When the issuer withdrew their own challenge. */
   withdrawReason?: string;
 }
@@ -168,7 +231,14 @@ export interface TodChallenge {
  *  only Kitten's `truthsAnswered` / `daresCompleted` / `refused` /
  *  `expired` move her score (via the obedience event emit at the action
  *  site or the cron). Sir's counters track gameplay but do not feed
- *  any score axis. */
+ *  any score axis.
+ *
+ *  `currentStreak` is consecutive responses submitted by this author
+ *  AS RECIPIENT — increments on each `submitResponse`, resets to 0 on
+ *  `refuseChallenge` or cron-driven `tod_expired`. Safeword and
+ *  withdrawn do NOT reset (free outs by design). `longestStreak` is
+ *  the high-water mark; only ever increases via the normal flow, but
+ *  admin stat edits can correct it. */
 export interface TodStats {
   issued: number;
   truthsAnswered: number;
@@ -177,6 +247,8 @@ export interface TodStats {
   safeworded: number;
   expired: number;
   withdrawn: number;
+  currentStreak: number;
+  longestStreak: number;
 }
 
 /** Zero-valued seed used as a fallback when the stats HASH is absent
@@ -189,6 +261,8 @@ export const DEFAULT_TOD_STATS: TodStats = {
   safeworded: 0,
   expired: 0,
   withdrawn: 0,
+  currentStreak: 0,
+  longestStreak: 0,
 };
 
 /** Iteration order for stat rendering + admin editor. Keep this in
@@ -201,6 +275,8 @@ export const TOD_STAT_KEYS: readonly (keyof TodStats)[] = [
   "safeworded",
   "expired",
   "withdrawn",
+  "currentStreak",
+  "longestStreak",
 ] as const;
 
 /** Human-readable labels for stat keys. Used by the game page footer
@@ -213,6 +289,8 @@ export const TOD_STAT_LABELS: Record<keyof TodStats, string> = {
   safeworded: "Safeworded",
   expired: "Expired",
   withdrawn: "Withdrawn",
+  currentStreak: "Current streak",
+  longestStreak: "Longest streak",
 };
 
 /** Reasonable upper bound for admin stat edits — guards against
@@ -233,4 +311,19 @@ export const STATUS_LABELS: Record<ChallengeStatus, string> = {
   expired: "Expired",
   withdrawn: "Withdrawn",
   cancelled: "Cancelled",
+};
+
+/** Tailwind class strings for the status chip — same shape as
+ *  `STATUS_LABELS`. Co-located so the user-facing game page + the
+ *  admin page render identical chips without copy-pasting the map.
+ *  Hover/focus styles are left to the consumer. */
+export const STATUS_CHIP: Record<ChallengeStatus, string> = {
+  pending: "bg-amber-500/15 text-amber-400",
+  picked: "bg-blue-500/15 text-blue-400",
+  completed: "bg-emerald-500/15 text-emerald-400",
+  refused: "bg-rose-500/15 text-rose-400",
+  safeworded: "bg-purple-500/15 text-purple-400",
+  expired: "bg-destructive/15 text-destructive",
+  withdrawn: "bg-muted/30 text-muted-foreground",
+  cancelled: "bg-muted/30 text-muted-foreground",
 };

@@ -19,7 +19,10 @@
 import { NextRequest } from "next/server";
 import { expireDueDirectives } from "@/app/actions/directive";
 import { expireDuePunishments } from "@/app/actions/punishment";
-import { expireDueChallenges } from "@/app/actions/games/truth-or-dare";
+import {
+  expireDueChallenges,
+  warnExpiringChallenges,
+} from "@/app/actions/games/truth-or-dare";
 import { logger } from "@/lib/logger";
 import { writeCronTelemetry } from "@/lib/cron-telemetry";
 
@@ -43,6 +46,7 @@ export async function GET(req: NextRequest) {
   let punishmentBailed = 0;
   let todScanned = 0;
   let todExpired = 0;
+  let todWarned = 0;
 
   try {
     const directiveSweep = await expireDueDirectives(200);
@@ -57,6 +61,11 @@ export async function GET(req: NextRequest) {
     todScanned = todSweep.scanned;
     todExpired = todSweep.expired;
 
+    // Pre-warning walker runs after the expiry sweep so a record that
+    // just expired this tick won't get a stale "expires soon" push.
+    const todWarn = await warnExpiringChallenges(200);
+    todWarned = todWarn.warned;
+
     const durationMs = Date.now() - startedAt;
     await writeCronTelemetry("timer-expire", {
       ok: true,
@@ -68,6 +77,7 @@ export async function GET(req: NextRequest) {
         punishmentBailed,
         todScanned,
         todExpired,
+        todWarned,
       },
     });
 
@@ -76,7 +86,7 @@ export async function GET(req: NextRequest) {
       durationMs,
       directives: { scanned: directiveScanned, expired: directiveExpired },
       punishments: { scanned: punishmentScanned, bailed: punishmentBailed },
-      tod: { scanned: todScanned, expired: todExpired },
+      tod: { scanned: todScanned, expired: todExpired, warned: todWarned },
     });
   } catch (err) {
     logger.error("[cron/timer-expire] tick failed", err);
@@ -91,6 +101,7 @@ export async function GET(req: NextRequest) {
         punishmentBailed,
         todScanned,
         todExpired,
+        todWarned,
       },
       error: err instanceof Error ? err.message : "Tick failed.",
     });
@@ -101,7 +112,7 @@ export async function GET(req: NextRequest) {
         durationMs,
         directives: { scanned: directiveScanned, expired: directiveExpired },
         punishments: { scanned: punishmentScanned, bailed: punishmentBailed },
-        tod: { scanned: todScanned, expired: todExpired },
+        tod: { scanned: todScanned, expired: todExpired, warned: todWarned },
       },
       { status: 500 },
     );

@@ -240,6 +240,18 @@ The web `/admin/*` routes use JWT cookie + `requireSir()`. The CLI routes delibe
 
 CLI ops log with `by: "T7SEN (cli)"` so `/admin/logs` Activity tab can visually distinguish desktop ops from in-app /admin clicks. Same `logger.interaction` / `logger.warn` paths as the existing admin actions — no separate log stream.
 
+### TOD CLI surface
+
+The Truth or Dare admin tools have a CLI surface alongside the in-app admin:
+
+| Route                            | Method | Body / params                                                | Purpose                                                                                                                |
+| -------------------------------- | ------ | ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| `/api/admin/cli/tod`             | GET    | `?limit=N`                                                   | Read both active slots (Sir's outgoing + Kitten's outgoing) + the N most-recent records.                               |
+| `/api/admin/cli/tod`             | POST   | `{ truthPrompt, darePrompt }`                                | Issue a Sir-to-Kitten challenge. Hardcoded issuer; refuses on 409 if Sir's outgoing slot is occupied.                  |
+| `/api/admin/cli/tod/cancel`      | POST   | `{ id?, reason? }`                                           | Force-cancel — when `id` is omitted, resolves to whichever active slot exists, preferring Sir's outgoing.              |
+
+Driven by `packages/cli/src/commands/tod.ts` (`ourspace tod status|issue|cancel`). Mirrors the in-app `forceCancelTodChallenge` / `issueChallenge` behavior: no obedience emit on cancel, single-slot guard on issue, presence-aware FCM with `data.kind: "tod_challenge"` on issue. Logged with `by: "T7SEN (cli)"` so `/admin/logs` Activity tab distinguishes CLI ops from browser /admin clicks.
+
 ### Route inventory
 
 | Route | Method | Body | Effect |

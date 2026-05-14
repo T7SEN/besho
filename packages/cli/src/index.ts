@@ -22,6 +22,7 @@
 //   punish "<reason>"         Issue / cancel / list punishment timers.
 //   rules                     List rules with their UUIDs.
 //   violation <ruleId> ...    Log a rule-violation ledger entry.
+//   tod <status|issue|cancel> Truth or Dare admin from the terminal.
 
 import { summonCommand } from "./commands/summon.ts";
 import { restrainCommand } from "./commands/restrain.ts";
@@ -32,6 +33,7 @@ import { directiveCommand } from "./commands/directive.ts";
 import { punishCommand } from "./commands/punish.ts";
 import { rulesCommand } from "./commands/rules.ts";
 import { violationCommand } from "./commands/violation.ts";
+import { todCommand } from "./commands/tod.ts";
 import { ApiError } from "./lib/api.ts";
 import { c, fail } from "./lib/format.ts";
 
@@ -52,6 +54,7 @@ const COMMANDS: Record<string, CommandFn> = {
   punish: punishCommand,
   rules: rulesCommand,
   violation: violationCommand,
+  tod: todCommand,
 };
 
 function printTopLevelHelp(): void {
@@ -70,6 +73,7 @@ function printTopLevelHelp(): void {
       "  punish <reason|...>       Issue / cancel / list punishment timers.",
       "  rules                     List rules with their UUIDs.",
       "  violation <ruleId> ...    Log a rule-violation ledger entry.",
+      "  tod <status|issue|cancel> Truth or Dare admin from the terminal.",
       "",
       c.bold("Per-command help"),
       "  ourspace <command> --help",

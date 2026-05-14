@@ -1505,6 +1505,7 @@ import {
   adjustTodStat as _adjustTodStat,
   purgeAllTodChallenges as _purgeAllTodChallenges,
   getActiveTodCount as _getActiveTodCount,
+  getTodWindowedStats as _getTodWindowedStats,
 } from "./admin/games";
 
 // games bucket
@@ -1515,8 +1516,12 @@ export async function resetTodStats(...args: Parameters<typeof _resetTodStats>):
 export async function adjustTodStat(...args: Parameters<typeof _adjustTodStat>): ReturnType<typeof _adjustTodStat> { return _adjustTodStat(...args); }
 export async function purgeAllTodChallenges(...args: Parameters<typeof _purgeAllTodChallenges>): ReturnType<typeof _purgeAllTodChallenges> { return _purgeAllTodChallenges(...args); }
 export async function getActiveTodCount(...args: Parameters<typeof _getActiveTodCount>): ReturnType<typeof _getActiveTodCount> { return _getActiveTodCount(...args); }
+export async function getTodWindowedStats(...args: Parameters<typeof _getTodWindowedStats>): ReturnType<typeof _getTodWindowedStats> { return _getTodWindowedStats(...args); }
 export type {
   TodAdminBundle,
   TodAdminBundleResult,
   AdjustTodStatArgs,
+  TodWindowedCounters,
+  TodWindowedStats,
+  TodWindowedStatsResult,
 } from "./admin/games";

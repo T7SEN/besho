@@ -19,6 +19,10 @@ import {
   PUNISHMENT_ARRIVED_EVENT,
   PUNISHMENT_PAYLOAD_KIND,
 } from "@/lib/punishment-constants";
+import {
+  TOD_ARRIVED_EVENT,
+  TOD_PAYLOAD_KIND,
+} from "@/lib/games/truth-or-dare-constants";
 
 /**
  * Registers FCM listeners once at the layout level so they persist
@@ -34,6 +38,15 @@ export function FCMProvider() {
   const pathname = usePathname();
   const registeredForAuthor = useRef<string | null>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
+  // Capture the live pathname so the FCM foreground listener can read
+  // the current route at fire-time without re-registering on every
+  // navigation. The listener is set up once per author change; reading
+  // `pathname` directly inside its closure would pin the value to the
+  // route active when the listener was registered (stale-closure).
+  const pathnameRef = useRef(pathname);
+  useEffect(() => {
+    pathnameRef.current = pathname;
+  }, [pathname]);
 
   useEffect(() => {
     getCurrentAuthor().then(setAuthor);
@@ -216,6 +229,51 @@ export function FCMProvider() {
                   title: notification.title ?? "🔔 Punishment timer",
                   body: notification.body ?? "",
                   url: "/",
+                });
+              }
+              return;
+            }
+
+            if (kind === TOD_PAYLOAD_KIND) {
+              // Truth or Dare doesn't have a dedicated overlay
+              // component — the page itself owns its state. The
+              // dispatched event signals the page to refetch its
+              // bundle so the new challenge surfaces without waiting
+              // for the next pull-to-refresh or 30s poll. Falls back
+              // to the standard PushToast if the dispatch path errors
+              // OR if the recipient isn't on the page (the toast
+              // gives them a tap-to-navigate affordance).
+              const challengeId = notification.data?.challengeId as
+                | string
+                | undefined;
+              const onTodPage =
+                pathnameRef.current === "/games/truth-or-dare";
+              try {
+                (
+                  globalThis as unknown as {
+                    dispatchEvent: (e: Event) => void;
+                  }
+                ).dispatchEvent(
+                  new CustomEvent(TOD_ARRIVED_EVENT, {
+                    detail: { id: challengeId },
+                  }),
+                );
+                // Recipient is elsewhere → also surface the toast so
+                // they see something happened. The page's
+                // refresh-on-mount will reconcile when they navigate.
+                if (!onTodPage) {
+                  dispatchPushToast({
+                    title: notification.title ?? "🎲 Truth or Dare",
+                    body: notification.body ?? "",
+                    url: "/games/truth-or-dare",
+                  });
+                }
+              } catch (err) {
+                logger.warn("[fcm] tod dispatch failed", { err });
+                dispatchPushToast({
+                  title: notification.title ?? "🎲 Truth or Dare",
+                  body: notification.body ?? "",
+                  url: "/games/truth-or-dare",
                 });
               }
               return;

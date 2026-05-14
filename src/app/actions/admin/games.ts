@@ -160,7 +160,7 @@ export async function getTodAdminBundle(
  * increment, NO obedience emit. Distinct from `withdrawChallenge`
  * (issuer-only withdrawal) — this works on either direction and skips
  * the issuer-identity check. Optional `reason` is captured in
- * `cancellationReason` as Sir's audit trail.
+ * `adminCancelReason` as Sir's audit trail.
  */
 export async function forceCancelTodChallenge(
   id: string,
@@ -186,7 +186,7 @@ export async function forceCancelTodChallenge(
       ...record,
       status: "cancelled",
       closedAt,
-      ...(cleanReason.length > 0 && { cancellationReason: cleanReason }),
+      ...(cleanReason.length > 0 && { adminCancelReason: cleanReason }),
     };
 
     const pipeline = redis.pipeline();
@@ -196,7 +196,7 @@ export async function forceCancelTodChallenge(
 
     // Force-cancel does NOT increment any stat counter and does NOT
     // emit an obedience event. It's a clean rollback — Sir's audit
-    // trail is the `cancellationReason` field + the activity log.
+    // trail is the `adminCancelReason` field + the activity log.
 
     logger.warn("[admin] tod challenge force-cancelled", {
       id,
@@ -415,6 +415,162 @@ export async function purgeAllTodChallenges(): Promise<{
   } catch (err) {
     logger.error("[admin] purgeAllTodChallenges failed", err);
     return { error: "Purge failed." };
+  }
+}
+
+// ── Windowed stats (Sir-only) ────────────────────────────────────────────
+
+/** Counter shape for the windowed-stats view. Subset of `TodStats` —
+ *  excludes the streak fields, which are sequential and don't make
+ *  sense for a time-window aggregation (computing "streak in the last
+ *  7 days" requires walking the timeline in order, which the
+ *  cumulative HASH already encodes). */
+export interface TodWindowedCounters {
+  issued: number;
+  truthsAnswered: number;
+  daresCompleted: number;
+  refused: number;
+  safeworded: number;
+  expired: number;
+  withdrawn: number;
+}
+
+const ZERO_WINDOWED_COUNTERS: TodWindowedCounters = {
+  issued: 0,
+  truthsAnswered: 0,
+  daresCompleted: 0,
+  refused: 0,
+  safeworded: 0,
+  expired: 0,
+  withdrawn: 0,
+};
+
+export interface TodWindowedStats {
+  T7SEN: TodWindowedCounters;
+  Besho: TodWindowedCounters;
+  /** Null when the caller passed no window (all-time aggregation). */
+  windowDays: number | null;
+  /** Inclusive range covered by the read. `toMs` is always now. */
+  range: { fromMs: number; toMs: number };
+  /** Total challenges in the window (regardless of status). */
+  total: number;
+  generatedAt: number;
+}
+
+export interface TodWindowedStatsResult {
+  stats?: TodWindowedStats;
+  error?: string;
+}
+
+/**
+ * Sir-only windowed aggregation across the TOD index. Walks records
+ * whose `createdAt` falls within the window (or all records when
+ * `windowDays` is null/undefined), then increments per-author
+ * counters based on each record's terminal status. The issuer's
+ * `issued` counter increments for every record in the window;
+ * recipient-side counters (`truthsAnswered` / `daresCompleted` /
+ * `refused` / `safeworded` / `expired`) follow the status. Withdrawn
+ * counts on the issuer side (mirrors the cumulative HASH semantics).
+ * Cancelled challenges are intentionally not counted anywhere —
+ * admin overrides are clean rollbacks.
+ *
+ * Performance: O(N) where N is the number of challenges in the
+ * window. Fine at two-user scale; a year of regular play is a few
+ * hundred records.
+ */
+export async function getTodWindowedStats(
+  windowDays?: number | null,
+): Promise<TodWindowedStatsResult> {
+  const guard = await requireSir();
+  if (!guard.ok) return { error: guard.error };
+
+  const now = Date.now();
+  let fromMs = 0;
+  const toMs = now;
+  let resolvedWindow: number | null = null;
+  if (typeof windowDays === "number" && Number.isFinite(windowDays)) {
+    if (windowDays <= 0 || windowDays > 3650) {
+      return { error: "Window must be 1..3650 days, or omitted for all time." };
+    }
+    resolvedWindow = Math.floor(windowDays);
+    fromMs = now - resolvedWindow * 24 * 60 * 60_000;
+  }
+
+  try {
+    const idsRaw =
+      resolvedWindow === null
+        ? ((await redis.zrange<string[]>(TOD_INDEX_KEY, 0, -1)) ?? [])
+        : ((await redis.zrange<string[]>(
+            TOD_INDEX_KEY,
+            fromMs,
+            toMs,
+            { byScore: true },
+          )) ?? []);
+    const ids = idsRaw.map(String);
+    if (ids.length === 0) {
+      return {
+        stats: {
+          T7SEN: { ...ZERO_WINDOWED_COUNTERS },
+          Besho: { ...ZERO_WINDOWED_COUNTERS },
+          windowDays: resolvedWindow,
+          range: { fromMs, toMs },
+          total: 0,
+          generatedAt: now,
+        },
+      };
+    }
+    const recs =
+      (await redis.mget<(TodChallenge | null)[]>(
+        ...ids.map(todChallengeKey),
+      )) ?? [];
+
+    const counters: Record<Author, TodWindowedCounters> = {
+      T7SEN: { ...ZERO_WINDOWED_COUNTERS },
+      Besho: { ...ZERO_WINDOWED_COUNTERS },
+    };
+
+    for (const r of recs) {
+      if (!r) continue;
+      // Every record in the window counts as "issued" against the issuer.
+      counters[r.issuer].issued++;
+      switch (r.status) {
+        case "completed":
+          if (r.pick === "truth") counters[r.recipient].truthsAnswered++;
+          else if (r.pick === "dare") counters[r.recipient].daresCompleted++;
+          break;
+        case "refused":
+          counters[r.recipient].refused++;
+          break;
+        case "safeworded":
+          counters[r.recipient].safeworded++;
+          break;
+        case "expired":
+          counters[r.recipient].expired++;
+          break;
+        case "withdrawn":
+          counters[r.issuer].withdrawn++;
+          break;
+        case "cancelled":
+        case "pending":
+        case "picked":
+          // Admin overrides + active states aren't counted in stats.
+          break;
+      }
+    }
+
+    return {
+      stats: {
+        T7SEN: counters.T7SEN,
+        Besho: counters.Besho,
+        windowDays: resolvedWindow,
+        range: { fromMs, toMs },
+        total: recs.filter((r): r is TodChallenge => r !== null).length,
+        generatedAt: now,
+      },
+    };
+  } catch (err) {
+    logger.error("[admin] getTodWindowedStats failed", err);
+    return { error: "Failed to compute windowed stats." };
   }
 }
 
