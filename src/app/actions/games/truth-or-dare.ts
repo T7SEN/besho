@@ -875,7 +875,7 @@ export async function expireDueChallenges(
             }),
           ]);
         } catch {
-          // best-effort — cron sweeps every minute, FCM can fail
+          // best-effort — the expiry already committed; a failed FCM is acceptable
         }
 
         logger.warn("[tod] challenge expired", {

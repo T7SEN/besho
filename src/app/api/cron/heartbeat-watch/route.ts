@@ -44,7 +44,7 @@ const FRESH_WINDOW_MS: Record<CronName, number> = {
   "ritual-windows": 10 * 60 * 1000, // minute cadence, 10m fresh
   "review-window-open": 30 * 60 * 60 * 1000, // daily, 30h fresh
   "heartbeat-watch": Number.POSITIVE_INFINITY,
-  "timer-expire": 10 * 60 * 1000, // minute cadence, 10m fresh
+  "timer-expire": 15 * 60 * 1000, // 5-min cadence, 15m fresh (2 missed ticks)
 };
 
 const NOTIFIED_TTL_SECONDS = 24 * 60 * 60;

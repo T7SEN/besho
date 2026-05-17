@@ -1,8 +1,12 @@
 // src/app/api/cron/timer-expire/route.ts
 //
-// Minute-cadence cron that finalizes time-bounded surfaces whose
-// deadlines have passed. Combined endpoint by design — keeps the
-// cron count bounded as more time-windowed features arrive.
+// Cron that finalizes time-bounded surfaces whose deadlines have
+// passed. Runs on a 5-minute cadence (cron-job.org) — minute
+// precision isn't needed: the punishment sentinel carries a 10-min
+// grace buffer, a late directive-miss is just bookkeeping (the
+// countdown overlay resolves on-device), and TOD TTLs run to days.
+// Combined endpoint by design — keeps the cron count bounded as
+// more time-windowed features arrive.
 //
 // Currently sweeps:
 //   1. Directives — expires past `expiresAt`, emits `directive_missed`.
