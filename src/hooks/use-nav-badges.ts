@@ -6,7 +6,11 @@ import { getNavBadges, type NavBadges } from "@/app/actions/badges";
 import { isNative } from "@/lib/native";
 import { logger } from "@/lib/logger";
 
-const POLL_INTERVAL_MS = 30_000;
+// 90s poll — each tick is one getNavBadges() call. Raised 30s→90s in
+// the Redis-cost audit; native app-resume still triggers an instant
+// fetch (see the appStateChange listener), so freshness-on-return is
+// unaffected.
+const POLL_INTERVAL_MS = 90_000;
 const INITIAL: NavBadges = {
   pendingTasks: 0,
   unacknowledgedRules: 0,

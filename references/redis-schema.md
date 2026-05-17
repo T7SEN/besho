@@ -362,9 +362,9 @@ The 7-day TTL exists so `getMoodHistory()` can backfill the past week's grid. Th
 
 | Key                 | Type   | TTL | Description                                       |
 | ------------------- | ------ | --- | ------------------------------------------------- |
-| `presence:{author}` | STRING | 6s  | `JSON.stringify({ page, ts })` — heartbeat anchor |
+| `presence:{author}` | STRING | 15s | `JSON.stringify({ page, ts })` — heartbeat anchor |
 
-Written every 8 seconds by `usePresence` while a page is open. The 6-second TTL ensures stale entries auto-clean if the heartbeat stops. Push routing additionally enforces a 12-second freshness window to absorb network jitter.
+Written every 8 seconds by `usePresence` while a page is open. The 15-second TTL ensures stale entries auto-clean if the heartbeat stops — comfortably wider than the 8s heartbeat so the key never lapses mid-session. Push routing additionally enforces a 12-second freshness window to absorb network jitter. Heartbeat cadence and TTL were both raised (4s→8s heartbeat, 6s→15s TTL) in the Redis-cost audit to halve presence SET volume.
 
 `DELETE /api/presence` is called on `usePresence` cleanup to immediately invalidate (rather than waiting for TTL).
 

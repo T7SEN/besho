@@ -20,6 +20,7 @@ import {
 import { AUTHOR_COLORS, partnerOf, type Author } from "@/lib/constants";
 import { vibrate } from "@/lib/haptic";
 import { logger } from "@/lib/logger";
+import { useRefreshListener } from "@/hooks/use-refresh-listener";
 
 const UNLOCKED_QUOTES = [
   "Distance means so little when someone means so much.",
@@ -74,6 +75,23 @@ export function MoodCard({ currentAuthor }: MoodCardProps) {
     return "idle";
   }, []);
 
+  // Single refresh path — shared by the pull-to-refresh listener and
+  // the safety poll below. Skips the fetch once a hug is sent: that's
+  // the day's terminal state, so there's nothing left to observe.
+  const refreshMoods = useCallback(() => {
+    if (cardState === "hug-sent") return;
+    getTodayMoods()
+      .then((data) => {
+        setMoodData(data);
+        setCardState(deriveCardState(data));
+      })
+      .catch(logger.error);
+  }, [cardState, deriveCardState]);
+
+  // Pull-to-refresh is the primary freshness path.
+  useRefreshListener(refreshMoods);
+
+  // Initial load — runs once on mount regardless of card state.
   useEffect(() => {
     getTodayMoods().then((data) => {
       setMoodData(data);
@@ -81,19 +99,13 @@ export function MoodCard({ currentAuthor }: MoodCardProps) {
     });
   }, [deriveCardState]);
 
+  // Safety poll — 120s. Bounds staleness if the partner submits while
+  // this page sits open and untouched; pull-to-refresh covers the
+  // common case. Raised 15s→120s in the Redis-cost audit.
   useEffect(() => {
-    const poll = () => {
-      if (cardState === "hug-sent") return;
-      getTodayMoods()
-        .then((data) => {
-          setMoodData(data);
-          setCardState(deriveCardState(data));
-        })
-        .catch(logger.error);
-    };
-    const id = setInterval(poll, 15_000);
+    const id = setInterval(refreshMoods, 120_000);
     return () => clearInterval(id);
-  }, [cardState, deriveCardState]);
+  }, [refreshMoods]);
 
   const handleSelectMood = async (emoji: string) => {
     if (isSubmitting || cardState !== "idle") return;

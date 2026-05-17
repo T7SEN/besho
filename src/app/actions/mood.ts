@@ -62,6 +62,9 @@ export async function getTodayMoods(): Promise<MoodData> {
   const partner = author === "T7SEN" ? "Besho" : "T7SEN";
   const today = todayKeyCairo();
 
+  // Single MGET — 6 STRING keys in one Redis command (was 6 GETs via
+  // Promise.all). Folded in the Redis-cost audit; mirrors the mget
+  // pattern in getMoodHistory below.
   const [
     myMood,
     partnerMood,
@@ -69,14 +72,14 @@ export async function getTodayMoods(): Promise<MoodData> {
     partnerState,
     myHugSent,
     partnerHugSent,
-  ] = await Promise.all([
-    redis.get<string>(moodKey(today, author)),
-    redis.get<string>(moodKey(today, partner)),
-    redis.get<string>(stateKey(today, author)),
-    redis.get<string>(stateKey(today, partner)),
-    redis.get<string>(hugKey(today, author)),
-    redis.get<string>(hugKey(today, partner)),
-  ]);
+  ] = await redis.mget<(string | null)[]>(
+    moodKey(today, author),
+    moodKey(today, partner),
+    stateKey(today, author),
+    stateKey(today, partner),
+    hugKey(today, author),
+    hugKey(today, partner),
+  );
 
   return {
     myMood: myMood ?? null,

@@ -51,7 +51,7 @@ try {
 }
 ```
 
-The 12-second threshold is wider than the 8-second heartbeat in `usePresence` to absorb network jitter without over-extending. The `presence:{author}` key has a Redis TTL of 6 seconds (`PRESENCE_TTL` in `src/app/api/presence/route.ts`). The TTL and the 12s freshness window together act as a two-layer expiry.
+The 12-second threshold is wider than the 8-second heartbeat in `usePresence` to absorb network jitter without over-extending. The `presence:{author}` key carries a 15-second Redis TTL (`PRESENCE_TTL` in `src/app/api/presence/route.ts`) — wider than the 8s heartbeat so the key survives a missed beat. Because the TTL (15s) now exceeds the 12s freshness window, the freshness check is the primary "is the recipient here" cutoff and the TTL is the cleanup backstop: a key whose `ts` is 12–15s old still exists but reads as stale. (`PRESENCE_TTL` was raised 6s→15s alongside the 4s→8s heartbeat in the Redis-cost audit.)
 
 ### Step 3 — Skip if recipient is on the target page
 
@@ -150,7 +150,7 @@ try {
 
 | Key                      | Type   | TTL  | Purpose                                                                    |
 | ------------------------ | ------ | ---- | -------------------------------------------------------------------------- |
-| `presence:{author}`      | STRING | 6s   | `{ page, ts }` JSON — heartbeat target                                     |
+| `presence:{author}`      | STRING | 15s  | `{ page, ts }` JSON — heartbeat target                                     |
 | `push:fcm:{author}`      | SET    | none | FCM device tokens (one entry per registered device — Android with GMS)     |
 | `notifications:{author}` | LIST   | none | Last 50 records (LPUSH + LTRIM)                                            |
 

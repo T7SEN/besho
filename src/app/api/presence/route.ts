@@ -3,7 +3,10 @@ import { redis } from "@/lib/redis";
 import { cookies } from "next/headers";
 import { decrypt } from "@/lib/auth-utils";
 
-const PRESENCE_TTL = 6; // seconds — must be longer than the heartbeat interval in usePresence
+// seconds — must exceed the 8s usePresence heartbeat so the key
+// survives between ticks. Raised 6→15 in the Redis-cost audit
+// (alongside the 4s→8s heartbeat) to cut presence SET volume.
+const PRESENCE_TTL = 15;
 const presenceKey = (author: string) => `presence:${author}`;
 
 export async function POST(req: NextRequest) {

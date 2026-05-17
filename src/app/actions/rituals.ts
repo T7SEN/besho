@@ -248,6 +248,110 @@ export async function getRituals(): Promise<RitualWithToday[]> {
 }
 
 /**
+ * Lean ritual read for `/api/cron/ritual-windows`. Returns ONLY the
+ * rituals whose reminder window opened within `lookbackMs` and that are
+ * still un-acted (no submission, no skip) for the owning date.
+ *
+ * Why this exists separately from `getRituals`: the cron runs every
+ * minute, and `getRituals` issues `3 + HISTORY_DOT_ROW_DAYS` commands
+ * PER ritual (streak + longest-streak + future-occurrences ZRANGE + 14
+ * history-dot HGETALLs) — data the cron discards entirely. This function
+ * does 1 ZRANGE + 1 MGET, computes window state in-memory, and only
+ * HGETALLs the occurrence key for rituals whose window actually opened
+ * in the lookback (almost always zero). Typical run: 2 commands. See the
+ * Redis-cost audit.
+ *
+ * Behaviorally equivalent to the cron's old inline filter: a non-empty
+ * occurrence hash means the owning date was submitted OR skipped —
+ * either way, no reminder fires.
+ */
+export async function getRitualsForCron(
+  lookbackMs: number,
+): Promise<
+  Array<{
+    id: string;
+    owner: RitualOwner;
+    title: string;
+    owningDateKey: string;
+    windowOpensAtMs: number;
+  }>
+> {
+  try {
+    const ids = (await redis.zrange(INDEX_KEY, 0, -1)) as string[];
+    if (!ids.length) return [];
+    const rituals = await redis.mget<(Ritual | null)[]>(
+      ...ids.map(ritualKey),
+    );
+    const now = Date.now();
+
+    // Phase 1 — in-memory filter, zero Redis. Keep rituals that are
+    // active, not paused, and whose window opened within the lookback.
+    const candidates: Array<{
+      ritual: Ritual;
+      owningDateKey: string;
+      windowOpensAtMs: number;
+    }> = [];
+    for (const r of rituals ?? []) {
+      if (!r || !r.active) continue;
+      if (r.pausedUntil && r.pausedUntil > now) continue;
+      const todayInfo = computeRitualTodayState({
+        active: r.active,
+        pausedUntilMs: r.pausedUntil ?? null,
+        cadence: r.cadence,
+        weekdays: r.weekdays,
+        everyNDays: r.everyNDays,
+        anchorDateKey: r.anchorDateKey,
+        windowStart: r.windowStart,
+        durationMinutes: r.windowDurationMinutes,
+        now,
+        hasOccurrenceForOwningDate: () => false,
+      });
+      const opensAtMs = todayInfo.bounds.opensAtMs;
+      const sinceOpenMs = now - opensAtMs;
+      if (sinceOpenMs < 0 || sinceOpenMs > lookbackMs) continue;
+      candidates.push({
+        ritual: r,
+        owningDateKey: todayInfo.owningDateKey,
+        windowOpensAtMs: opensAtMs,
+      });
+    }
+    if (candidates.length === 0) return [];
+
+    // Phase 2 — occurrence check ONLY for the (usually 0-1) in-window
+    // rituals. A non-empty hash means submitted or skipped → no reminder.
+    const pipeline = redis.pipeline();
+    for (const c of candidates) {
+      pipeline.hgetall(occurrenceKey(c.ritual.id, c.owningDateKey));
+    }
+    const occ = (await pipeline.exec()) as (Record<string, string> | null)[];
+
+    const due: Array<{
+      id: string;
+      owner: RitualOwner;
+      title: string;
+      owningDateKey: string;
+      windowOpensAtMs: number;
+    }> = [];
+    for (let i = 0; i < candidates.length; i += 1) {
+      const hash = occ[i];
+      if (hash && Object.keys(hash).length > 0) continue;
+      const c = candidates[i];
+      due.push({
+        id: c.ritual.id,
+        owner: c.ritual.owner,
+        title: c.ritual.title,
+        owningDateKey: c.owningDateKey,
+        windowOpensAtMs: c.windowOpensAtMs,
+      });
+    }
+    return due;
+  } catch (error) {
+    logger.error("[rituals] getRitualsForCron failed:", error);
+    return [];
+  }
+}
+
+/**
  * Returns the last `days` calendar days of submission status for a ritual,
  * oldest-first. Each entry is a date key + submitted/skipped flags. For the
  * dot-row UI.

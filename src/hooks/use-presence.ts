@@ -4,7 +4,12 @@ import { useEffect, useRef } from "react";
 import { isNative } from "@/lib/native";
 import { logger } from "@/lib/logger";
 
-const HEARTBEAT_INTERVAL_MS = 4_000;
+/** Presence heartbeat cadence. Each tick is one Redis SET via
+ *  `POST /api/presence`. Raised 4s→8s in the Redis-cost audit to
+ *  halve per-session command volume; stays well under the 15s
+ *  `PRESENCE_TTL` so the key never lapses while the app is
+ *  foregrounded. */
+const HEARTBEAT_INTERVAL_MS = 8_000;
 
 async function setPresence(page: string): Promise<void> {
   try {
@@ -53,7 +58,7 @@ async function clearPresence(): Promise<void> {
 }
 
 /**
- * Tracks the user's current page in Redis with a 10s TTL.
+ * Tracks the user's current page in Redis with a 15s TTL.
  *
  * ARCHITECTURAL UPGRADE:
  * - Prevents phantom heartbeats when the app is backgrounded.
